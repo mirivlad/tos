@@ -530,12 +530,15 @@ fn diagnostic(code: &'static str, stage: Stage, span: Span, source: &SourceUnit)
 
 /// The source-language version this frontend implements (docs/42 section 1).
 ///
-/// **1.3 since ADR-0085**, which separates an interface's identity from the
-/// class of values that represents it. 1.2 added device memory (ADR-0081) and
-/// 1.1 the direct-interface effect form (ADR-0080). Every earlier minor remains
-/// supported and unchanged: a module declaring one keeps its meaning, its
-/// diagnostics and its digest, and is refused only if it uses a form its own
-/// header did not claim (`E1608`).
+/// **1.5 since ADR-0097**, which adds `RegionFamily` to §4.3's closed
+/// representation enumeration so that an ordinary `Region<T>` can occupy a
+/// capability position — which is what `region_freeze` needs and therefore what
+/// a region crossing IPC from canonical text needs. 1.4 was ADR-0086's
+/// predeclared DMA ordering, 1.3 ADR-0085's capability representation, 1.2 device
+/// memory (ADR-0081) and 1.1 the direct-interface effect form (ADR-0080). Every
+/// earlier minor remains supported and unchanged: a module declaring one keeps
+/// its meaning, its diagnostics and its digest, and is refused only if it uses a
+/// form its own header did not claim (`E1608`).
 ///
 /// **A frontend advertises a minor when it performs it**, not when a decision
 /// naming it is approved (`docs/42` §1). This constant moved last of ADR-0085's
@@ -552,7 +555,17 @@ fn diagnostic(code: &'static str, stage: Stage, span: Span, source: &SourceUnit)
 /// x86-64 backend's asymmetry and the gate that reads it out of the built
 /// image. Until every one of those existed, a 1.4 module was refused whole by
 /// its header — which is what `E1602` is for.
-const LANGUAGE_VERSION: (u32, u32) = (1, 4);
+///
+/// **And it moved last of ADR-0097's implementation, in the same order.** The
+/// frontend's table and its new member, the verifier's own independent row and
+/// the unit tests that prove the two families disjoint, the non-importability
+/// that follows from the representation, the four schema rows with their ABI
+/// assignments, the runtime bridge's region placement and its three results, the
+/// release-time and transfer-time mapping retirement, the per-family feature
+/// gate above, and the schema parity gate tightened to account for a region
+/// grant per operation — all of it before this number, because accepting a 1.5
+/// module before then would be accepting one whose semantics were partly absent.
+const LANGUAGE_VERSION: (u32, u32) = (1, 5);
 
 /// The minor in which a direct interface effect became legal (ADR-0080 §5).
 const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;
@@ -574,6 +587,22 @@ const DEVICE_MEMORY_MINOR: u32 = 2;
 /// module, and one that does must not apply the rule to a module that did not
 /// ask for it.
 const CAPABILITY_REPRESENTATION_MINOR: u32 = 3;
+
+/// The minor in which the **ordinary** region family became a capability
+/// representation (ADR-0097 §8a, `SYSTEM_INTERFACE_V1` §4.3).
+///
+/// **A second member of the closed enumeration takes a second minor**, by
+/// ADR-0085 §13's own test rather than by analogy: a capability position a
+/// conforming 1.4 frontend and verifier reject — a `Region<mut u8>` where
+/// `system.memory.Region` is required — becomes valid, so an implementation that
+/// does not support it must not accept such a module, and one that does must not
+/// apply the rule to a module that did not ask for it.
+///
+/// It is **not** the same minor as `DmaRegionFamily`'s. A 1.3 or 1.4 module
+/// reaching this family is refused, and refused against the number *this* feature
+/// needs, because telling it to declare 1.3 would be telling it to declare a
+/// version under which the form is still invalid.
+const REGION_REPRESENTATION_MINOR: u32 = 5;
 
 /// Checks the declared source-language version.
 ///
@@ -656,9 +685,14 @@ fn check_features_against_minor(
     if minor < DEVICE_MEMORY_MINOR {
         refuse_device_memory_types(source, schema, &signatures, minor, out);
     }
-    if minor < CAPABILITY_REPRESENTATION_MINOR {
-        refuse_capability_representation(source, schema, &signatures, minor, out);
-    }
+    // **Unconditional, and the guard that used to be here was the bug.** It read
+    // `minor < CAPABILITY_REPRESENTATION_MINOR`, which was right while one family
+    // existed and silently skipped the whole walk once a second one needed a
+    // higher minor: a 1.4 module naming `system.memory.Region` was accepted
+    // because 4 is not below 3. The comparison belongs per finding — each is
+    // checked against the minor *that family* needs — so a third member cannot be
+    // missed by an outer test that predates it.
+    refuse_capability_representation(source, schema, &signatures, minor, out);
     refuse_predeclared_above_minor(source, schema, minor, out);
 }
 
@@ -741,7 +775,10 @@ fn refuse_capability_representation(
     out: &mut Vec<Diagnostic>,
 ) {
     let requested = crate::effects::requested_capabilities(source, schema);
-    let mut report = |span| {
+    let mut report = |span, requires: u32| {
+        if minor >= requires {
+            return;
+        }
         out.push(
             diagnostic(
                 "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
@@ -751,53 +788,62 @@ fn refuse_capability_representation(
             )
             .with_field("feature", "capability representation")
             .with_field("declared", minor)
-            .with_field("requires", CAPABILITY_REPRESENTATION_MINOR),
+            .with_field("requires", requires),
         );
     };
     for signature in signatures {
         for effect in signature.effects() {
             if let Some(path) = crate::effects::resolve(source, &requested, effect).interface() {
-                if !is_as_interface(path) {
-                    report(effect.span());
+                if let Some(requires) = representation_minor(path) {
+                    report(effect.span(), requires);
                 }
             }
         }
         for parameter in signature.parameters() {
-            if names_a_represented_interface(source, parameter.ty()) {
-                report(parameter.span());
+            if let Some(requires) = named_representation_minor(source, parameter.ty()) {
+                report(parameter.span(), requires);
             }
         }
-        if names_a_represented_interface(source, signature.result()) {
-            report(signature.span());
+        if let Some(requires) = named_representation_minor(source, signature.result()) {
+            report(signature.span(), requires);
         }
     }
 }
 
-/// Whether an accepted interface of this path is represented as itself.
+/// Which minor a named interface's representation needs, or nothing when it is
+/// the default.
 ///
-/// A path no accepted schema declares answers `true`: it names no interface, so
-/// it has no representation, and whatever is wrong with such a module is wrong
-/// for a different reason.
-fn is_as_interface(path: &str) -> bool {
-    crate::interfaces::representation_of(path) == crate::interfaces::Representation::AsInterface
+/// **One arm per non-default member**, so that adding a third to the enumeration
+/// without deciding its minor does not compile. A path no accepted schema
+/// declares answers `None`: it names no interface, so it has no representation,
+/// and whatever is wrong with such a module is wrong for a different reason.
+fn representation_minor(path: &str) -> Option<u32> {
+    match crate::interfaces::representation_of(path) {
+        crate::interfaces::Representation::AsInterface => None,
+        crate::interfaces::Representation::DmaRegionFamily => Some(CAPABILITY_REPRESENTATION_MINOR),
+        crate::interfaces::Representation::RegionFamily => Some(REGION_REPRESENTATION_MINOR),
+    }
 }
 
-/// Whether a written type names an accepted interface whose representation is
-/// not the default.
+/// Which minor a written type needs, if it names an accepted interface whose
+/// representation is not the default.
 ///
 /// The interface path is what an operation's capability parameter is declared
 /// as, whatever represents its values — so this catches the declaration even
-/// though the *argument* at the call site is written as a region.
-fn names_a_represented_interface(source: &SourceUnit, ty: &crate::parser::TypeSyntax) -> bool {
+/// though the *argument* at the call site is written as a region. A constructed
+/// type answers with the largest minor any of its arguments needs, because a
+/// `Result<Region<u8>, i64>` is as much a 1.5 form as a bare one.
+fn named_representation_minor(source: &SourceUnit, ty: &crate::parser::TypeSyntax) -> Option<u32> {
     match ty {
         crate::parser::TypeSyntax::Name { path, .. } => {
             let written: Vec<&str> = path.iter().map(|segment| segment.text(source)).collect();
-            !is_as_interface(&written.join("."))
+            representation_minor(&written.join("."))
         }
         crate::parser::TypeSyntax::Constructed { arguments, .. } => arguments
             .iter()
-            .any(|inner| names_a_represented_interface(source, inner)),
-        _ => false,
+            .filter_map(|inner| named_representation_minor(source, inner))
+            .max(),
+        _ => None,
     }
 }
 

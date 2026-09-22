@@ -128,6 +128,7 @@ because two imports of one interface are legal and a kind cannot tell them apart
 | `system.ipc.Endpoint` | endpoint | `AsInterface` |
 | `system.ipc.Reply` | reply | `AsInterface` |
 | `system.memory.Authority` | memory authority | `AsInterface` |
+| `system.memory.Region` | region | `RegionFamily` |
 | `system.process.LaunchPlanBuilder` | launch plan builder | `AsInterface` |
 | `system.process.LaunchPlan` | launch plan | `AsInterface` |
 | `system.process.Control` | process | `AsInterface` |
@@ -160,12 +161,29 @@ that class is drawn from a **closed enumeration this document fixes**:
 ```text
 capability_representation ::= AsInterface
                             | DmaRegionFamily
+                            | RegionFamily
 ```
 
 | Representation | The values that are it |
 |---|---|
 | `AsInterface` | exactly `TypeDef::Capability(interface_path)` |
 | `DmaRegionFamily` | `TypeDef::DmaRegion(_)` or `TypeDef::DmaRegionMut(_)`, any element type |
+| `RegionFamily` | `TypeDef::Region(_)` or `TypeDef::RegionMut(_)`, any element type |
+
+**`RegionFamily` was added by ADR-0097** (Project Architect-approved,
+2026-09-23), which is the second member this enumeration has gained and the
+mechanism §4.3 describes working as intended: `IPC_V1` §5 forbids sending a
+writable region, so a region must be frozen before it can travel, operation 18
+takes it in `rdi` as the operation's own capability, and neither existing member
+admits that family. It belongs to `system.memory.Region` and to nothing else.
+
+**A family recognises a language type family; a row names one element type**
+(ADR-0097 §8b). Membership above is over *any* element type, because that is what
+decides which TOS Core values may occupy a capability position. What an
+*operation* accepts or produces is its own exact spelling, and every accepted row
+of either region family names `u8` and only `u8` (ADR-0085 §18). The two
+statements are about different things and neither introduces schema
+polymorphism.
 
 **Not "an interface admits a type".** A representation is a named member of a
 closed enumeration, chosen per interface by an accepted schema — never a
@@ -202,6 +220,8 @@ representation_of(I) = AsInterface       => the argument's type is exactly
                                             Capability(I)
 representation_of(I) = DmaRegionFamily   => the argument's type is DmaRegion<T>
                                             or DmaRegion<mut T>, any T
+representation_of(I) = RegionFamily      => the argument's type is Region<T>
+                                            or Region<mut T>, any T
 ```
 
 No other type is accepted in either case, and **there is no conversion in either
@@ -217,6 +237,7 @@ because for it the first form cannot exist:
 ```text
 representation = AsInterface       Import or Value, under §4.1's rules
 representation = DmaRegionFamily   Value only; Import is invalid
+representation = RegionFamily      Value only; Import is invalid
 ```
 
 An import is typed `TypeDef::Capability(interface)` and there is nowhere in
@@ -231,6 +252,12 @@ region is made out of two capabilities a process was granted, and a launcher
 could not mint one before the process exists, because the memory has not been
 charged and the assignment has not been claimed. The rule describes what was
 already true.
+
+**`system.memory.Region` is the same, for the same reason and one more.** No
+import can be a `Region<T>`; and an ordinary region is made out of a memory
+authority the process was granted, or arrives in a message — a launcher minting
+one before the process exists would be charging memory to a budget on behalf of
+a program that has not run.
 
 Such a declaration is refused **in source**, as
 `E1503_NONIMPORTABLE_CAPABILITY` at stage `effect`, carrying the `interface` the
@@ -273,6 +300,8 @@ such a module whole by its header.
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 | `endpoint_call_word` | `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
+| `endpoint_send_region` | `system.ipc.Endpoint` with `send`, then `system.memory.Region` with `none` | *(none)* | `i64` | 1 |
+| `endpoint_receive_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<Region<u8>, i64>` | 2 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `capability_release` | `system.ipc.Endpoint` with `none` | *(none)* | `i64` | 6 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
@@ -324,6 +353,75 @@ not a protocol this contract can carry: the nucleus copies exactly that many
 bytes, the bound of §3 applies to it, and no value larger than 256 can be stated
 at all. These two rows give a number somewhere honest to travel and leave
 `length` meaning what §5 rows 1, 3 and 4 say it means.
+
+`endpoint_send_region` moves one **immutable ordinary region** through the
+message's region area, and `endpoint_receive_region` produces what arrived.
+
+**A different area from a carried capability, and that is the whole distinction.**
+Capabilities travel at `MESSAGE_CAPABILITIES`, with their own count register and a
+bound of four; regions travel at `MESSAGE_REGIONS`, with their own count register
+and a bound of two (`IPC_V1` §3, §5, ADR-0058). `endpoint_send_carrying` writes
+the first area and `endpoint_send_region` the second; neither is the other, and a
+capability crossing is not a payload crossing.
+
+**The region comes second and declares `none`**, which is `endow_for_launch`'s
+rule and for its reason: §4.1 makes the first requirement the declaring
+interface, so the endpoint is first, and what is required of the region is that
+the sender *hold* it — resolving it proves that.
+
+**The transfer is linear, and this is the one row of this schema whose success
+takes something from its caller.** `Region<T>` is Transferable into exactly one
+task (`IPC_V1` §5, ADR-0037), so a successful send takes the sender's handle *and*
+its mappings atomically (ADR-0075 §5a). After it the sender holds nothing: a later
+indexed access through that region is refused rather than reading memory it no
+longer owns. A `Region<mut u8>` may not be sent at all and there is no row that
+sends one.
+
+**`endpoint_receive_region` is its own row and does not extend
+`system.ipc.ReceivedCall`** (ADR-0097 §8c). That record is what the
+capability-transfer and publication surfaces read, and its four fields matched by
+position are part of what those boots already prove; a fifth field would change
+the record all of them carry in order to serve a message shape none of them has.
+
+**It fails closed and carries no envelope.** A message with nothing in the first
+region slot, or one whose reported window is not a usable extent, is a refusal —
+`E_NO_CAPABILITY` — and not an empty region. It exposes one region and nothing
+else: no count, no iteration, no second slot, no payload, no capability and no
+reply. A protocol needing two regions in one message is a later decision.
+
+### `system.memory.Region`
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `region_freeze` | `system.memory.Region` with `write` | *(none)* | `Result<Region<u8>, i64>` | 18 |
+| `capability_release` | `system.memory.Region` with `none` | *(none)* | `i64` | 6 |
+
+**This interface exists because one operation cannot avoid a capability
+position** (ADR-0097 §2c). `IPC_V1` §5 forbids sending a writable region at all,
+so a region must become immutable before it can travel; operation 18 takes the
+region in `rdi` as the operation's own capability; and §4.1 makes that parameter's
+declared type the interface's path. There is nowhere else for it to go.
+
+`region_freeze` is the consuming mutable-to-immutable transition (ADR-0075 §3).
+The caller's window becomes read-only in place — same address, same backing, still
+not executable — the handle presented goes stale, and the result is a new handle to
+the same region carrying `read | share`. Base and length do not change and are not
+reported again.
+
+**It requires `write` and not `read`**, which is the one thing about it that had to
+be decided rather than described: freezing is a change to the object, and a holder
+that could only read it has no business ending everybody else's ability to write.
+
+`capability_release` retires the region's mapping as well as its handle
+(ADR-0085 §8a). That is why a released region cannot be *indexed* afterwards, not
+merely why its next operation fails: an indexed access is served from the host's
+mapping table and never reaches the nucleus, so both stale paths have to close and
+they close differently.
+
+**No writable region crosses anything, and no DMA region crosses this.**
+`Region<mut T>` is neither shareable nor transferable and `DmaRegion` is neither in
+either mode (ADR-0037), so this interface declares no operation that sends one and
+`platform.dma.Region` declares none either.
 
 ### `system.ipc.Reply`
 
@@ -383,6 +481,26 @@ decided rather than described:
 | `endow_for_launch` | `system.memory.Authority` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 | `capability_attenuate_scoped` | `system.memory.Authority` with `spend` | `bytes: u64` | `Result<system.memory.Authority, i64>` | 16 |
 | `capability_release` | `system.memory.Authority` with `none` | *(none)* | `i64` | 6 |
+| `region_allocate` | `system.memory.Authority` with `spend` | `bytes: size` | `Result<Region<mut u8>, i64>` | 17 |
+
+`region_allocate` is the one operation of this schema that originates an
+**ordinary** region (ADR-0097). It is declared here, on the authority, for the
+reason `dma_region_allocate` is declared on the assignment: the capability that
+pays is the capability the operation is reached through, and there is no region to
+reach it through yet.
+
+`docs/42` §2 admits a `Region<T>` grant **only** through an operation whose
+accepted interface declares seven things about it, so they are declared here.
+
+| Fact | `region_allocate` |
+|---|---|
+| element type | `u8`, and only `u8` (ADR-0085 §18, ADR-0097 §8b). The result type says it, and no operation of any accepted schema produces or carries an ordinary region of another element type |
+| alignment | the region begins at a frame boundary, because operation 17 charges and maps whole frames. One base plus an offset is one address inside it |
+| access | read and write, which is what `mut` in `Region<mut u8>` says. `region_freeze` is how it becomes read-only, and there is no other access mode |
+| size | the whole frames covering `bytes` — **at least** what was asked for, and exactly what the holder may reach. A grant narrower than the extent it hands out would be a contract that lies about what its holder can reach. `bytes` of zero, or more than the budget can serve, is `E_BAD_ARGUMENT`; more than *this* budget can pay for is `E_LIMIT` |
+| DMA domain | **none, and that is the difference from `dma_region_allocate`.** No device can reach this memory: it is charged to a memory authority and to no assigned function, there is no parameter through which to name one, and no operation makes one device-visible afterwards |
+| lifetime | from the successful allocation until a successful `capability_release`, or the death of the holding process. A frozen region's lifetime is the same object's — freezing advances the handle, not the lifetime |
+| transfer/share rules | `Region<mut u8>` is **neither** transferable nor shareable; `Region<u8>` is Transferable into exactly one task and shareable by `region_share` (`IPC_V1` §5, ADR-0037). So the only form that crosses a message is the immutable one, and it crosses **linearly**: the sender loses the handle and its mappings atomically (ADR-0075 §5a) |
 
 ### `system.process.LaunchPlanBuilder` and `system.process.LaunchPlan`
 
@@ -777,10 +895,30 @@ ABI alone that a handle it still holds has gone.
 sealed plan and leaves it whole, which is what makes a restart the same decision
 rather than a second one.
 
-**Regions.** No operation of this version takes or returns a region.
-`docs/42` §2 requires a region grant to originate through an operation whose
-interface declares element type, alignment, access, size, DMA domain, lifetime
-and transfer rules; none is declared here, so none originates here.
+**Regions.** Since ADR-0097 this version has one operation that **originates** an
+ordinary region grant — `region_allocate`, whose seven `docs/42` §2 facts are
+declared beside it — and two more that return a region without originating one.
+This paragraph said no operation of this version took or returned a region until
+2026-09-23.
+
+**Returning a region and originating a grant are different**, and which is which
+is a statement this contract makes rather than something a reader infers:
+
+- Not a grant origin: `region_freeze` — it **re-issues** a grant that already
+  exists. The object, its backing, its base and its length are unchanged
+  (`SYSTEM_ABI_V1` §5 row 18); what changes is the access mode and the handle.
+  Nothing is charged, nothing is allocated, and the seven facts are the ones
+  `region_allocate` already declared for that same region.
+- Not a grant origin: `endpoint_receive_region` — it **delivers** a grant
+  somebody else originated. The sender lost it (`IPC_V1` §5's linear case) and
+  the receiver's handle names the same object at the same extent; the nucleus
+  chooses an address in the receiver's address space and charges nothing. An
+  operation that declared its own seven facts here would be declaring an extent
+  it did not decide.
+
+A gate reads those two lines and requires every other region-returning row to
+carry its own facts table, so a later operation cannot originate a grant on an
+earlier one's declaration.
 
 ## 9. Provenance and source maps
 

@@ -1,0 +1,246 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A region crosses IPC between two canonical textual processes, for the first
+// time (ADR-0097 §9).
+//
+// This process is the sender. It allocates an ordinary region out of the memory
+// authority it was granted, writes a pattern into it, freezes it, sends it to a
+// child through the region area of one message, and then proves that it no
+// longer has it.
+//
+//   region_allocate  -> Region<mut u8>, mapped writable, charged to `memory`
+//   region[i] = ...  -> a pattern the reader can check every byte of
+//   region_freeze    -> Region<u8>, the same backing, read-only in place
+//   endpoint_send_region -> MESSAGE_REGIONS[0], and the handle is gone
+//
+// **The last step is the one worth having.** `IPC_V1` §5 makes `Region<T>`
+// Transferable into exactly one task, so a successful send takes this process's
+// handle *and* its mappings atomically (ADR-0075 §5a). What this module does
+// afterwards is try to use it, and the attempt must fail — otherwise "linear"
+// would be a word rather than a property.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as channel_full;
+import capability system.ipc.Endpoint as channel_send;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 12,
+    imports: 12
+]
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [memory];
+
+extern fn region_freeze(
+    cap: system.memory.Region
+) -> Result<Region<u8>, i64> uses [system.memory.Region];
+
+extern fn endpoint_send_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region
+) -> i64 uses [channel_send, system.memory.Region];
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+// The same operation on a region, which is how this module asks whether it still
+// holds one. A status, not a trap: `capability_release` goes to the nucleus, and
+// a handle that no longer resolves is refused there with a number this module can
+// read (`SYSTEM_ABI_V1` §4).
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+const OK: i64 = 0i64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_SPEND: u64 = 128u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+const CHILD_GRANT: u64 = 8388608u64;
+
+// One frame, which is what operation 17 charges and maps at minimum.
+const REGION_BYTES: size = 4096B;
+// The pattern, and the reader checks every byte of it. `i` is the index and the
+// byte is `i * 7 + 11` modulo 256 — not a constant, so a reader that compared
+// one byte would not be checking the rest, and not the index either, so an
+// off-by-one in either direction changes what it finds.
+const STRIDE: u64 = 7u64;
+const OFFSET: u64 = 11u64;
+const WRAP: u64 = 256u64;
+// How many bytes of it are written and checked.
+const PATTERNED: size = 512B;
+const PATTERNED_COUNT: u64 = 512u64;
+
+fn expected(at: u64) -> u64 {
+    return (at * STRIDE + OFFSET) % WRAP;
+}
+
+// The same value as the byte it is written as. `docs/40` §3 fixes the conversion
+// set at `to_i8`..`to_u64` and admits no `as` between integer widths, so a value
+// that has to become a `u8` is converted rather than cast — and a value outside
+// the width is a refusal rather than a truncation.
+fn expected_byte(at: u64) -> u8 {
+    match (to_u8(expected(at))) {
+        Ok(byte) => { return byte; }
+        Err(unconvertible) => { return 0u8; }
+    }
+}
+
+// The child's plan. **The import is named through this function's own `uses`**
+// rather than passed in as a parameter: an `import capability` binding is not an
+// ordinary value a TOS Core function takes, which is the shape every launcher in
+// this tree already has.
+fn child_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, channel_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(channel_full, builder, RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-1001i64);
+            }
+            // The child needs no authority of its own to *read* what it is sent:
+            // the region arrives mapped, and its extent is the sender's decision.
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 1200i64); }
+    }
+}
+
+//   1  the region was allocated
+//   2  the pattern was written and read back through the writable handle
+//   4  it froze
+//   8  the child was created
+//  16  the send succeeded
+//  32  **and the handle no longer resolves in this process's table** — releasing
+//      it is refused, because a successful linear transfer took it
+//      (`IPC_V1` §5). The host's own mapping went with it (ADR-0075 §5a), and
+//      that half is proved by `region-transfer-text.sh`'s second boot, where an
+//      indexed read after the send traps instead of answering
+pub fn main() -> i64
+    uses [process, memory, channel_full, channel_send, system.ipc.Endpoint,
+          system.memory.Region]
+{
+    let mut found: i64 = 0i64;
+
+    match (region_allocate(memory, REGION_BYTES)) {
+        Ok(region) => {
+            found = found + 1i64;
+            if (write_pattern(borrow mut region) != PATTERNED_COUNT) { return -20i64; }
+            if (read_pattern(borrow region) != PATTERNED_COUNT) { return -21i64; }
+            found = found + 2i64;
+
+            match (region_freeze(region)) {
+                Ok(frozen) => {
+                    found = found + 4i64;
+                    match (child_plan()) {
+                        Ok(plan) => {
+                            // The receiving name goes to the child, so this
+                            // process lets go of its own: `IPC_V1` §2 admits one
+                            // holder of `receive`.
+                            if (capability_release(channel_full) != OK) {
+                                return -30i64;
+                            }
+                            match (process_create_funded(
+                                process, memory, plan, "system/client/reader.tos",
+                                CHILD_GRANT, NO_SELF_RIGHTS
+                            )) {
+                                Ok(child) => {
+                                    found = found + 8i64;
+                                    if (endpoint_send_region(channel_send, frozen) != OK) {
+                                        return -40i64;
+                                    }
+                                    found = found + 16i64;
+                                    // **And it is not ours any more.** The
+                                    // nucleus took the handle with the message,
+                                    // so releasing it is refused — which is a
+                                    // status this module can read, unlike an
+                                    // indexed access, which never reaches the
+                                    // nucleus at all.
+                                    if (capability_release(frozen) != OK) {
+                                        found = found + 32i64;
+                                    }
+                                    return found;
+                                }
+                                Err(uncreated) => { return uncreated - 5000i64; }
+                            }
+                        }
+                        Err(refused) => { return refused; }
+                    }
+                }
+                Err(unfrozen) => { return unfrozen - 200i64; }
+            }
+        }
+        Err(unallocated) => { return unallocated - 100i64; }
+    }
+}
+
+// The pattern, written one byte at a time, and how many bytes were written.
+fn write_pattern(borrow mut region: Region<mut u8>) -> u64 {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    while (at < PATTERNED) {
+        region[at] = expected_byte(index);
+        at = at + 1B;
+        index = index + 1u64;
+    }
+    return index;
+}
+
+// And read back through the writable handle, so that a later failure is about the
+// transfer rather than about the write.
+fn read_pattern(borrow region: Region<mut u8>) -> u64 {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    let mut agreed: u64 = 0u64;
+    while (at < PATTERNED) {
+        if ((region[at] as u64) == expected(index)) {
+            agreed = agreed + 1u64;
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+    return agreed;
+}

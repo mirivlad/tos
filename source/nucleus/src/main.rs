@@ -36,6 +36,7 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-capability-transfer") as usize
     + cfg!(feature = "test-name-service") as usize
     + cfg!(feature = "test-block-service") as usize
+    + cfg!(feature = "test-region-transfer-text") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1851,6 +1852,47 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             },
         ]
     };
+    // ADR-0097: a region crosses IPC between two canonical textual processes. The
+    // endowment is a memory authority to make one out of and **one endpoint under
+    // two names**, which is the same arrangement `test-capability-transfer` uses
+    // and for the same reason: `IPC_V1` §2 allows one holder of `receive`, so the
+    // boot process endows its child with the receiving name and keeps the sending
+    // one. No device, no bus, no window.
+    #[cfg(feature = "test-region-transfer-text")]
+    let first_endowment = {
+        let Some(channel) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            // The receiving name, which the boot process endows to its child and
+            // then releases — a creator cannot hand on a `receive` it is still
+            // holding.
+            capability::Endowment::Existing {
+                binding: binding(b"channel_full"),
+                object: capability::Object::Endpoint(channel),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            // And the sending name it keeps, which is how the region travels.
+            // **`send` and not `call`**: a region goes in a message, and a call
+            // would make the sender wait for an answer it has no use for.
+            capability::Endowment::Existing {
+                binding: binding(b"channel_send"),
+                object: capability::Object::Endpoint(channel),
+                rights: tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+        ]
+    };
     #[cfg(feature = "test-capability-transfer")]
     let first_endowment = {
         let (Some(inbox), Some(channel)) = (ipc::create(), ipc::create()) else {
@@ -2118,6 +2160,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-capability-transfer",
         feature = "test-name-service",
         feature = "test-block-service",
+        feature = "test-region-transfer-text",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-bundle-launch",

@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The reader: a process that holds one receiving name and nothing else, and reads
+// the bytes it is sent.
+//
+// It has no memory authority, so it could not have made a region of its own; it
+// has no PCI bus, no window, no interrupt source and no DMA region. What it
+// indexes arrived in a message, mapped by the nucleus at an address the nucleus
+// chose in this address space (ADR-0058's `MessageRegion`), and this module never
+// learns that address — it indexes a capability and the host does the arithmetic.
+//
+// **Every byte is checked.** The pattern is `i * 7 + 11` modulo 256, so a reader
+// that compared one byte, or that was off by one in either direction, would not
+// find it. The count it reports is how many bytes agreed, and the gate requires
+// all 512.
+
+module system.client.reader version 1.5 profile full;
+
+import capability system.ipc.Endpoint as inbox;
+
+resource [
+    fuel: 262144,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+const STRIDE: u64 = 7u64;
+const OFFSET: u64 = 11u64;
+const WRAP: u64 = 256u64;
+const PATTERNED: size = 512B;
+const PATTERNED_COUNT: u64 = 512u64;
+
+fn expected(at: u64) -> u64 {
+    return (at * STRIDE + OFFSET) % WRAP;
+}
+
+// How many of the first 512 bytes are the pattern.
+//
+// **Counted rather than asserted**, and counted in canonical text: the number
+// this returns is the number the gate reads, so a byte the device or the transport
+// got wrong lowers it and the gate fails. Nothing outside this module inspects
+// the bytes.
+fn agreeing(borrow region: Region<u8>) -> u64 {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    let mut agreed: u64 = 0u64;
+    while (at < PATTERNED) {
+        if ((region[at] as u64) == expected(index)) {
+            agreed = agreed + 1u64;
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+    return agreed;
+}
+
+// 512 — every byte of the pattern, read out of a region this process was handed
+// and could not have made.
+pub fn main() -> i64 uses [inbox, system.memory.Region] {
+    match (endpoint_receive_region(inbox)) {
+        Ok(region) => {
+            match (to_i64(agreeing(borrow region))) {
+                Ok(agreed) => { return agreed; }
+                Err(unconvertible) => { return -1i64; }
+            }
+        }
+        Err(refused) => { return refused - 1000i64; }
+    }
+}

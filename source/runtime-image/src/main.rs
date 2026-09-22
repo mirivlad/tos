@@ -120,12 +120,8 @@ const REGION_ALLOCATE: u64 = 17;
     feature = "test-build-topology"
 ))]
 const REGION_SHARE: u64 = 7;
-#[cfg(any(
-    feature = "test-memory-authority",
-    feature = "test-region-transport",
-    feature = "test-bundle-launch",
-    feature = "test-build-topology"
-))]
+// Performed by the typed bridge since ADR-0097, so it is no longer gated behind
+// the Rust evidence workloads that were its only callers.
 const REGION_FREEZE: u64 = 18;
 
 /// Statuses, as `SYSTEM_ABI_V1` §4 assigns them. Named here because this image
@@ -1207,6 +1203,32 @@ enum Produced {
     /// the length is the one its protocol requires, is `IPC_V1` §1's division:
     /// the primitive carries bytes, and request/reply lives above it.
     Answer,
+    /// `Result<Region<mut u8>, i64>`: an ordinary region operation 17 made, and
+    /// the window it wrote to `REGION_ALLOCATE_RECORD` (ADR-0097).
+    ///
+    /// **The second `Produced` that teaches this bridge an address**, and for the
+    /// same reason as `Mapping`: a module receives a capability and nothing else,
+    /// and what is recorded here is how a later indexed access on that capability
+    /// becomes a load. The region is charged to the authority the call was reached
+    /// through and is reachable by no device.
+    RegionGrant,
+    /// `Result<Region<u8>, i64>`: the immutable form operation 18 returns.
+    ///
+    /// **Base and length do not change and are not reported again**
+    /// (`SYSTEM_ABI_V1` §5 row 18), so the window is not read from the argument
+    /// region — it is the one this process already holds under the stale handle,
+    /// re-filed under the new one as read-only, and the stale entry retired. Two
+    /// handles for one window would leave the old one able to write it.
+    FrozenRegion,
+    /// `Result<Region<u8>, i64>`: the region a message carried, out of this
+    /// process's own `MESSAGE_REGIONS` area (ADR-0097 §8c).
+    ///
+    /// **It fails closed.** The nucleus writes the receiver's own handle, the
+    /// address it chose in this address space and the charged and mapped length;
+    /// a message that carried no region leaves the slot zeroed. A zero handle or
+    /// an unusable extent is `E_NO_CAPABILITY` and not an empty region, because a
+    /// region of no bytes is a thing a protocol could mistake for one of some.
+    ReceivedRegion,
     /// `Result<system.process.ChildEnding, i64>`: the record operation 14 wrote
     /// at `WAIT_CHILD_RECORD`, as the value it describes.
     ///
@@ -1234,6 +1256,23 @@ enum Placed {
     /// In slot `index` of this process's own outgoing transfer table, with the
     /// count the row's own `Slot::Fixed` puts in the count register.
     Transfer(usize),
+    /// In slot `index` of this process's own outgoing **region** table, with the
+    /// region count in the register the row's own `Slot::Fixed` names
+    /// (ADR-0097).
+    ///
+    /// **A different area from `Transfer`, and not a variant of it.** Capabilities
+    /// sit at `MESSAGE_CAPABILITIES` with their own count and a bound of four;
+    /// regions sit at `MESSAGE_REGIONS` with their own count and a bound of two
+    /// (`IPC_V1` §3, §5, ADR-0058). Only the handle is written: the base and
+    /// length a sender might fill in are its own address and mean nothing in
+    /// another address space, so the nucleus ignores them.
+    ///
+    /// **The transfer is linear.** A successful send takes the sender's handle
+    /// *and* its mappings (ADR-0075 §5a), so this host retires its own mapping
+    /// entry for the region when the send succeeds — otherwise an indexed access
+    /// afterwards would be served from a table entry naming memory this process
+    /// no longer owns, and never reach the nucleus to be refused.
+    Region(usize),
 }
 
 struct Performed {
@@ -1318,6 +1357,29 @@ const PERFORMED: &[Performed] = &[
         capabilities: &[Placed::Transfer(0), Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi), Slot::Fixed(Reg::R10, 1)],
         result: Produced::Status,
+    },
+    // A send that moves one immutable ordinary region through the message's
+    // **region** area. `Placed::Region(0)` writes `MESSAGE_REGIONS[0]` and the
+    // fixed `1` is the region count `SYSTEM_ABI_V1` §5 row 1 puts in `r8` — a
+    // different register from the capability count in `r10`, because they are
+    // different areas with different bounds.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_send_region",
+        operation: ENDPOINT_SEND,
+        capabilities: &[Placed::Register(Reg::Rdi), Placed::Region(0)],
+        values: &[Slot::Fixed(Reg::Rsi, 0), Slot::Fixed(Reg::R8, 1)],
+        result: Produced::Status,
+    },
+    // And the receive that produces it. The same selector as `endpoint_receive`,
+    // and its own row rather than a field on `ReceivedCall` (ADR-0097 §8c).
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_receive_region",
+        operation: ENDPOINT_RECEIVE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::ReceivedRegion,
     },
     Performed {
         interface: "system.ipc.Endpoint",
@@ -1442,6 +1504,39 @@ const PERFORMED: &[Performed] = &[
     // since ADR-0078 may be one an operation produced: a child's authority, or a
     // scoped budget. Nothing about the ABI row changed — `rdi` is the capability
     // and `rsi` is the rights mask — only where the capability may come from.
+    // The one operation of this schema that originates an ordinary region.
+    // `rsi` is the byte count, and the window comes back at
+    // `REGION_ALLOCATE_RECORD` for this host to file (ADR-0097).
+    Performed {
+        interface: "system.memory.Authority",
+        name: "region_allocate",
+        operation: REGION_ALLOCATE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::RegionGrant,
+    },
+    // The consuming mutable-to-immutable transition. The handle presented goes
+    // stale and `rdx` returns a new one to the same region; base and length do
+    // not change and are not reported again.
+    Performed {
+        interface: "system.memory.Region",
+        name: "region_freeze",
+        operation: REGION_FREEZE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::FrozenRegion,
+    },
+    // And a region's release, which retires its mapping as well as its handle
+    // (ADR-0085 §8a) — the generic `capability_release` handling below does that
+    // for every interface that declares this row.
+    Performed {
+        interface: "system.memory.Region",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::Status,
+    },
     Performed {
         interface: "system.memory.Authority",
         name: "capability_attenuate_scoped",
@@ -2235,6 +2330,12 @@ impl System for Endowment<'_> {
                 Placed::Transfer(index) => unsafe {
                     set_transferred(self.arguments, *index, held.get())
                 },
+                // SAFETY: the region area is at the offset ADR-0058 fixes in this
+                // process's own argument region, and the index is a constant of
+                // the row, inside the contract's maximum of two.
+                Placed::Region(index) => unsafe {
+                    set_region_handle(self.arguments, *index, held.get())
+                },
             }
         }
         // A `Fixed` slot takes no argument: it is the row's own constant, so
@@ -2353,6 +2454,17 @@ impl System for Endowment<'_> {
                 }
             }
         }
+        // **Which region this row is giving away, if it is giving one away.** Read
+        // before the call, because after a successful one the handle is the
+        // sender's no longer and there is nothing left to look it up by.
+        let transferred_region = performed
+            .capabilities
+            .iter()
+            .zip(call.arguments.iter())
+            .find_map(|(placement, argument)| match (placement, argument) {
+                (Placed::Region(_), Value::Capability(held)) => Some(held.get()),
+                _ => None,
+            });
         // SAFETY: `operation` is one of the assigned numbers in the table above,
         // and every register it reads has been written from the arguments the
         // schema declares for it.
@@ -2405,6 +2517,18 @@ impl System for Endowment<'_> {
         // **A failed release leaves the entry intact**, because the object did
         // not end and the mapping is still this process's — which is why this
         // reads `status` rather than assuming the call did what it was asked.
+        // **A successful linear transfer takes the sender's mapping too**
+        // (`IPC_V1` §5, ADR-0075 §5a). The nucleus took the handle; this retires
+        // the window filed under it, because an indexed access is served from that
+        // table and never reaches the nucleus — so without this the sender could
+        // still read memory it has given away, and the refusal would depend on a
+        // fault rather than on the contract.
+        //
+        // **A failed send changes nothing**, which is why this reads `status`: if
+        // the message did not go, the region is still the sender's.
+        if let (Some(region), OK) = (transferred_region, status) {
+            self.mappings.retire(region);
+        }
         if performed.name == "capability_release" && status == OK {
             // Its capability is the one it acts through, so it is in a
             // register: a release delegates nothing and has no transfer slot.
@@ -2508,6 +2632,99 @@ impl System for Endowment<'_> {
                     // the receiver's check to make and is why both are here.
                     Value::Int(IntKind::U64, u128::from(word) as i128),
                 ])
+            }
+            Produced::RegionGrant => {
+                // SAFETY: the nucleus wrote the window at the fixed offset of this
+                // process's own argument region, and only on success — which is
+                // the branch this is.
+                let record = unsafe {
+                    core::ptr::with_exposed_provenance::<tos_launch::RegionAllocateRecord>(
+                        (self.arguments + tos_launch::REGION_ALLOCATE_RECORD) as usize,
+                    )
+                    .read_unaligned()
+                };
+                // An ordinary region is mapped writable and not executable
+                // (`SYSTEM_ABI_V1` §5 row 17), so the mapping is filed as
+                // writable and `region_freeze` is what makes it otherwise.
+                let window = tos_launch::MmioMapRecord {
+                    base: record.base,
+                    length: record.length,
+                };
+                if !self.remember(value, window, true) {
+                    return Err(Trap::new(
+                        "RUNTIME_REGION_REFUSED",
+                        alloc::string::String::from(
+                            "more mapped regions than this process may hold",
+                        ),
+                        0,
+                    ));
+                }
+                Value::Capability(Handle::new(value))
+            }
+            Produced::FrozenRegion => {
+                // The stale handle is the one the call was reached through, which
+                // is this row's only capability and therefore `rdi`.
+                let stale = registers[Reg::Rdi as usize];
+                let Some(held) = self.mappings.mapping(stale) else {
+                    // The nucleus froze a region this host holds no window for,
+                    // which is a disagreement between the two halves of one
+                    // handoff rather than something a module could have handled.
+                    return Err(Trap::new(
+                        "RUNTIME_REGION_UNMAPPED",
+                        alloc::string::String::from(
+                            "a region was frozen that this process had no mapping for",
+                        ),
+                        0,
+                    ));
+                };
+                let window = tos_launch::MmioMapRecord {
+                    base: held.base,
+                    length: held.length,
+                };
+                // Retired first, so that the same window is never filed twice —
+                // once writable under the stale handle and once read-only under
+                // the new one would leave the stale name able to write it.
+                self.mappings.retire(stale);
+                if !self.remember(value, window, false) {
+                    return Err(Trap::new(
+                        "RUNTIME_REGION_REFUSED",
+                        alloc::string::String::from("no room to re-file a frozen region's window"),
+                        0,
+                    ));
+                }
+                Value::Capability(Handle::new(value))
+            }
+            Produced::ReceivedRegion => {
+                // SAFETY: the region area is at the offset ADR-0058 fixes in this
+                // process's own argument region, and slot zero is inside the
+                // contract's maximum.
+                let arrived = unsafe { region_handed_over(self.arguments, 0) };
+                // **Fail closed** (ADR-0097 §8c). A message that carried no region
+                // leaves the slot zeroed, and an extent of no bytes is not a
+                // region a protocol may be handed: both are refusals, and neither
+                // is an empty region somebody might index.
+                if arrived.handle == 0 || arrived.base == 0 || arrived.length == 0 {
+                    return Ok(Value::Variant {
+                        index: 1,
+                        payload: alloc::vec![Value::Int(IntKind::I64, E_NO_CAPABILITY.into())],
+                    });
+                }
+                let window = tos_launch::MmioMapRecord {
+                    base: arrived.base,
+                    length: arrived.length,
+                };
+                // Read-only: what crosses a message is the immutable form, and
+                // `IPC_V1` §5 admits no other.
+                if !self.remember(arrived.handle, window, false) {
+                    return Err(Trap::new(
+                        "RUNTIME_REGION_REFUSED",
+                        alloc::string::String::from(
+                            "more mapped regions than this process may hold",
+                        ),
+                        0,
+                    ));
+                }
+                Value::Capability(Handle::new(arrived.handle))
             }
             Produced::ChildEnding => {
                 // SAFETY: as above, for the record operation 14 writes at its
@@ -3457,7 +3674,6 @@ fn region_table_full(report: &mut Report, parent: u64) {
 ///
 /// SAFETY: `area` is this process's argument region and `index` is inside the
 /// contract's maximum.
-#[cfg(any(feature = "test-region-transport", feature = "test-build-topology"))]
 // SAFETY: the caller names its own region and an index the contract admits.
 unsafe fn set_region_handle(area: u64, index: usize, handle: u64) {
     // SAFETY: per the caller's contract; the offset is the one `IPC_V1` fixes.
@@ -3480,7 +3696,6 @@ unsafe fn set_region_handle(area: u64, index: usize, handle: u64) {
 /// # Safety
 ///
 /// As [`set_region_handle`].
-#[cfg(any(feature = "test-region-transport", feature = "test-build-topology"))]
 // SAFETY: as above.
 unsafe fn region_handed_over(area: u64, index: usize) -> tos_launch::MessageRegion {
     // SAFETY: per the caller's contract.

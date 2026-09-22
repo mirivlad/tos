@@ -473,6 +473,16 @@ qemu_name_service() {
 qemu_publication_authority() {
     bash "$ROOT/source/host-tools/qemu-test/publication-authority.sh"
 }
+# ADR-0097's conformance gate: an ordinary immutable `Region<u8>` crosses IPC
+# between two canonical textual processes and every byte of it arrives, counted in
+# canonical text. **It is also the third condition `stage4_data_path_claims` reads**
+# — the one that had to be a gate rather than a declaration, because evidence
+# follows a passing gate here and never precedes one. Its three negatives are
+# separate boots: a writable region refused by the transport, an ordinary region
+# refused at a DMA capability position, and a 1.4 module refused against minor 5.
+region_ipc_payload() {
+    bash "$ROOT/source/host-tools/qemu-test/region-transfer-text.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -701,6 +711,7 @@ gate qemu       full-only "QEMU a textual driver writes a real sector"     qemu_
 gate qemu       full-only "QEMU a capability crosses in a message"      qemu_capability_transfer
 gate qemu       full-only "QEMU a client looks a service up"            qemu_name_service
 gate qemu       full-only "QEMU publishing needs the publish endpoint" qemu_publication_authority
+gate qemu       full-only "QEMU a region payload crosses IPC"    region_ipc_payload
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

@@ -2,11 +2,15 @@
 
 # ADR-0097: The textual surface by which an ordinary `Region<T>` crosses IPC
 
-- Status: **Proposed** (awaiting Project Architect decision, raised 2026-09-23).
-  **It blocks the Stage 4D data-path slice**, which cannot be implemented without
-  it: §2 is the proof rather than an opinion
-- Date: 2026-09-23
-- Decision level: **3**, and that is the finding. `SYSTEM_INTERFACE_V1` §4.3's
+- Status: **Accepted (option R-A)** (Project Architect-approved, 2026-09-23), with
+  the three clarifications of §8: the family is named `RegionFamily`, the
+  `any element type` / `u8 only` distinction is settled, and §3's row 4 is
+  resolved to a **separate** receive surface rather than a field on
+  `system.ipc.ReceivedCall`
+- Project Architect approval: 2026-09-23, on §6.1 with §8's clarifications —
+  granted after §2's proof was established and before any of it was implemented
+- Date: 2026-09-23, accepted 2026-09-23
+- Decision level: **3**, and that was the finding that raised it. `SYSTEM_INTERFACE_V1` §4.3's
   representation enumeration is closed, and the document states that "**adding a
   member is a decision of ADR-0085's weight**". ADR-0085 is Level 3,
   Project Architect-approved, TOS Core 1.3. By ADR-0085 §13's own test — a
@@ -20,7 +24,7 @@
   `docs/42` §2 (the seven grant facts a region-originating operation declares);
   `docs/40` §3; `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1, §2
 
-## 0. What this is for, and why it is raised rather than implemented
+## 0. What this is for, and why it was raised before it was implemented
 
 The Project Architect directed that the next Stage 4 target be the real data
 path — 512 bytes of one sector crossing the client/service boundary through the
@@ -34,9 +38,13 @@ surface.** The transport is complete and has been since Stage 3:
 exist, and cannot be added without a decision of this weight, is the way a
 *canonical textual* module names one. §2 is why.
 
-This ADR is therefore written instead of the slice. Nothing was implemented, no
-accepted contract was edited, and the schema, the ABI, the nucleus, the verifier
-and the launch machinery are untouched.
+This ADR was therefore written instead of the slice, and **accepted the same day
+on the strength of §2**. The reasons the Project Architect recorded in accepting
+it are exactly §1 and §2: the transport exists, `Region<T>` and `Region<mut T>`
+exist and are indexable, operation 18 necessarily takes the region in a capability
+position, neither existing representation admits that family, sharing
+`DmaRegionFamily` would violate §4.3's cardinality rule 1 — and therefore the
+closed enumeration must gain one member.
 
 ## 1. What already exists, so that the gap is small and exact
 
@@ -203,14 +211,105 @@ itself" — and this copies it through the nucleus twice per 256 bytes. It would
 prove that bytes can cross, and it would prove the wrong mechanism. Recorded so
 that its rejection is on the record rather than assumed.
 
-## 7. Recommendation
+## 7. The recommendation, and what was accepted
 
-**R-A**, as a recommendation and not a decision. R-C would produce a green gate
-and a false claim, which this project has just spent three rounds removing; R-B is
-honest but leaves the Stage 4 identity question open on the term the stage is named
-for. R-A is the accepted mechanism, and its cost is a decision the Project
-Architect has priced before.
+**R-A was recommended and R-A is accepted.** R-C would have produced a green gate
+and a false claim, which this project spent three rounds removing; R-B is honest
+but leaves the Stage 4 identity question open on the term the stage is named for.
 
-**What should not happen is R-A being taken quietly.** A new member of that
-enumeration is exactly what ADR-0085 built a gate around, and adding one as a
-convenience of a storage slice would be the failure that ADR forestalls.
+**It was not taken quietly, and that mattered.** A new member of that enumeration
+is exactly what ADR-0085 built a gate around, and adding one as a convenience of a
+storage slice would have been the failure that ADR forestalls. It is taken as a
+Level 3 decision with an approval date, a language minor, and the conformance
+obligations of §9.
+
+## 8. The clarifications the acceptance carries
+
+### 8a. The family is named `RegionFamily`
+
+```text
+capability_representation ::= AsInterface
+                            | DmaRegionFamily
+                            | RegionFamily
+```
+
+| Representation | The values that are it |
+|---|---|
+| `RegionFamily` | `TypeDef::Region(_)` or `TypeDef::RegionMut(_)`, any element type |
+
+**It belongs to `system.memory.Region` and to nothing else.** §4.3's cardinality
+rules are preserved unchanged and now bind three members rather than two: one
+family belongs to at most one interface; one interface has exactly one family; the
+association exists only in an accepted schema; no ordinary or program-defined
+nominal type can ever be a family; and absence still means `AsInterface`.
+
+### 8b. `any element type` and `u8 only` are two different statements
+
+They looked contradictory in §3 and they are not, so the distinction is fixed
+here:
+
+- **`RegionFamily` is a *language representation family*.** It recognises the
+  existing generic region type family, so its membership test is over
+  `TypeDef::Region(_)` and `TypeDef::RegionMut(_)` for **any** element type. That
+  is a fact about which TOS Core values may occupy a capability position of
+  `system.memory.Region`, and it mirrors `DmaRegionFamily` exactly.
+- **This ADR introduces schema operations only for `Region<u8>` and
+  `Region<mut u8>`.** Every row it authorises names `u8` and only `u8`, as
+  ADR-0085 §18 fixes for the DMA family and for the same reason: the result type
+  says it, and no operation of any accepted schema produces or carries a region of
+  another element type.
+- **It authorises no additional producer and no additional IPC row for another
+  element type.** One would be a separate decision, and adding one is not made
+  easier by this one.
+
+**This is not schema polymorphism**, and none is introduced. An operation's
+parameter and result types are exact spellings checked against the schema; the
+family decides which values may occupy a capability *position*, not what any
+operation accepts.
+
+### 8c. `system.ipc.ReceivedCall` is not modified
+
+§3's row 4 offered "the existing `system.ipc.ReceivedCall` gaining a region field,
+or a sibling record". **Resolved: a separate receive surface over ABI operation 2,
+and no field is added to `ReceivedCall`.**
+
+The reason is compatibility of meaning, not of code: `ReceivedCall` is the record
+the capability-transfer and publication surfaces read, and its artifact semantics
+— four fields, matched by position — are part of what those already-green boots
+prove. A fifth field would change the record every one of them carries in order to
+serve a message shape none of them has.
+
+So the new row is its own, over the same selector as `endpoint_receive`, and it
+produces the ordinary immutable region the nucleus placed in `MESSAGE_REGIONS`
+while registering the receiver-side mapping in the runtime bridge.
+
+**It fails closed and it carries no envelope.** A message with no region in the
+first region slot, or one whose reported window is not a usable extent, is a
+refusal and not a zero-length region. It exposes one region and nothing else: no
+count, no iteration, no second slot, no payload, no capability, no reply. **No
+general message-envelope API is introduced**, and a protocol needing more than one
+region in one message is a later decision.
+
+## 9. Conformance evidence this decision requires
+
+**Positive.** A canonical textual module allocates an ordinary region, writes it,
+freezes it, sends it through `MESSAGE_REGIONS` to another textual process, and the
+receiver indexes the bytes it was sent.
+
+**Negative, and each is a separate refusal:**
+
+1. an ordinary region is refused at an `AsInterface` capability position;
+2. a `DmaRegion` is refused at a `RegionFamily` position;
+3. an ordinary region is refused at a `DmaRegionFamily` position;
+4. a `Region<mut u8>` cannot cross IPC (`IPC_V1` §5), refused rather than
+   truncated to a copy;
+5. an immutable `Region<u8>` can;
+6. the sender loses an affine transferred region — its mappings included
+   (ADR-0075 §5a) — and the receiver obtains a mapped one;
+7. a module declaring an older language minor does not receive this
+   representation rule.
+
+**And the language minor moves last**, after the frontend's table, the verifier's
+own row, the bridge, the rows and every gate above exist — the order ADR-0085 and
+ADR-0086 each moved theirs in, and for the same reason: accepting a 1.5 module
+before then would be accepting one whose semantics were partly absent.

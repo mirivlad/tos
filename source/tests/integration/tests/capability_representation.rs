@@ -305,21 +305,21 @@ fn a_claim_the_function_really_declares_does_not_make_it_true() {
     );
 }
 
-/// §17.5 and §16.2 — a region, a device window and a scalar are not capability
-/// positions at all.
+/// §17.5 and §16.2 — a device window and a scalar are not capability positions at
+/// all.
 ///
 /// Retyping the same SSA value is what isolates the rule: the artifact is
 /// identical apart from one entry of the type table, so what is being refused
 /// is the *type* and not the shape of the instruction.
+///
+/// **`Region` and `RegionMut` left this list on 2026-09-23.** ADR-0097 made them
+/// `RegionFamily`, so they *are* a capability position now — of
+/// `system.memory.Region` and of nothing else. That they are refused at a
+/// `system.ipc.Endpoint` position is a different finding with a different code,
+/// and it is the case below.
 #[test]
 fn nothing_outside_a_representation_fills_a_capability_position() {
-    for outside in [
-        TypeDef::Region(0),
-        TypeDef::RegionMut(0),
-        TypeDef::MmioRegion,
-        TypeDef::MmioRegionMut,
-        TypeDef::Bool,
-    ] {
+    for outside in [TypeDef::MmioRegion, TypeDef::MmioRegionMut, TypeDef::Bool] {
         let mut module = lower(MODULE);
         let function = reaching(&module);
         let Operand::Value(value) = region_value(&module, function) else {
@@ -339,6 +339,45 @@ fn nothing_outside_a_representation_fills_a_capability_position() {
         assert_eq!(finding.code, "V2013_CAPABILITY", "{outside:?}");
         assert!(
             finding.detail.contains("not of any capability type"),
+            "{outside:?}: {finding:?}"
+        );
+    }
+}
+
+/// And an ordinary region at somebody else's capability position is refused for
+/// the reason a DMA region at one is: the family answers one interface, and it is
+/// not the one the instruction declares (ADR-0097 §8a, §4.3 rule 1).
+///
+/// **The other half of the two negatives ADR-0097 §9 asks for**, at the level the
+/// verifier decides them: `RegionFamily` does not answer for `AsInterface` and it
+/// does not answer for `DmaRegionFamily`.
+#[test]
+fn an_ordinary_region_does_not_fill_another_interfaces_position() {
+    for (outside, expected) in [
+        (TypeDef::Region(0), "system.memory.Region"),
+        (TypeDef::RegionMut(0), "system.memory.Region"),
+    ] {
+        let mut module = lower(MODULE);
+        let function = reaching(&module);
+        let Operand::Value(value) = region_value(&module, function) else {
+            unreachable!("the region parameter is an SSA value")
+        };
+        module.types.push(outside.clone());
+        let retyped = module.types.len() - 1;
+        module.functions[function].values[value] = retyped;
+        module.functions[function].signature.parameters[0].ty = retyped;
+        forge(
+            &mut module,
+            CapabilitySource::Value(Operand::Value(value)),
+            "system.ipc.Endpoint",
+            &["system.ipc.Endpoint"],
+        );
+        let finding = refuse(&module);
+        assert_eq!(finding.code, "V2013_CAPABILITY", "{outside:?}");
+        assert!(
+            finding.detail.contains(&format!(
+                "declares system.ipc.Endpoint and is performed through {expected}"
+            )),
             "{outside:?}: {finding:?}"
         );
     }
@@ -400,15 +439,15 @@ fn a_one_two_artifact_does_not_receive_the_representation_rule() {
 /// §16.11 — an implementation that does not admit a minor rejects the module
 /// **whole, by its header**, rather than part-way through a function.
 ///
-/// `1.3` is admitted now, and so is `1.4` since ADR-0086 — so the property is
-/// shown with the minor after those. What is being proved is that an
+/// `1.3` is admitted now, `1.4` since ADR-0086 and `1.5` since ADR-0097 — so the
+/// property is shown with the minor after those. What is being proved is that an
 /// unimplemented minor is refused before any of the body is read, not that any
 /// particular number is unimplemented, and this line moves each time the
 /// language gains one.
 #[test]
 fn an_unadmitted_minor_is_refused_by_the_header_alone() {
     let mut module = lower(MODULE);
-    module.header.language_version = String::from("1.5");
+    module.header.language_version = String::from("1.6");
     let finding = refuse(&module);
     assert_eq!(finding.code, "V2002_SCHEMA");
     assert_eq!(finding.location, "header.language_version");

@@ -342,24 +342,86 @@ requirements_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
 #
 # That document admits a `Region<T>`/`DmaRegion<T>` grant **only** through a
 # capability operation whose accepted interface declares seven things. Until an
-# operation originated one the requirement was met by there being nothing to
-# meet it for; one does now, so the seven are checked rather than trusted to
-# prose — and the check is over *every* region-returning operation, so a second
-# one cannot be added without them.
+# operation originated one the requirement was met by there being nothing to meet
+# it for; four rows now return a region type, so each is accounted for — and
+# **per operation**, which is the correction ADR-0097's round made.
+#
+# **Returning a region and originating a grant are not the same thing**, and the
+# first version of this check conflated them: it required the seven facts to exist
+# somewhere across both documents, so a new originating operation would have passed
+# on another operation's table. `region_freeze` re-issues a grant that already
+# exists and `endpoint_receive_region` delivers one somebody else originated;
+# neither charges memory and neither may invent an extent. So a document says which
+# of its region-returning rows originate and which do not, in a line this gate
+# reads, and every originating one carries its own `| Fact | <op> |` table.
 region_results=$( { sed -n '/^### /,/^## 4.1/p' "$DOC"; sed -n '/^### /,/^## 4.1/p' "$PLATFORM"; } |
     sed -n 's/^| `\([a-z_]*\)` |.*| `\([^`]*\)` | [0-9]* |$/\1 \2/p' |
     awk '$2 ~ /(^|[^A-Za-z.])(Region|DmaRegion)</ { print $1 }' | sort -u)
-if [ -n "$region_results" ]; then
-    facts=$( { sed -n '/^| Fact |/,/^$/p' "$DOC"; sed -n '/^| Fact |/,/^$/p' "$PLATFORM"; } |
+# Which of them the documents say do not originate a grant, with a reason beside
+# each. Declared rather than inferred: whether an operation originates authority is
+# a statement the contract makes, not something a pattern can decide.
+not_origins=$( { grep -h '^- Not a grant origin: ' "$DOC" "$PLATFORM" || true; } |
+    sed 's/^- Not a grant origin: `\([a-z_]*\)`.*$/\1/' | sort -u)
+# And which carry a facts table of their own.
+fact_tables=$( { grep -h '^| Fact | `[a-z_]*` |$' "$DOC" "$PLATFORM" || true; } |
+    sed 's/^| Fact | `\([a-z_]*\)` |$/\1/' | sort -u)
+
+required_facts="element type
+alignment
+access
+size
+DMA domain
+lifetime
+transfer/share rules"
+
+origins=0
+while IFS= read -r operation; do
+    [ -n "$operation" ] || continue
+    if printf '%s\n' "$not_origins" | grep -qx "$operation"; then
+        # A row that returns a region and declares it originates none must not also
+        # carry a facts table: two answers about one row is the drift this gate is
+        # for.
+        if printf '%s\n' "$fact_tables" | grep -qx "$operation"; then
+            fail "$operation both declares it originates no grant and carries a grant-facts table"
+        fi
+        continue
+    fi
+    printf '%s\n' "$fact_tables" | grep -qx "$operation" ||
+        fail "$operation returns a region and neither declares its seven docs/42 §2 grant facts nor says it originates no grant"
+    # The seven facts, read out of that operation's own table rather than out of
+    # any table in either document.
+    facts=$( { sed -n "/^| Fact | \`$operation\`" "$DOC"; } 2> /dev/null; true)
+    facts=$( { awk -v want="| Fact | \`$operation\` |" '
+            $0 == want { inside = 1; next }
+            inside && /^$/ { inside = 0 }
+            inside { print }
+        ' "$DOC" "$PLATFORM"; } |
         sed -n 's/^| \([a-zA-Z/ ]*\) | .* |$/\1/p' | sed 's/ *$//' | sort -u)
-    for required in "element type" "alignment" "access" "size" "DMA domain" \
-        "lifetime" "transfer/share rules"; do
-        printf '%s\n' "$facts" | grep -qx "$required" ||
-            fail "an operation originates a region and no accepted schema declares its $required"
-    done
-    echo "check-interface-schema: $(printf '%s\n' "$region_results" | grep -c .)" \
-         "region-originating operation(s), all seven docs/42 §2 grant facts declared"
-fi
+    while IFS= read -r want; do
+        [ -n "$want" ] || continue
+        printf '%s\n' "$facts" | grep -qx "$want" ||
+            fail "$operation's grant-facts table does not declare its $want"
+    done <<EOF
+$required_facts
+EOF
+    origins=$((origins + 1))
+done <<EOF
+$region_results
+EOF
+
+# Every declared non-origin must actually be a region-returning row, so the list
+# cannot accumulate names that mean nothing.
+while IFS= read -r operation; do
+    [ -n "$operation" ] || continue
+    printf '%s\n' "$region_results" | grep -qx "$operation" ||
+        fail "$operation is declared to originate no region grant and returns no region"
+done <<EOF
+$not_origins
+EOF
+
+returning=$(printf '%s\n' "$region_results" | grep -c .)
+echo "check-interface-schema: $returning region-returning operation(s), $origins of them" \
+     "grant origins, each with its own seven docs/42 §2 facts"
 
 count=$(printf '%s\n' "$declared" | grep -c .)
 paired=$(printf '%s\n' "$kinds_in_doc" | grep -c .)
