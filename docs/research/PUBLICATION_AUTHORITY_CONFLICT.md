@@ -2,10 +2,30 @@
 
 # Publication authority: what ADR-0093 accepted and what was built
 
-Status: **Research note. It accepts nothing, chooses nothing and is authority
-for nothing.** It is the conflict report ADR-0093-Q1 names, written so that the
-Project Architect has the whole gap, the options and their consequences in one
-place. `docs/38` assigns authority; this note has none.
+Status: **Research note, and now history. It accepts nothing, chooses nothing and
+is authority for nothing.**
+
+**Closed 2026-09-23 by ADR-0095, which took none of the options below.** The
+Project Architect directed that Stage 4's publication authority be a **dedicated
+publication channel** — an endpoint whose identity fixes what may be published
+through it, with the registry holding `receive` and an authorised publisher
+holding `call` — and amended `CAPABILITY_V1` §6 to say so. That is a narrowing of
+the contract rather than an implementation of Q1-A…Q1-D, and it makes the option
+set below the record of what was weighed rather than a live menu. ADR-0093-Q1 is
+closed (ADR-0093 §11a).
+
+**One finding here outlived the question and is now ADR-0096** (Proposed): whether
+a nominal interface must survive delegation and endowment when two interfaces
+share one runtime object kind. §21–§24 are the research behind it. Stage 4 creates
+no such pair.
+
+**Nothing below is rewritten.** It is kept as it was written, including the
+options, the Q1-A feasibility study and its withdrawal, because how a conclusion
+was reached is part of the record.
+
+It was written as the conflict report ADR-0093-Q1 named, so that the Project
+Architect had the whole gap, the options and their consequences in one place.
+`docs/38` assigns authority; this note has none.
 
 Date: 2026-09-23. Raised by an external audit of commits `6c17b10`, `b276fde`
 and `89f7599`, whose finding is confirmed here rather than argued with.

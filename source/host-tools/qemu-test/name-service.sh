@@ -27,17 +27,17 @@
 # uses it to answer and registers nothing, so the second lookup still hands out
 # the publisher's endpoint and the publisher serves that call too.
 #
-# **This is NOT `CAPABILITY_V1` §6's publication authority, and an earlier
-# version of this file said it was.** §6 and ADR-0051 §2 make the right to
-# publish a capability **whose nominal type is the interface being published**,
-# so that a launcher reading a module's `capability_imports` sees which
-# interface it intends to publish and grants or denies that. What this boot has
-# is an ordinary `system.ipc.Endpoint` under the binding name `publish`: no
-# interface name travels in the protocol, the registry holds one unnamed entry,
-# and nothing anywhere names `block.device.v1`. The negative evidence
-# ADR-0093 §10.1 requires — a service that was not granted the publication
-# capability cannot register that interface — is therefore **not** provable in
-# this boot, and no assertion below claims it is. Tracked as ADR-0093-Q1.
+# **This is `CAPABILITY_V1` §6's publication authority as ADR-0095 amended it.**
+# §6 makes the right to publish a capability naming a dedicated publication
+# object whose identity fixes what may be published through it, so the `publish`
+# endpoint *is* the authority for `block.device.v1` and possession of a `call`
+# name for it is the permission. No interface name travels in the protocol and
+# none needs to.
+#
+# **The negative is not here, and that is deliberate.** ADR-0095 §5.2 requires a
+# process that holds no capability naming that endpoint to be unable to publish,
+# in a **separate** boot, with the mutation of §5.3 beside it. That is
+# `publication-authority.sh`; this gate proves the positive half and says so.
 #
 # **Case B is in the same boot.** The registry serves one registration and two
 # lookups and ends. The client then calls the service again through the
@@ -188,10 +188,11 @@ echo "  to a channel the asker handed over; the nucleus was not changed"
 echo "  what the client carried into \`lookup\` registered nothing: the second"
 echo "  lookup handed out the publisher's endpoint again and the publisher"
 echo "  served that call too"
-echo "  NOT claimed: publication authority in the sense of CAPABILITY_V1 §6."
-echo "  The capability presented is an ordinary endpoint, not one whose nominal"
-echo "  type is the published interface, and no interface name travels here —"
-echo "  so ADR-0093 §10.1's negative is not proved in this boot: ADR-0093-Q1"
+echo "  the publish endpoint is the publication authority for block.device.v1"
+echo "  (CAPABILITY_V1 §6 as ADR-0095 amended it): a dedicated channel whose"
+echo "  identity fixes what may be published, so no interface name travels"
+echo "  NOT claimed here: the negative. That a process holding no capability"
+echo "  naming that endpoint cannot publish is publication-authority.sh's"
 echo "  case B: the registry ended after two lookups; the capability the client"
 echo "  already held went on working, and a further lookup was cancelled -5 by"
 echo "  the liveness rule — existing IPC semantics, not a new case"

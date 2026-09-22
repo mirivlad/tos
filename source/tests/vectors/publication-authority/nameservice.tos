@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The registry, receiving on the dedicated publication endpoint and reporting
+// that nothing arrived.
+//
+// **Its whole job here is to be a witness.** `CAPABILITY_V1` §6 as ADR-0095
+// amended it makes this endpoint the publication authority for
+// `block.device.v1`; this module holds `receive` on it, so if anything had been
+// published it would have arrived here. It waits, nothing comes, and the
+// liveness rule ends the wait — which is a positive statement that no
+// registration happened, rather than the absence of one.
+//
+// `E_CANCELLED` is the nucleus answering: the census finds every context either
+// ended or blocked with nothing that could wake it, and `SYSTEM_ABI_V1` §6 ends
+// the wait rather than hanging the boot. Existing semantics, not a case this
+// fixture invents.
+
+module system.registry.nameservice version 1.4 profile full;
+
+import capability system.ipc.Endpoint as publish;
+
+resource [
+    fuel: 16384,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [publish];
+
+extern fn endpoint_reply(
+    cap: system.ipc.Reply, length: u64
+) -> i64 uses [system.ipc.Reply];
+
+// 1  a registration arrived and was acknowledged — which in this boot must not
+//    happen, and in the mutation must
+// 2  the wait ended with nothing to take, so nothing was published
+pub fn main() -> i64 uses [publish, system.ipc.Reply] {
+    match (endpoint_receive_call(publish)) {
+        Ok(registration) => {
+            let acknowledged: i64 = endpoint_reply(registration.reply, 0u64);
+            if (acknowledged != OK) { return acknowledged - 1000i64; }
+            return 1i64;
+        }
+        Err(refused) => {
+            // The liveness rule, and the only other thing that can happen here.
+            // Reported as a value rather than as a negative status, so the gate
+            // reads an account rather than inferring one from an absence.
+            if (refused == E_CANCELLED) { return 2i64; }
+            return refused - 2000i64;
+        }
+    }
+}
+
+const OK: i64 = 0i64;
+const E_CANCELLED: i64 = -5i64;

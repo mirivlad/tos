@@ -187,10 +187,35 @@ processes.
 
 ## 6. Interface publication
 
-The right to publish an interface is itself a capability, whose nominal type is
-the interface (ADR-0051 §2). A process that holds it may register; one that does
-not, cannot. There is no self-declared `provides`, and the registry never holds
-an entry no one granted.
+**Amended by ADR-0095 (Project Architect-directed, 2026-09-23).** This section
+once required the authority's *nominal type* to be the interface being published.
+That required an enforcement this model does not provide, and ADR-0095 §1 records
+why; the rule below is the one the architecture actually implements.
+
+The right to publish an interface is itself a capability (ADR-0051 §2). It names a
+**dedicated publication object** whose identity fixes what may be published
+through it: a process holding a capability that names it may register, one that
+does not, cannot. There is no self-declared `provides`, no name a module writes
+into a message is authority, and the registry never holds an entry no one granted.
+
+**The authority is object identity and possession, not a nominal type.** A
+capability is object, rights, scope, lifetime and generation (§3); an interface
+path is a fact about source and about the artifact, and it is neither carried by a
+handle nor preserved by a launch plan — `launch_plan_endow` records object, rights
+and binding, and the launcher's startup check compares object *kinds*. A contract
+requiring the publishing interface to *be* the capability's nominal type would be
+requiring something no layer of this system checks.
+
+**For the Stage 4 interface registry the dedicated object is an endpoint**
+(ADR-0093 P3). The registry holds `receive` on it and an authorised publisher
+holds `call`; §2's one-receiver rule in `IPC_V1` is what keeps those disjoint. A
+process that can name no such endpoint cannot publish through it, and that is the
+whole of the mechanism.
+
+**One publication class per object.** An object whose identity fixed two
+publishable interfaces would fix neither, so a second published interface needs a
+second object and a decision about how a client asks for one. None is available at
+Stage 4 and none is implied here (ADR-0095 §6).
 
 ## 7. Conformance evidence
 

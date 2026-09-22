@@ -161,3 +161,4 @@ docs/adr/0090-the-resolved-closure-import-edge-ceiling.md
 docs/adr/0091-the-transitive-import-envelope.md
 docs/adr/0092-reset-authority.md
 docs/adr/0093-block-device-publication-and-lifetime.md
+docs/adr/0095-publication-authority-is-a-dedicated-channel.md
