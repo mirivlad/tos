@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 519
+- files in the release package: 520
 - active system invariants: 21
-- architecture decision records: 96 (40 accepted)
+- architecture decision records: 97 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -140,6 +140,7 @@ Architecture decision records
 - docs/adr/0094-capability-transfer-from-canonical-text.md — ADR-0094: How a canonical textual module carries a capability in a message [**Resolved as §6.1's option A — textual schema and runtime only, over]
 - docs/adr/0095-publication-authority-is-a-dedicated-channel.md — ADR-0095: A publication authority is a dedicated channel, not a nominal type [**Accepted** (Project Architect-directed, 2026-09-23)]
 - docs/adr/0096-nominal-interface-identity-under-delegation.md — ADR-0096: Must a nominal interface survive delegation and endowment? [**Proposed** (raised 2026-09-23 on Project Architect direction; **not]
+- docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md — ADR-0097: The textual surface by which an ordinary `Region<T>` crosses IPC [**Proposed** (awaiting Project Architect decision, raised 2026-09-23).]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
