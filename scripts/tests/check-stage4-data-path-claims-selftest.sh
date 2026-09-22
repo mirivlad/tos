@@ -34,8 +34,10 @@ fail() {
 # --- the miniature repository ---------------------------------------------------
 #
 # Every file the gate reads, in the same shape. `$1` is the schema's parameter
-# list for one IPC operation, `$2` the runtime image's region-transport code and
-# `$3` the inventory's extra lines.
+# list for one IPC operation, `$2` the runtime image's region-transport code, `$3`
+# the inventory's extra lines and `$4` how the inventory describes
+# `qemu_block_service` — the fragment the gate reads structurally rather than by
+# grepping a file that documents a hundred gates.
 build() {
     rm -rf "$REPO"
     mkdir -p "$REPO/scripts" "$REPO/source/crates/tos-core/src" \
@@ -92,7 +94,18 @@ stage4_data_path_claims() {
     bash "\$ROOT/scripts/tests/check-stage4-data-path-claims.sh"
 }
 $3
+${4:-$HONEST_DESCRIPTION}
+qemu_block_service() {
+    bash "\$ROOT/source/host-tools/qemu-test/block-service.sh"
+}
+# An unrelated gate whose own claim is legitimately end to end. It is present in
+# every case, so no case can pass by the scoping being too wide.
+qemu_something_else() {
+    true
+}
 gate docs       default   "Stage 4 data-path claims"                   stage4_data_path_claims
+gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
+gate qemu       full-only "QEMU some other thing, end to end"           qemu_something_else
 EOF
 
     # The present-tense section the gate reads out of the journal, and a README
@@ -146,6 +159,20 @@ const CARRYING: &[Performed] = &[
         capabilities: &[Placed::Transfer(0), Placed::Register(Reg::Rdi)],
     },
 ];'
+
+# How the inventory describes `qemu_block_service`, in the three shapes that
+# matter: what it says today, the sentence the 2026-09-23 round left behind, and
+# one that claims nothing improper and cites no boundary.
+HONEST_DESCRIPTION="# A client holding no part of the machine is answered by a service that read the
+# device. The 512 bytes do not cross IPC; see docs/research/$NOTE."
+STALE_DESCRIPTION="# The Stage 4 client/service data path end to end: a separate textual client,
+# IPC, a block service, DMA, VirtIO and an answer. See docs/research/$NOTE."
+# The same claim with an unrelated denial on the same line. It escaped the first
+# version of the wording check, which dropped a whole line that carried any
+# negation anywhere; the sentence is false whatever follows it.
+DENIAL_ON_THE_SAME_LINE="# The Stage 4 client/service data path end to end. The 512 bytes do not cross
+# IPC. See docs/research/$NOTE."
+UNCITED_DESCRIPTION="# A client holding no part of the machine is answered by a service."
 
 NO_GATE=''
 CONFORMANCE_GATE='region_ipc_payload() {
@@ -223,10 +250,71 @@ check && fail "the capability transfer table was accepted as region payload tran
 build "$REGION" "$GATED_BRIDGE" "$CONFORMANCE_GATE"
 check && fail "a feature-gated Rust workload was accepted as the canonical-text bridge"
 
-# --- 11. and all three together lift it ------------------------------------------
+# --- 11. the inventory's own description of this gate is in scope -----------------
+# **The last place the stale claim survived the 2026-09-23 round.** `preflight.sh`
+# documents a hundred gates, so the fragment is extracted structurally: the
+# comment block above `qemu_block_service() {` and the row naming it. Putting the
+# old sentence back there must redden the gate, with everything else honest.
+build "$PLAIN" "$NO_BRIDGE" "$NO_GATE" "$STALE_DESCRIPTION"
+cat > "$REPO/README.md" <<EOF
+# readme
+
+The client receives a number that originated in a device read. It does not read a
+sector. The boundary is docs/research/$NOTE.
+EOF
+check && fail "the stale end-to-end claim over qemu_block_service was accepted"
+
+# --- and a denial elsewhere in the sentence's line does not excuse it -------------
+build "$PLAIN" "$NO_BRIDGE" "$NO_GATE" "$DENIAL_ON_THE_SAME_LINE"
+cat > "$REPO/README.md" <<EOF
+# readme
+
+The client receives a number that originated in a device read. It does not read a
+sector. The boundary is docs/research/$NOTE.
+EOF
+check && fail "an affirmative claim followed by an unrelated denial was accepted"
+
+# --- and the scoping is minimal, which is the other half of that ------------------
+# An unrelated gate in the same file whose claim is legitimately end to end is
+# present in every case above and in this one, and an honest description of
+# `qemu_block_service` must still pass. A checker that grepped `preflight.sh`
+# would fail here, which is exactly why it does not.
+build "$PLAIN" "$NO_BRIDGE" "$NO_GATE" "$HONEST_DESCRIPTION"
+cat > "$REPO/README.md" <<EOF
+# readme
+
+The client receives a number that originated in a device read. It does not read a
+sector. The boundary is docs/research/$NOTE.
+EOF
+check || fail "a legitimate end-to-end claim over another gate was treated as this one's"
+
+# --- and the description must cite the boundary ----------------------------------
+build "$PLAIN" "$NO_BRIDGE" "$NO_GATE" "$UNCITED_DESCRIPTION"
+cat > "$REPO/README.md" <<EOF
+# readme
+
+The client receives a number that originated in a device read. It does not read a
+sector. The boundary is docs/research/$NOTE.
+EOF
+check && fail "a gate description citing no boundary note was accepted"
+
+# --- and a description that cannot be found at all is a failure ------------------
+# Not a pass: a claim nobody can locate is a claim nobody is checking.
+build "$PLAIN" "$NO_BRIDGE" "$NO_GATE" "$HONEST_DESCRIPTION"
+sed -i '/^qemu_block_service() {$/,/^}$/d' "$REPO/scripts/preflight.sh"
+sed -i '/ qemu_block_service$/d' "$REPO/scripts/preflight.sh"
+cat > "$REPO/README.md" <<EOF
+# readme
+
+The client receives a number that originated in a device read. It does not read a
+sector. The boundary is docs/research/$NOTE.
+EOF
+check && fail "an inventory with no description of the gate at all was accepted"
+
+# --- 12. and all three together lift it ------------------------------------------
 # The one acceptance. The README still overstates the path and is no longer read,
 # because by then the path is real.
 build "$REGION" "$BRIDGE" "$CONFORMANCE_GATE"
 check || fail "an accepted row, an ungated bridge path and a conformance gate did not lift the bound"
 
-echo "check-stage4-data-path-claims self-test: PASS (ten refusals and two acceptances)"
+echo "check-stage4-data-path-claims self-test: PASS (fourteen refusals and three acceptances)"
