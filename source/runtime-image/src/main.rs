@@ -2552,6 +2552,18 @@ fn named(capability: &LaunchCapability) -> &str {
     }
 }
 
+/// What operation 17 wrote about the region it just made.
+fn region_record(launch: &Launch) -> tos_launch::RegionAllocateRecord {
+    // SAFETY: the launcher mapped this process's argument region readable at
+    // the address the record names, and the nucleus wrote the record there.
+    unsafe {
+        core::ptr::with_exposed_provenance::<tos_launch::RegionAllocateRecord>(
+            (launch.arguments_base + tos_launch::REGION_ALLOCATE_RECORD) as usize,
+        )
+        .read()
+    }
+}
+
 /// What a memory authority is, asked from ring 3 (`SYSTEM_ABI_V1` §5, 16).
 ///
 /// The claims, in the order they are made:
@@ -2567,18 +2579,6 @@ fn named(capability: &LaunchCapability) -> &str {
 ///   reserve it again. Two names, one remainder;
 /// - and releasing a child returns what it held, so the parent can reserve that
 ///   amount again afterwards.
-/// What operation 17 wrote about the region it just made.
-fn region_record(launch: &Launch) -> tos_launch::RegionAllocateRecord {
-    // SAFETY: the launcher mapped this process's argument region readable at
-    // the address the record names, and the nucleus wrote the record there.
-    unsafe {
-        core::ptr::with_exposed_provenance::<tos_launch::RegionAllocateRecord>(
-            (launch.arguments_base + tos_launch::REGION_ALLOCATE_RECORD) as usize,
-        )
-        .read()
-    }
-}
-
 fn memory_authority(launch: &Launch, report: &mut Report, first: &LaunchCapability) {
     const MIB: u64 = 1024 * 1024;
     let parent = first.handle;
