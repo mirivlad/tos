@@ -72,9 +72,9 @@
 #
 # ## While the bound holds
 #
-#   a. every file that makes a claim about the client/service data path must cite
-#      the note that says where the boundary is — so the non-claim cannot be
-#      quietly dropped while the claim stays;
+#   a. every claim text about the client/service data path must cite the note that
+#      says where the boundary is — so the non-claim cannot be quietly dropped
+#      while the claim stays;
 #   b. none of them may use the wording an external audit found on 2026-09-23,
 #      when a slice in which one scalar crossed IPC was described as a client
 #      reading a sector and as the Stage 4 path travelled end to end.
@@ -82,10 +82,23 @@
 # The (b) list is that exact regression and is not an attempt to police language
 # in general.
 #
-# **What is read of `PROGRESS.md` is its present-tense section and nothing else.**
-# The journal is append-only and every dated entry in it is true on its date; a
-# gate that read the whole file would be asking history to describe today, which
-# is the error `check-open-decisions.sh` exists for.
+# ## What counts as a claim text, and why one of them is a fragment
+#
+# The slice's own files whole; `README.md` whole, because every word of it is a
+# statement about today; the journal's **present-tense section** only, because it
+# is append-only and every dated entry in it is true on its date — a gate reading
+# the whole file would be asking history to describe today, which is the error
+# `check-open-decisions.sh` exists for.
+#
+# And `scripts/preflight.sh`'s **description of `qemu_block_service`**, which is
+# where the stale claim survived the 2026-09-23 round: the inventory row and the
+# comment block above the function both say what that gate proves, and a reader of
+# `--list` or of the source sees them rather than the gate script. It is extracted
+# **structurally** — the contiguous `#` lines immediately above
+# `qemu_block_service() {`, plus the one inventory row naming it — and not by
+# grepping the file, because `preflight.sh` documents a hundred gates and a later
+# one may legitimately be end to end. Scoping it to this gate's own two pieces is
+# what keeps the check about this claim rather than about the phrase.
 #
 #   bash scripts/tests/check-stage4-data-path-claims.sh [--root DIR]
 #
@@ -245,6 +258,15 @@ done <<EOF
 $SLICE_FILES
 EOF
 
+# How the inventory describes this gate: the comment block above the function and
+# the row that names it, and nothing else out of a file that documents a hundred
+# gates. Empty output is a failure rather than a pass — a description that cannot
+# be found is a description nobody is checking.
+python3 "$(dirname "$0")/read-gate-description.py" \
+    "$INVENTORY" qemu_block_service > "$WORK/inventory-qemu_block_service.txt"
+[ -s "$WORK/inventory-qemu_block_service.txt" ] ||
+    fail "scripts/preflight.sh carries no comment block and no inventory row for qemu_block_service, so what it claims cannot be read"
+
 # --- a. the boundary is cited wherever the path is described --------------------
 for read_file in "$WORK"/*; do
     grep -Fq "$NOTE" "$read_file" ||
@@ -253,32 +275,63 @@ done
 
 # --- b. and the wording the audit found is refused ------------------------------
 #
-# One extended regular expression per entry, matched case-insensitively.
+# **A sentence that states the claim in order to deny it is not the claim**, and
+# the documents corrected on 2026-09-23 are full of such sentences on purpose. So
+# a match in a sentence that also carries a negation is not a finding.
 #
-# **A line that states the claim in order to deny it is not the claim**, and the
-# documents corrected on 2026-09-23 are full of such lines on purpose. So a match
-# on a line that also carries a negation is not a finding. That is looser than a
-# parser and it is the right looseness here: the gate's job is to catch the
-# affirmative wording coming back, not to understand prose.
-NEGATION='(^|[^[:alnum:]])([Nn]ot|NOT|never|нет?|Нет?|НЕ)([^[:alnum:]]|$)'
-patterns=(
-    'client[^.]*read[s]?[^.]*real sector'
-    'read[s]?[^.]*real sector[^.]*client'
-    'end[ -]to[ -]end'
-    'клиент[^.]*(прочитал|читает|прочёл)[^.]*сектор'
-    'путь Stage 4 пройден'
-    'payload region cross(es|ed)? IPC'
-)
-for read_file in "$WORK"/*; do
-    for pattern in "${patterns[@]}"; do
-        found=$(grep -inE "$pattern" "$read_file" | grep -vE "$NEGATION" || true)
-        if [ -n "$found" ]; then
-            echo "check-stage4-data-path-claims: in $(basename "$read_file"):" >&2
-            printf '%s\n' "$found" | sed 's/^/    /' >&2
-            fail "$(basename "$read_file") claims a data path no accepted schema row can carry"
-        fi
-    done
-done
+# **Scoped to the sentence and not to the line**, which is a correction: the first
+# version of this check dropped a whole line, so an affirmative claim followed by
+# an unrelated denial — "the data path end to end. The 512 bytes do not cross" —
+# escaped it. That sentence is false whatever follows it, and a reviewer produced
+# exactly that shape while testing this gate.
+#
+# It is still looser than a parser, and deliberately: the job is to catch the
+# affirmative wording coming back, not to understand prose. A claim split across
+# two lines is outside what this sees, which is why the (a) citation requirement
+# stands beside it rather than behind it.
+python3 - "$WORK" <<'INNER'
+import pathlib
+import re
+import sys
+
+# The exact wording an external audit found on 2026-09-23. Not a general attempt
+# to police language: each entry is a sentence the tree actually carried.
+PATTERNS = [
+    r"client[^.]*read[s]?[^.]*real sector",
+    r"read[s]?[^.]*real sector[^.]*client",
+    r"end[ -]to[ -]end",
+    r"клиент[^.]*(прочитал|читает|прочёл)[^.]*сектор",
+    r"путь Stage 4 пройден",
+    r"payload region cross(es|ed)? IPC",
+]
+NEGATION = r"(^|[^\w])([Nn]ot|NOT|never|нет?|Нет?|НЕ)([^\w]|$)"
+SENTENCE = re.compile(r"[.;!?]+")
+
+findings = []
+for path in sorted(pathlib.Path(sys.argv[1]).iterdir()):
+    if not path.is_file():
+        continue
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
+        for sentence in SENTENCE.split(line):
+            if re.search(NEGATION, sentence):
+                continue
+            for pattern in PATTERNS:
+                if re.search(pattern, sentence, re.IGNORECASE):
+                    findings.append((path.name, number, sentence.strip()))
+                    break
+
+for name, number, sentence in findings:
+    print(f"    {name}:{number}: {sentence}", file=sys.stderr)
+if findings:
+    names = sorted({name for name, _, _ in findings})
+    print(
+        "check-stage4-data-path-claims: FAIL: "
+        + ", ".join(names)
+        + " claims a data path no accepted schema row can carry",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+INNER
 
 read_count=$(find "$WORK" -maxdepth 1 -type f | wc -l | tr -d ' ')
 echo "check-stage4-data-path-claims: PASS (no textual region payload path:" \
