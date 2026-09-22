@@ -214,6 +214,19 @@ clippy_nucleus() {
     (cd "$ROOT/source" && cargo clippy -p tos-nucleus \
         --target x86_64-unknown-none -- -D warnings)
 }
+# **The ring-3 runtime image needs its own invocation and had none.** It is a
+# separate freestanding binary on a separate target, so `clippy_host`'s workspace
+# run does not reach it and `clippy_nucleus` names a different package — and the
+# three clippy gates together looked like coverage of the freestanding tree while
+# the image sat outside all of them. A live `doc_lazy_continuation` had been there
+# since 2026-08 for that reason: a doc block was orphaned from the function it
+# documents by a later insertion, and nothing local or in CI ever compiled the
+# lint. Default features, exactly as the nucleus gate is; every declared feature
+# of this binary is type-checked by `feature_builds` above.
+clippy_runtime_image() {
+    (cd "$ROOT/source" && cargo clippy -p tos-runtime-image \
+        --target x86_64-unknown-none -- -D warnings)
+}
 fuzz() {
     (cd "$ROOT/source" && cargo run --release -p tos-tests-fuzz -- 200000)
 }
@@ -586,6 +599,7 @@ gate source     default   "clippy host"                                clippy_ho
 gate source     default   "clippy UEFI loader"                         clippy_uefi
 gate source     full-only "feature configurations type-check"        feature_builds
 gate source     default   "clippy nucleus"                             clippy_nucleus
+gate source     default   "clippy runtime image"                       clippy_runtime_image
 gate source     full-only "capsule parser fuzz"                        fuzz
 
 gate selftest   default   "unsafe-safety checker self-test"            selftest_unsafe_safety
