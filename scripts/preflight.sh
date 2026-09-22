@@ -483,6 +483,20 @@ qemu_publication_authority() {
 region_ipc_payload() {
     bash "$ROOT/source/host-tools/qemu-test/region-transfer-text.sh"
 }
+# **The Stage 4 data path, in the read direction.** All 512 bytes of one sector
+# cross the client/service boundary as an ordinary immutable region: the client
+# requests a sector and hands over a channel, the service performs the real
+# VirtIO/DMA read, copies the bytes once out of device-visible memory — the copy
+# ADR-0037 forces — freezes the region and sends it, and the client indexes every
+# byte. `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1's boundary, reached.
+#
+# The client holds no hardware authority and cannot import `system.memory.Region`
+# at all, so the region it reads can only have arrived in a message. The bytes are
+# counted in canonical text and the gate reads two numbers; nothing on the host
+# inspects the payload.
+qemu_block_data_path() {
+    bash "$ROOT/source/host-tools/qemu-test/block-data-path.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -712,6 +726,7 @@ gate qemu       full-only "QEMU a capability crosses in a message"      qemu_cap
 gate qemu       full-only "QEMU a client looks a service up"            qemu_name_service
 gate qemu       full-only "QEMU publishing needs the publish endpoint" qemu_publication_authority
 gate qemu       full-only "QEMU a region payload crosses IPC"    region_ipc_payload
+gate qemu       full-only "QEMU a sector crosses IPC as a region"  qemu_block_data_path
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

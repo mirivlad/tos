@@ -1358,6 +1358,24 @@ const PERFORMED: &[Performed] = &[
         values: &[Slot::Number(Reg::Rsi), Slot::Fixed(Reg::R10, 1)],
         result: Produced::Status,
     },
+    // `endpoint_call_carrying` with a word in the payload. The delegated
+    // capability goes into transfer slot 0 and the count register says one; the
+    // word goes where `IPC_V1` §3 puts a payload and fills the length register
+    // itself, so a protocol cannot reach that register through this row either.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_call_word_carrying",
+        operation: ENDPOINT_CALL,
+        capabilities: &[Placed::Transfer(0), Placed::Register(Reg::Rdi)],
+        values: &[
+            Slot::Word {
+                length: Reg::Rsi,
+                at: tos_launch::MESSAGE_PAYLOAD,
+            },
+            Slot::Fixed(Reg::R10, 1),
+        ],
+        result: Produced::Status,
+    },
     // A send that moves one immutable ordinary region through the message's
     // **region** area. `Placed::Region(0)` writes `MESSAGE_REGIONS[0]` and the
     // fixed `1` is the region count `SYSTEM_ABI_V1` §5 row 1 puts in `r8` — a

@@ -145,17 +145,28 @@ originated in a real device read: the service's buffer was 0xA5 until the device
 wrote it, and a run with no DMA would have answered zero. The registry is an
 ordinary textual service, as ADR-0093 decided; the nucleus gained nothing.
 
-**What that slice does not prove, stated because it is easy to overstate.** The
-client does not read a sector. 512 bytes of block data do not cross IPC: one
-number computed from them does. The data path
-`docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes — client memory
-through IPC into the service's DMA memory — is not reached, because a region
-cannot yet be transferred in a message from canonical text. The publication
-authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095 amended it on
-2026-09-23: a dedicated publication endpoint whose identity fixes what may be
+**And since 2026-09-23 the bytes themselves cross.** All 512 bytes of one sector
+reach that client as an ordinary immutable `Region<u8>`: it requests a sector and
+hands over a channel, the service performs the real VirtIO/DMA read, copies the
+bytes once out of device-visible memory — the copy ADR-0037 forces rather than one
+anybody chose — freezes the region and sends it through the message's region area,
+and the client indexes every byte. That is the data path
+`docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes, in the read direction.
+The client holds no hardware authority and cannot even request the region
+interface, so what it reads can only have arrived in a message; the bytes are
+counted in canonical text, and one corrupted byte fails the gate.
+
+The publication authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095
+amended it: a dedicated publication endpoint whose identity fixes what may be
 published through it, with the registry holding `receive` and the authorised
-service holding `call`, so no interface name travels in the protocol and a
-process that cannot name that endpoint cannot publish.
+service holding `call`, so no interface name travels in the protocol and a process
+that cannot name that endpoint cannot publish.
+
+**What is still not proved**, stated because it is easy to overstate: one sector,
+one client, one service, and reading only. Writing through this path, durability
+beyond Stage 4D-5's read-back, more than one sector in flight, request framing and
+zero-copy are none of them designed — and ADR-0037 makes zero-copy unreachable by
+decision rather than by omission.
 
 TOS is not yet a user shell, application environment, or desktop operating
 system. What it does with a disk is single sector reads and one write, reached
@@ -431,11 +442,11 @@ registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
 capability that crossed in a message (`qemu_capability_transfer`, ADR-0094). The
 device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
-It does **not** prove that block *data* crosses IPC — 512 bytes never do, one
-number does — nor queue multiplexing, scheduling, filesystem integration, a
-generic driver subsystem, or restart and republication (ADR-0093 case C). None of
-those is designed. The next slice is a region crossing IPC from canonical text,
-which is what turns "the client got a number" into "the client got the bytes".
+It does **not** prove queue multiplexing, scheduling, filesystem integration, a
+generic driver subsystem, restart and republication (ADR-0093 case C), or writing
+through the client/service path. None of those is designed. What remains before
+Stage 4 can be considered for closure is case C, crash and reset lifecycle
+evidence, the Stage 4 performance report, and a closure review.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
