@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3ebf8af58158ebb617974eb1f7d57295de6980cf55137cb2e3c745243845a41a`\
+Source-manifest SHA-256: `24753852f5c10b16ac0c710ee03ebed7f3ba04075f96a40548ad9dc0071ae5b4`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -145,14 +145,36 @@ authorities and gives it back under a proved drain (4C-2), and orders its
 device-visible writes explicitly (4C-3). On top of that it configures a real
 split virtqueue and the device accepts it (4D-1), performs a real
 `VIRTIO_BLK_T_IN` whose proof is a sentinel the device had to overwrite (4D-2),
-and — since 2026-09-12 — **serves two sequential real block reads through one
-initialized queue**, reclaiming and reusing the descriptors of the first request
-to compose the second (4D-3). Every byte of PCI, VirtIO and block-protocol
+serves two sequential real block reads through one initialized queue by
+reclaiming and reusing the first request's descriptors (4D-3), holds two
+requests outstanding at once (4D-4), and performs a real block **write** proved
+by an independent read-back (4D-5). Every byte of PCI, VirtIO and block-protocol
 knowledge is in canonical text; the nucleus knows none of it.
 
+**And since 2026-09-21 the driver is reachable from another process.** A
+canonical textual client that holds *nothing* of the machine — no PCI bus, no
+function, no mapped window, no interrupt source, no DMA region, no memory
+authority — and that has no name for the service until a textual registry sends
+it one in a message, calls that service over IPC, and the number it gets back
+originated in a real device read: the service's buffer was 0xA5 until the device
+wrote it, and a run with no DMA would have answered zero. The registry is an
+ordinary textual service, as ADR-0093 decided; the nucleus gained nothing.
+
+**What that slice does not prove, stated because it is easy to overstate.** The
+client does not read a sector. 512 bytes of block data do not cross IPC: one
+number computed from them does. The data path
+`docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes — client memory
+through IPC into the service's DMA memory — is not reached, because a region
+cannot yet be transferred in a message from canonical text. And the publication
+authority is not yet the one `CAPABILITY_V1` §6 accepts: what a publisher
+presents is an ordinary endpoint capability rather than one whose nominal type
+is the published interface, no interface name travels in the protocol, and that
+gap is tracked as ADR-0093-Q1 rather than glossed.
+
 TOS is not yet a user shell, application environment, or desktop operating
-system. What it does with a disk is still two reads: there is no block service,
-no filesystem, no write path, no request scheduling and no driver framework.
+system. What it does with a disk is single sector reads and one write, reached
+through one service: there is no filesystem, no partition handling, no request
+scheduling, no multi-device discovery and no driver framework.
 
 ## Try the Stage 3 system
 
@@ -410,15 +432,26 @@ IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 claimed for them here. Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
-`STAGE4D2_FIRST_BLOCK_READ.md` and `STAGE4D3_QUEUE_REUSE.md`, with ADR-0082
+`STAGE4D2_FIRST_BLOCK_READ.md`, `STAGE4D3_QUEUE_REUSE.md`,
+`STAGE4D4_TWO_OUTSTANDING.md` and `STAGE4D5_FIRST_WRITE.md`, with ADR-0082
 (routed interrupt authority), ADR-0084 (DMA authority and device-visible
-addressing) and ADR-0086 (DMA publication and consumption ordering). The
-frontier is Stage 4D-3: **one split virtqueue serving more than one real block
-request**, with the ring's producer and consumer indices persisting across
-requests and completed descriptor chains reclaimed and reused. It does **not**
-prove requests in flight together, writes, queue multiplexing, scheduling,
-filesystem integration or a generic driver subsystem, none of which is
-designed.
+addressing) and ADR-0086 (DMA publication and consumption ordering).
+
+The frontier is the **client/service boundary**, not more device work: a
+canonical textual client holding no part of the machine reaches the driver over
+IPC and receives an answer that originated in a real device read
+(`qemu_block_service`), having been given the service's endpoint by a textual
+registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
+capability that crossed in a message (`qemu_capability_transfer`, ADR-0094). The
+device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
+
+It does **not** prove that block *data* crosses IPC — 512 bytes never do, one
+number does — nor queue multiplexing, scheduling, filesystem integration, a
+generic driver subsystem, restart and republication (ADR-0093 case C), or
+publication authority in the sense `CAPABILITY_V1` §6 fixes (ADR-0093-Q1). None
+of those is designed. The two honest next slices are a region crossing IPC from
+canonical text, and a decision on ADR-0093-Q1; the order between them is the
+Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
@@ -435,9 +468,12 @@ driver** that claims one PCI function, walks its capability list, maps the BAR
 window the device names, negotiates `VIRTIO_F_VERSION_1`, builds a split
 virtqueue in a DMA region it was granted, publishes a descriptor chain,
 notifies the device at the location its own capability structure gives, is woken
-by a real MSI-X interrupt, and reads real sectors back — **twice through the
-same queue**, with the descriptors of the first request reclaimed and reused for
-the second. All of it is covered by QEMU gates.
+by a real MSI-X interrupt, and reads real sectors back — twice through the same
+queue with the first request's descriptors reclaimed and reused, two requests
+outstanding at once, and one real write proved by an independent read-back. And
+that driver is now a **service**: another textual process, holding no part of the
+machine, reaches it over IPC through an endpoint a textual registry handed over.
+All of it is covered by QEMU gates.
 
 Measured on the reference platform: absolute IPC latency `p99 = 39.147 µs`
 against the accepted `≤ 200 µs` bound, at evidence level P2.
@@ -3537,7 +3573,7 @@ such a module whole by its header.
 | `endpoint_send_text` | `system.ipc.Endpoint` with `send` | `message: string` (≤ 256) | `i64` | 1 |
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
-| `endpoint_call_for` | `system.ipc.Endpoint` with `call` | `length: u64` | `Result<u64, i64>` | 3 |
+| `endpoint_call_word` | `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `capability_release` | `system.ipc.Endpoint` with `none` | *(none)* | `i64` | 6 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
@@ -3574,11 +3610,28 @@ sender's transfer table and delegates at exactly the rights the sender holds
 the last transfer slot for its answer, so it may carry three capabilities of its
 own; this row carries one, which is what publication and lookup need.
 
+`endpoint_call_word` is `endpoint_call` with the caller's `u64` **in the
+payload**, and `endpoint_reply_word` is `endpoint_reply` answering the same way.
+**The declared `u64` is the message, not its length**: the row writes eight
+little-endian bytes at `MESSAGE_PAYLOAD` and fills the length register with
+eight, so the length register is not reachable from a module at all.
+
+That is deliberate, and it is a correction. `endpoint_send_text` has put a
+payload where `IPC_V1` §3 says a payload goes since the first textual send;
+nothing could read one back, so the first protocol built on these rows said what
+it had to say with the one number a receiver is told for free — the inline
+length — in both directions. A message whose declared size is not its size is
+not a protocol this contract can carry: the nucleus copies exactly that many
+bytes, the bound of §3 applies to it, and no value larger than 256 can be stated
+at all. These two rows give a number somewhere honest to travel and leave
+`length` meaning what §5 rows 1, 3 and 4 say it means.
+
 ### `system.ipc.Reply`
 
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `endpoint_reply` | `system.ipc.Reply` with `reply` | `length: u64` | `i64` | 4 |
+| `endpoint_reply_word` | `system.ipc.Reply` with `reply` | `word: u64` | `i64` | 4 |
 | `endpoint_reply_receive` | `system.ipc.Reply` with `reply`, then `system.ipc.Endpoint` with `receive` | `length: u64` | `i64` | 13 |
 
 `endpoint_reply_receive` answers the call its reply capability names and then
@@ -3739,17 +3792,14 @@ authority (ADR-0067 §7).
 | `reply` | `system.ipc.Reply` |
 | `carried` | `system.ipc.Endpoint` |
 | `length` | `u64` |
+| `word` | `u64` |
 
-`endpoint_call_for` is `endpoint_call` producing the answer's length instead of
-discarding it: the nucleus already wakes a caller with `Answer::value(length)`,
-and until this row no operation named it, so a textual caller could learn that
-its call was answered and nothing about the answer.
-
-Three facts from one receive, for the reason `CreatedProcess` is a record: the
-nucleus writes both into the receiver's own transfer table before the receive
-returns — the reply in the last slot, always, and the delegated capability in
-the first — and a second receive to fetch the second fact would take the *next*
-message.
+Four facts from one receive, for the reason `CreatedProcess` is a record: the
+nucleus writes the two capabilities into the receiver's own transfer table
+before the receive returns — the reply in the last slot, always, and the
+delegated capability in the first — writes the payload into the receiver's own
+message slot, and a second receive to fetch any of the rest would take the
+*next* message.
 
 **`carried` is declared an endpoint because that is the kind this surface
 carries.** It is what the receiver expects, not a proof about what arrived: a
@@ -3763,9 +3813,38 @@ a handle of all zeros names nothing in any table, so `carried` is then a
 capability that fails the same way.
 
 **`length` is the inline length the message carried** (`IPC_V1` §3, bounded at
-256). It is the only thing a receiver can be told without reading an argument
-region, so a protocol built above these primitives says what it has to say with
-it — and what it means is that protocol's business, not this contract's.
+256) **and is not a value a protocol may choose.** The nucleus copies exactly
+that many bytes, so a sender that put its own scalar there would be describing a
+message whose declared size is not its size, and two readers of one wire would
+have two meanings for one number. A receiver reads it for the one thing it
+states: whether the bytes the protocol expects arrived.
+
+**`word` is the first eight payload bytes, little-endian.** It is where a
+protocol's own number travels, and it is meaningless unless `length` is at least
+eight — which is the receiver's check to make, in canonical text, because
+`IPC_V1` §1 puts request/reply above these primitives rather than inside them.
+The field is present whatever the length, because a receive that produced it
+conditionally would be a second shape of one record.
+
+### `system.ipc.Answer`
+
+| Field | Type |
+|---|---|
+| `length` | `u64` |
+| `word` | `u64` |
+
+What `endpoint_call_word` produces: the answer's inline length, which the
+nucleus returns to a woken caller, and the eight bytes the answer begins with,
+which `ipc::hand` copied into the caller's own argument region.
+
+**Both, and that is the point of the row.** A row producing only the length
+would leave a caller able to learn that its call was answered and nothing about
+the answer — and a service with no other way to send a number back would encode
+its result as the length of a reply it never sent. Producing the payload gives
+the answer somewhere honest to travel, and producing the length beside it lets
+canonical text refuse an answer of the wrong shape. `endpoint_reply_word` is the
+other half: the same ABI selector as `endpoint_reply`, with the answer's `u64`
+written where a payload goes.
 
 ### `system.process.ChildEnding`
 
@@ -34284,6 +34363,42 @@ does not arise.
    durability.
 5. Under P2: the nucleus still contains no device-protocol vocabulary, and the
    namespace it gained is bounded and stated.
+
+## 11. Implementation divergence found 2026-09-23, and what it leaves open
+
+**Dated amendment. Nothing above is changed and nothing above is withdrawn.**
+§3a.1, §3a.2 and §10.1 are what this decision accepted; this section records
+that the implementation of them is incomplete, so that the difference is not
+discovered a third time.
+
+`name-service.sh` (2026-09-21) and `block-service.sh` (2026-09-21) build a P3
+registry that registers whatever arrives on the endpoint it receives on. The
+publisher holds an ordinary `system.ipc.Endpoint`, not an authority whose
+nominal type is the interface; no interface name travels in the protocol; and
+nothing in either boot names `block.device.v1`. So §3a.2's "presenting its
+publication capability" is not what happens, and §10.1's negative evidence — a
+service that was not granted the publication capability cannot publish — is
+**not proved and is not claimed**. The gates and the fixtures now say so in as
+many words; an earlier version of them claimed the opposite.
+
+**The implementation is the suspect, not this ADR.** Three things stand in the
+way of implementing what was accepted, and each is a decision rather than a
+task: no accepted schema declares a per-interface publication path and
+`SYSTEM_INTERFACE_V1` §2 makes such a path a new Tier 2 contract; which object
+kind such a capability names is undecided, with `OBJECT_INTERFACE = 4` reserved
+by §2 and left empty by P3; and a textual registry cannot check the kind of what
+a message handed it (ADR-0094 §11). The gap, the four options and what each one
+touches are in `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md`, which accepts
+nothing.
+
+- Open question: ADR-0093-Q1 — the publication authority of §3a.1–§3a.2,
+  `CAPABILITY_V1` §6 and ADR-0051 §2 is not implemented: what a publisher
+  presents is an ordinary endpoint capability rather than one whose nominal type
+  is the published interface, so §10.1's negative conformance evidence has no
+  subject and is recorded BLOCKED. Options Q1-A…Q1-D are in
+  `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §5 and none is chosen. Until
+  it is answered, no document may describe reaching a generic `publish` endpoint
+  as `CAPABILITY_V1` §6's publication authority.
 
 <!-- END docs/adr/0093-block-device-publication-and-lifetime.md -->
 

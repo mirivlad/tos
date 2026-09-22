@@ -143,6 +143,19 @@ const NON_BLOCKING: u64 = 1;
 /// The inline payload bound `IPC_V1` §3 declares (ADR-0057).
 const MAX_INLINE_BYTES: u64 = 256;
 
+/// How many payload bytes one `u64` occupies when a protocol sends one.
+///
+/// Eight, little-endian, at `MESSAGE_PAYLOAD`. Named rather than written twice
+/// because it is the *length* of such a message as well as the size of the
+/// write, and those two have to be the same number by construction.
+const WORD_BYTES: u64 = 8;
+
+/// Eight is inside the inline bound, so a message carrying one word is never a
+/// message the contract refuses. Asserted rather than reasoned about, because a
+/// change to either constant that broke it would otherwise produce a send the
+/// nucleus rejects at run time.
+const _: () = assert!(WORD_BYTES <= MAX_INLINE_BYTES);
+
 /// Reads the monotonic tick, or nothing when the nucleus does not offer one.
 ///
 /// The tick is the nucleus's; this process can only ask for it, and asking
@@ -1119,6 +1132,20 @@ enum Slot {
         at: u64,
         maximum: usize,
     },
+    /// A `u64`, as the **inline payload** of a message: eight little-endian
+    /// bytes at a fixed offset of the argument region, with the length the
+    /// message actually carries in a register.
+    ///
+    /// **This is `Slot::Text`'s shape for a number, and it exists so that a
+    /// length stays a length.** `IPC_V1` §3 makes a message inline bytes, and
+    /// the only thing a receiver is told for free is how many of them there
+    /// were. A protocol that put its own scalar in that register would be
+    /// sending a message whose declared size is not its size — the nucleus
+    /// copies exactly that many bytes — and every reader of the wire would then
+    /// have two incompatible meanings for one number. So a value a protocol
+    /// wants to carry goes where §3 says a payload goes, and the register goes
+    /// on meaning what §5 row 1 says it means.
+    Word { length: Reg, at: u64 },
 }
 
 /// What an operation produces, in the shape the schema declares (§5).
@@ -1167,6 +1194,19 @@ enum Produced {
     /// process cannot address (`CAPABILITY_V1` §7), so this reads names the
     /// nucleus wrote and could not invent one if it tried.
     ReceivedCall,
+    /// `Result<system.ipc.Answer, i64>`: how long the answer to a call was, and
+    /// the eight payload bytes it begins with.
+    ///
+    /// **Two facts, because one of them is not the other.** The nucleus wakes a
+    /// caller with the answer's inline length, so that number is free; the
+    /// answer itself is in the caller's own argument region, where
+    /// `ipc::hand` copied it. Producing only the length would leave a textual
+    /// caller able to learn that its call was answered and nothing about the
+    /// answer — which is what invites a service to encode its result *as* the
+    /// length. Producing both, and leaving it to canonical text to check that
+    /// the length is the one its protocol requires, is `IPC_V1` §1's division:
+    /// the primitive carries bytes, and request/reply lives above it.
+    Answer,
     /// `Result<system.process.ChildEnding, i64>`: the record operation 14 wrote
     /// at `WAIT_CHILD_RECORD`, as the value it describes.
     ///
@@ -1252,14 +1292,22 @@ const PERFORMED: &[Performed] = &[
         values: &[],
         result: Produced::ReceivedCall,
     },
-    // The same selector as `endpoint_call`, producing the answer's length.
+    // The same selector as `endpoint_call`, with a `u64` in the payload where
+    // `IPC_V1` §3 puts one and the answer read back out of the same place.
+    //
+    // **The length register is not a parameter of this row**, which is the whole
+    // point of it: `rsi` is filled from the eight bytes this writes, never from
+    // a number the module chose, so a protocol cannot reach it.
     Performed {
         interface: "system.ipc.Endpoint",
-        name: "endpoint_call_for",
+        name: "endpoint_call_word",
         operation: ENDPOINT_CALL,
         capabilities: &[Placed::Register(Reg::Rdi)],
-        values: &[Slot::Number(Reg::Rsi)],
-        result: Produced::Number,
+        values: &[Slot::Word {
+            length: Reg::Rsi,
+            at: tos_launch::MESSAGE_PAYLOAD,
+        }],
+        result: Produced::Answer,
     },
     // A send carrying one capability, for an answer that must deliver one:
     // a reply copies payload bytes only.
@@ -1364,6 +1412,20 @@ const PERFORMED: &[Performed] = &[
         // §5 rows 1, 3 and 4: the length goes where a one-capability
         // operation's first value goes, which is `rsi`.
         values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Status,
+    },
+    // `endpoint_reply`, answering with a `u64` in the payload instead of with a
+    // length alone. The mirror of `endpoint_call_word`, and the reason a service
+    // has no cause to encode its result as a length.
+    Performed {
+        interface: "system.ipc.Reply",
+        name: "endpoint_reply_word",
+        operation: ENDPOINT_REPLY,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[Slot::Word {
+            length: Reg::Rsi,
+            at: tos_launch::MESSAGE_PAYLOAD,
+        }],
         result: Produced::Status,
     },
     // The second capability is an argument like the first and is read like the
@@ -2223,6 +2285,34 @@ impl System for Endowment<'_> {
                 (Slot::Held(register), Value::Capability(held)) => {
                     registers[*register as usize] = held.get();
                 }
+                // A number that travels as a payload rather than as a length.
+                // Eight little-endian bytes at the offset ADR-0058 fixes, and
+                // the length register says eight — the size of what was
+                // written, which is the only thing `IPC_V1` §5 row 1 admits
+                // there.
+                (Slot::Word { length, at }, Value::Int(_, word)) => {
+                    let Ok(word) = u64::try_from(*word) else {
+                        return Err(Trap::new(
+                            "RUNTIME_TYPE_CONFUSION",
+                            "an operation was reached with a word the edge cannot carry",
+                            call.source,
+                        ));
+                    };
+                    // SAFETY: the argument region is this process's own writable
+                    // mapping, the offset is a constant of the contract, and
+                    // eight bytes at `MESSAGE_PAYLOAD` are well inside the
+                    // inline maximum `IPC_V1` §3 fixes.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            word.to_le_bytes().as_ptr(),
+                            core::ptr::with_exposed_provenance_mut::<u8>(
+                                (self.arguments + at) as usize,
+                            ),
+                            WORD_BYTES as usize,
+                        )
+                    };
+                    registers[*length as usize] = WORD_BYTES;
+                }
                 (
                     Slot::Text {
                         length,
@@ -2337,6 +2427,24 @@ impl System for Endowment<'_> {
             Produced::Status => unreachable!("answered above"),
             Produced::Authority => Value::Capability(Handle::new(value)),
             Produced::Number => Value::Int(IntKind::U64, u128::from(value) as i128),
+            Produced::Answer => {
+                // The eight bytes the answer begins with, where `ipc::hand`
+                // copied the replier's payload into this process's own region.
+                // Read whatever the length was: what the bytes mean, and whether
+                // the length makes them mean anything, is the protocol's
+                // business and not this edge's (`IPC_V1` §1).
+                //
+                // SAFETY: a constant offset of the contract inside this
+                // process's own argument region, which the launcher mapped a
+                // whole frame at, so eight bytes there are mapped and aligned.
+                let word =
+                    unsafe { word_at((self.arguments + tos_launch::MESSAGE_PAYLOAD) as usize) };
+                Value::Aggregate(alloc::vec![
+                    // The answer's inline length, which the nucleus returned.
+                    Value::Int(IntKind::U64, u128::from(value) as i128),
+                    Value::Int(IntKind::U64, u128::from(word) as i128),
+                ])
+            }
             Produced::Mapping { writable } => {
                 // SAFETY: the nucleus wrote the record at the fixed offset of
                 // this process's own argument region, and only on success —
@@ -2381,13 +2489,24 @@ impl System for Endowment<'_> {
                 };
                 // SAFETY: as above.
                 let carried = unsafe { transferred(self.arguments, 0) };
+                // SAFETY: a constant offset of this process's own argument
+                // region, which the launcher mapped a whole frame at, so eight
+                // bytes there are mapped and aligned.
+                let word =
+                    unsafe { word_at((self.arguments + tos_launch::MESSAGE_PAYLOAD) as usize) };
                 Value::Aggregate(alloc::vec![
                     Value::Capability(Handle::new(reply)),
                     Value::Capability(Handle::new(carried)),
-                    // The inline length the nucleus returned for this receive,
-                    // which is what a protocol above these primitives has to
-                    // say anything with.
+                    // The inline length the nucleus returned for this
+                    // receive: how many payload bytes arrived, and nothing
+                    // else. A protocol reads it to decide whether the bytes it
+                    // expected are there.
                     Value::Int(IntKind::U64, u128::from(value) as i128),
+                    // And the eight bytes the payload begins with, out of this
+                    // process's own message slot where `ipc::take` copied them.
+                    // Meaningless unless `length` is at least eight, which is
+                    // the receiver's check to make and is why both are here.
+                    Value::Int(IntKind::U64, u128::from(word) as i128),
                 ])
             }
             Produced::ChildEnding => {

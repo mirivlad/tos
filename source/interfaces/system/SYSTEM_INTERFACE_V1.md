@@ -272,7 +272,7 @@ such a module whole by its header.
 | `endpoint_send_text` | `system.ipc.Endpoint` with `send` | `message: string` (≤ 256) | `i64` | 1 |
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
-| `endpoint_call_for` | `system.ipc.Endpoint` with `call` | `length: u64` | `Result<u64, i64>` | 3 |
+| `endpoint_call_word` | `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `capability_release` | `system.ipc.Endpoint` with `none` | *(none)* | `i64` | 6 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
@@ -309,11 +309,28 @@ sender's transfer table and delegates at exactly the rights the sender holds
 the last transfer slot for its answer, so it may carry three capabilities of its
 own; this row carries one, which is what publication and lookup need.
 
+`endpoint_call_word` is `endpoint_call` with the caller's `u64` **in the
+payload**, and `endpoint_reply_word` is `endpoint_reply` answering the same way.
+**The declared `u64` is the message, not its length**: the row writes eight
+little-endian bytes at `MESSAGE_PAYLOAD` and fills the length register with
+eight, so the length register is not reachable from a module at all.
+
+That is deliberate, and it is a correction. `endpoint_send_text` has put a
+payload where `IPC_V1` §3 says a payload goes since the first textual send;
+nothing could read one back, so the first protocol built on these rows said what
+it had to say with the one number a receiver is told for free — the inline
+length — in both directions. A message whose declared size is not its size is
+not a protocol this contract can carry: the nucleus copies exactly that many
+bytes, the bound of §3 applies to it, and no value larger than 256 can be stated
+at all. These two rows give a number somewhere honest to travel and leave
+`length` meaning what §5 rows 1, 3 and 4 say it means.
+
 ### `system.ipc.Reply`
 
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `endpoint_reply` | `system.ipc.Reply` with `reply` | `length: u64` | `i64` | 4 |
+| `endpoint_reply_word` | `system.ipc.Reply` with `reply` | `word: u64` | `i64` | 4 |
 | `endpoint_reply_receive` | `system.ipc.Reply` with `reply`, then `system.ipc.Endpoint` with `receive` | `length: u64` | `i64` | 13 |
 
 `endpoint_reply_receive` answers the call its reply capability names and then
@@ -474,17 +491,14 @@ authority (ADR-0067 §7).
 | `reply` | `system.ipc.Reply` |
 | `carried` | `system.ipc.Endpoint` |
 | `length` | `u64` |
+| `word` | `u64` |
 
-`endpoint_call_for` is `endpoint_call` producing the answer's length instead of
-discarding it: the nucleus already wakes a caller with `Answer::value(length)`,
-and until this row no operation named it, so a textual caller could learn that
-its call was answered and nothing about the answer.
-
-Three facts from one receive, for the reason `CreatedProcess` is a record: the
-nucleus writes both into the receiver's own transfer table before the receive
-returns — the reply in the last slot, always, and the delegated capability in
-the first — and a second receive to fetch the second fact would take the *next*
-message.
+Four facts from one receive, for the reason `CreatedProcess` is a record: the
+nucleus writes the two capabilities into the receiver's own transfer table
+before the receive returns — the reply in the last slot, always, and the
+delegated capability in the first — writes the payload into the receiver's own
+message slot, and a second receive to fetch any of the rest would take the
+*next* message.
 
 **`carried` is declared an endpoint because that is the kind this surface
 carries.** It is what the receiver expects, not a proof about what arrived: a
@@ -498,9 +512,38 @@ a handle of all zeros names nothing in any table, so `carried` is then a
 capability that fails the same way.
 
 **`length` is the inline length the message carried** (`IPC_V1` §3, bounded at
-256). It is the only thing a receiver can be told without reading an argument
-region, so a protocol built above these primitives says what it has to say with
-it — and what it means is that protocol's business, not this contract's.
+256) **and is not a value a protocol may choose.** The nucleus copies exactly
+that many bytes, so a sender that put its own scalar there would be describing a
+message whose declared size is not its size, and two readers of one wire would
+have two meanings for one number. A receiver reads it for the one thing it
+states: whether the bytes the protocol expects arrived.
+
+**`word` is the first eight payload bytes, little-endian.** It is where a
+protocol's own number travels, and it is meaningless unless `length` is at least
+eight — which is the receiver's check to make, in canonical text, because
+`IPC_V1` §1 puts request/reply above these primitives rather than inside them.
+The field is present whatever the length, because a receive that produced it
+conditionally would be a second shape of one record.
+
+### `system.ipc.Answer`
+
+| Field | Type |
+|---|---|
+| `length` | `u64` |
+| `word` | `u64` |
+
+What `endpoint_call_word` produces: the answer's inline length, which the
+nucleus returns to a woken caller, and the eight bytes the answer begins with,
+which `ipc::hand` copied into the caller's own argument region.
+
+**Both, and that is the point of the row.** A row producing only the length
+would leave a caller able to learn that its call was answered and nothing about
+the answer — and a service with no other way to send a number back would encode
+its result as the length of a reply it never sent. Producing the payload gives
+the answer somewhere honest to travel, and producing the length beside it lets
+canonical text refuse an answer of the wrong shape. `endpoint_reply_word` is the
+other half: the same ABI selector as `endpoint_reply`, with the answer's `u64`
+written where a payload goes.
 
 ### `system.process.ChildEnding`
 

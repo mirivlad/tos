@@ -130,14 +130,36 @@ authorities and gives it back under a proved drain (4C-2), and orders its
 device-visible writes explicitly (4C-3). On top of that it configures a real
 split virtqueue and the device accepts it (4D-1), performs a real
 `VIRTIO_BLK_T_IN` whose proof is a sentinel the device had to overwrite (4D-2),
-and — since 2026-09-12 — **serves two sequential real block reads through one
-initialized queue**, reclaiming and reusing the descriptors of the first request
-to compose the second (4D-3). Every byte of PCI, VirtIO and block-protocol
+serves two sequential real block reads through one initialized queue by
+reclaiming and reusing the first request's descriptors (4D-3), holds two
+requests outstanding at once (4D-4), and performs a real block **write** proved
+by an independent read-back (4D-5). Every byte of PCI, VirtIO and block-protocol
 knowledge is in canonical text; the nucleus knows none of it.
 
+**And since 2026-09-21 the driver is reachable from another process.** A
+canonical textual client that holds *nothing* of the machine — no PCI bus, no
+function, no mapped window, no interrupt source, no DMA region, no memory
+authority — and that has no name for the service until a textual registry sends
+it one in a message, calls that service over IPC, and the number it gets back
+originated in a real device read: the service's buffer was 0xA5 until the device
+wrote it, and a run with no DMA would have answered zero. The registry is an
+ordinary textual service, as ADR-0093 decided; the nucleus gained nothing.
+
+**What that slice does not prove, stated because it is easy to overstate.** The
+client does not read a sector. 512 bytes of block data do not cross IPC: one
+number computed from them does. The data path
+`docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes — client memory
+through IPC into the service's DMA memory — is not reached, because a region
+cannot yet be transferred in a message from canonical text. And the publication
+authority is not yet the one `CAPABILITY_V1` §6 accepts: what a publisher
+presents is an ordinary endpoint capability rather than one whose nominal type
+is the published interface, no interface name travels in the protocol, and that
+gap is tracked as ADR-0093-Q1 rather than glossed.
+
 TOS is not yet a user shell, application environment, or desktop operating
-system. What it does with a disk is still two reads: there is no block service,
-no filesystem, no write path, no request scheduling and no driver framework.
+system. What it does with a disk is single sector reads and one write, reached
+through one service: there is no filesystem, no partition handling, no request
+scheduling, no multi-device discovery and no driver framework.
 
 ## Try the Stage 3 system
 
@@ -395,15 +417,26 @@ IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 claimed for them here. Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
-`STAGE4D2_FIRST_BLOCK_READ.md` and `STAGE4D3_QUEUE_REUSE.md`, with ADR-0082
+`STAGE4D2_FIRST_BLOCK_READ.md`, `STAGE4D3_QUEUE_REUSE.md`,
+`STAGE4D4_TWO_OUTSTANDING.md` and `STAGE4D5_FIRST_WRITE.md`, with ADR-0082
 (routed interrupt authority), ADR-0084 (DMA authority and device-visible
-addressing) and ADR-0086 (DMA publication and consumption ordering). The
-frontier is Stage 4D-3: **one split virtqueue serving more than one real block
-request**, with the ring's producer and consumer indices persisting across
-requests and completed descriptor chains reclaimed and reused. It does **not**
-prove requests in flight together, writes, queue multiplexing, scheduling,
-filesystem integration or a generic driver subsystem, none of which is
-designed.
+addressing) and ADR-0086 (DMA publication and consumption ordering).
+
+The frontier is the **client/service boundary**, not more device work: a
+canonical textual client holding no part of the machine reaches the driver over
+IPC and receives an answer that originated in a real device read
+(`qemu_block_service`), having been given the service's endpoint by a textual
+registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
+capability that crossed in a message (`qemu_capability_transfer`, ADR-0094). The
+device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
+
+It does **not** prove that block *data* crosses IPC — 512 bytes never do, one
+number does — nor queue multiplexing, scheduling, filesystem integration, a
+generic driver subsystem, restart and republication (ADR-0093 case C), or
+publication authority in the sense `CAPABILITY_V1` §6 fixes (ADR-0093-Q1). None
+of those is designed. The two honest next slices are a region crossing IPC from
+canonical text, and a decision on ADR-0093-Q1; the order between them is the
+Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
@@ -420,9 +453,12 @@ driver** that claims one PCI function, walks its capability list, maps the BAR
 window the device names, negotiates `VIRTIO_F_VERSION_1`, builds a split
 virtqueue in a DMA region it was granted, publishes a descriptor chain,
 notifies the device at the location its own capability structure gives, is woken
-by a real MSI-X interrupt, and reads real sectors back — **twice through the
-same queue**, with the descriptors of the first request reclaimed and reused for
-the second. All of it is covered by QEMU gates.
+by a real MSI-X interrupt, and reads real sectors back — twice through the same
+queue with the first request's descriptors reclaimed and reused, two requests
+outstanding at once, and one real write proved by an independent read-back. And
+that driver is now a **service**: another textual process, holding no part of the
+machine, reaches it over IPC through an endpoint a textual registry handed over.
+All of it is covered by QEMU gates.
 
 Measured on the reference platform: absolute IPC latency `p99 = 39.147 µs`
 against the accepted `≤ 200 µs` bound, at evidence level P2.

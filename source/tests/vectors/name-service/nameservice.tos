@@ -4,11 +4,20 @@
 // service. The nucleus holds no interface namespace, the supervisor holds no
 // registry, and the rules below are canonical text a reader can check.
 //
-// **Two endpoints, and the separation is the authority.** A process that can
-// reach `publish` may register; one that can only reach `lookup` cannot, and
-// not because this module checks a list — because it holds no name for the
-// other endpoint. That is `CAPABILITY_V1` §6's "a process that holds it may
-// register; one that does not, cannot", realised with nothing new.
+// **Two endpoints separate registering from asking.** A process that can reach
+// `publish` may register; one that can only reach `lookup` cannot, and not
+// because this module checks a list — because it holds no name for the other
+// endpoint.
+//
+// **That is not yet `CAPABILITY_V1` §6, and this comment used to claim it
+// was.** §6 makes the right to publish a capability *whose nominal type is the
+// interface being published*, and ADR-0051 §2 makes the launcher's reading of
+// `capability_imports` the mediation. What arrives on `publish` here is an
+// ordinary `system.ipc.Endpoint`: this registry holds one unnamed entry, no
+// interface name travels in the protocol, and nothing here names
+// `block.device.v1` at all. Closing that gap needs a capability type whose path
+// is the interface, which no accepted schema declares — tracked as ADR-0093-Q1,
+// and not decided in text that merely implements.
 //
 // **An answer cannot carry a capability**, so the answer to a lookup is not
 // the delivery. `ipc::hand` copies payload bytes from the replier's region

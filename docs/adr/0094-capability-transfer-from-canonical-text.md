@@ -2,11 +2,14 @@
 
 # ADR-0094: How a canonical textual module carries a capability in a message
 
-- Status: **Resolved by existing semantics and a minimal textual extension**
-  (Project Architect-directed, 2026-09-21). No option was chosen, because the
-  implementation showed the question did not need one: the nucleus was not
-  changed, no ABI operation was added, and three schema rows and a record were
-  enough. §11 records what was built and what it did **not** settle
+- Status: **Resolved as §6.1's option A — textual schema and runtime only, over
+  existing selectors** (Project Architect-directed closure, 2026-09-21). The
+  nucleus was not changed and no ABI operation was added; schema rows and
+  records over the existing selectors were enough, which is what §6.1 describes.
+  It was reached by implementing the nearest slice rather than by weighing the
+  four against each other, and this line names the outcome rather than claiming
+  a weighing that did not happen. §11 records what was built, §11a what it did
+  **not** settle, and §11b a correction to both
 - Date: 2026-09-21, resolved 2026-09-21
 - Decision level: **2 or 3, depending on the option** (§8). Every option adds
   TOS Core surface and therefore a language minor; option B additionally adds
@@ -374,8 +377,7 @@ appeared. None did.
 | schema | `system.ipc.ReceivedCall { reply, carried }`, and `endpoint_receive_call`, `endpoint_call_carrying`, `endpoint_send_carrying`, and `capability_release` on `system.ipc.Endpoint` |
 | bridge | `Placed`, telling a register destination from a transfer slot, and `Produced::ReceivedCall`, which reads the two slots the nucleus filled |
 
-So of §6's options the outcome is **A**, and the §6.1 strain was measured
-rather than argued: a call carrying nothing leaves the slot zero, the receiver
+This is §6.1's option A, and the §6.1 strain was measured rather than argued: a call carrying nothing leaves the slot zero, the receiver
 holds a value the language calls an endpoint and the nucleus calls nothing, and
 the first use of it is refused `E_NO_CAPABILITY`. Declared type is a claim the
 nucleus checks at use, and it fails closed.
@@ -392,9 +394,46 @@ nucleus checks at use, and it fails closed.
    is still holding — `grant` refuses the creation whole. Endowing the plan and
    then releasing its own name is how a receiving role is given away.
 
-**What this closure does not settle, and is not a claim to have settled.**
-§3's open question stands: `is_delegable()` admits a `Reply`, so the right to
-answer a call can be forwarded, while `launch_plan_endow` refuses one. Nothing
-built here forwards a reply, so nothing here decides whether canonical text
-should be able to. It is carried forward as an open question of the IPC
-contract rather than answered by silence.
+## 11a. What this closure does not settle
+
+**Not a claim to have settled it, and not left to prose.** §3's open question
+stands: `is_delegable()` admits a `Reply`, so the right to answer a call can be
+forwarded, while `launch_plan_endow` refuses one. Nothing built here forwards a
+reply, so nothing here decides whether canonical text should be able to.
+
+- Open question: ADR-0094-Q1 — `is_delegable()` admits a `Reply` while
+  `launch_plan_endow` refuses one, so the right to answer a call may be
+  forwarded in a message and may not be endowed to a child. §3 and §8.1 asked
+  whether canonical text should be able to forward one; this closure did not
+  answer it, because nothing it built forwards a reply. Until it is answered, no
+  textual surface may be added that places a `Reply` in a message's transfer
+  table.
+
+**The line above is the tracked form, and `scripts/check-open-decisions.sh`
+reads it.** An open question written only as prose is lost the moment its ADR
+stops being read, which is exactly what happens when the ADR closes — and this
+one closed the day it was raised. The gate compares every `- Open question:`
+line in `docs/adr/` against the journal's own list, so the project cannot say
+machine-checkably that nothing is open while this stands, whatever the parent
+ADR's status line says.
+
+## 11b. Correction, 2026-09-23
+
+**§11 understates what was added, and this ADR's first status line contradicted
+itself.** Recorded here rather than edited into §11, because §11 is what was
+true on 2026-09-21.
+
+1. **The status line said "No option was chosen" while §11 said "the outcome is
+   A".** Those are not the same statement, and an external audit read them as a
+   contradiction — correctly. The formulation now used is the second: the
+   outcome is option A, reached by implementation rather than by weighing.
+   Nothing about what was built changed.
+2. **The schema surface grew again on 2026-09-23, and one row was retired.**
+   `system.ipc.ReceivedCall` gained a `word` field; `system.ipc.Answer` was
+   added; `endpoint_call_word` and `endpoint_reply_word` joined selectors 3 and
+   4; and `endpoint_call_for` — which produced a call's answer *length* as the
+   answer — was removed. The reason is in `SYSTEM_INTERFACE_V1`
+   §`system.ipc.Endpoint`: with nothing able to read a received payload, the
+   first protocol built on these rows carried its numbers in the inline length
+   register, which describes a message whose declared size is not its size.
+   Still option A, still no ABI operation, still no nucleus change.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The Stage 4 client/service data path, end to end and for the first time.
+# A client with no part of the machine reaches a block service over IPC, and the
+# answer it gets back is one the device produced.
 #
 #   separate textual client
 #     -> IPC
@@ -19,12 +20,20 @@
 # separate process that holds no part of the machine and had no name for the
 # service until the ADR-0093 P3 registry gave it one.
 #
-# **The number that crosses is the device's.** A request's inline length is the
-# sector; the answer's is how many of that sector's 512 bytes are zero, capped
-# at `IPC_V1` §3's inline bound of 256. The service fills the buffer with 0xA5
-# before the request, so a run in which no DMA happened answers 0 and a real one
-# answers 256. Neither number is in the client, and the client cannot reach the
-# device to check it any other way.
+# **What crosses IPC is one number, and this gate does not say otherwise.** The
+# request's payload is the sector; the answer's is how many of that sector's 512
+# bytes are zero. The 512 bytes themselves never cross: the client receives a
+# count the service computed after a real device read, not block data. The path
+# `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes — client memory
+# through IPC to the service's DMA memory — is **not** what passes here.
+#
+# **Both numbers travel as payload, and 512 is why.** `IPC_V1` §3 bounds an
+# inline message at 256 bytes, so 512 cannot be the length of any message this
+# contract carries. An earlier form of this slice put the sector in the
+# request's length register and the count in the answer's, which made a message
+# whose declared size was not its size and forced the count to be capped at 256;
+# the assertions below read the payload and the lengths separately so that the
+# earlier form cannot come back green.
 #
 # **The capability boundary is the point and is asserted, not assumed.** The
 # launcher holds the PCI root and hands it to exactly one child. The client's
@@ -51,8 +60,8 @@ EXPECTED_INIT="i64:127"
 # The registry: a registration and a lookup answered with it.
 EXPECTED_REGISTRY="i64:3"
 # The client: a lookup answered, a capability delivered, the service reached,
-# and a whole sector of zeroes reported back.
-EXPECTED_CLIENT="i64:15"
+# an answer of the shape the protocol requires, and 512 in its payload.
+EXPECTED_CLIENT="i64:31"
 # Stage 4D-2's twenty facts, which the service still proves on the device side.
 PROVED_ALL=1048575
 LEN_SHIFT=1048576
@@ -139,13 +148,43 @@ done
 # the client, which is how the service's endpoint reaches it at all.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call status=0$')" = 5 ] ||
     fail "the receives do not add up to two by the registry, two by the service and one delivery"
-# Answered by the registry twice and by the block service once.
-[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply status=0$')" = 3 ] ||
-    fail "three calls were not answered"
-# **The call that crosses the whole path**, and the only one whose answer is a
-# number rather than a status.
-[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_call_for status=0$')" = 1 ] ||
+# Answered by the registry twice, with nothing in the payload.
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply status=0$')" = 2 ] ||
+    fail "the registry did not answer its two calls"
+# **The call that crosses the whole path**, and the answer to it. Two rows, one
+# each way, and both put their number where `IPC_V1` §3 puts a payload.
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_call_word status=0$')" = 1 ] ||
     fail "the client did not reach the block service"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply_word status=0$')" = 1 ] ||
+    fail "the block service did not answer with a payload"
+
+# --- and the length register is not a protocol channel -------------------------
+# **The regression that matters, and it is structural.** Neither number of this
+# protocol may travel as a message length. `endpoint_call_for` — the row that
+# produced a call's answer length as the answer, and the affordance an earlier
+# form of this slice used in both directions — is gone from the accepted schema,
+# and the two `_word` rows fill the length register themselves, so a module
+# cannot reach it through them. Read out of the tree as well as out of the boot,
+# because a row that exists is a row a later fixture can reach for.
+SCHEMA="$ROOT/interfaces/system/SYSTEM_INTERFACE_V1.md"
+TABLE="$ROOT/crates/tos-core/src/interfaces.rs"
+HOST="$ROOT/runtime-image/src/main.rs"
+for party in "$SCHEMA" "$TABLE" "$HOST"; do
+    if grep -q 'endpoint_call_for' "$party"; then
+        fail "$(basename "$party") still declares a row producing a call's answer length as its answer"
+    fi
+done
+# And neither fixture reaches an operation whose declared value is a length.
+# The client's request and the service's answer are `_word` rows or they are
+# nothing: a fixture that called `endpoint_reply` or `endpoint_call` here would
+# be one that had a length register to put a number in.
+for forbidden in endpoint_reply endpoint_call; do
+    for fixture in "$FIXTURE/client.tos" "$FIXTURE/service.tos"; do
+        if grep -qE "$forbidden\\(" "$fixture"; then
+            fail "$(basename "$fixture") reaches $forbidden, whose declared value is a message length"
+        fi
+    done
+done
 
 # --- and the device really was driven ------------------------------------------
 grep -q '^TOS\.RUN\.PCI_ASSIGNED ' "$LOG" ||
@@ -171,19 +210,28 @@ proved=$((service % LEN_SHIFT))
 [ "$proved" = "$PROVED_ALL" ] ||
     fail "the service proved $proved of $PROVED_ALL device-side facts"
 
-echo "BLOCK-SERVICE PASS: a client with no part of the machine read a real sector"
+echo "BLOCK-SERVICE PASS: a client holding no part of the machine received a"
+echo "  number that originated in a real device read"
 echo "  separate textual client -> IPC -> textual block service -> DMA -> VirtIO"
 echo "  -> IRQ -> reply, in four canonical textual modules and four processes"
-echo "  the client looked \`block.device.v1\` up through the P3 registry, was"
-echo "  handed the service's endpoint in a message, and called it naming a sector"
+echo "  the client held no name for the service until the P3 registry sent it"
+echo "  one in a message, and then called it with a sector in the payload"
 echo "  the service holds the PCI root, claimed the function, mapped the window,"
 echo "  claimed one MSI-X source and allocated one DMA region — and the client's"
 echo "  plan names none of those: no bus, function, window, source, region or"
 echo "  memory authority, read out of the log rather than assumed"
-echo "  the answer that crossed back is the device's: 256 of the sector's bytes"
+echo "  the answer that crossed back is the device's: 512 of the sector's bytes"
 echo "  are zero, where the service's buffer was 0xA5 until the device wrote it,"
-echo "  so a run with no DMA would have answered 0"
+echo "  so a run with no DMA would have answered 0 — and 512 is outside"
+echo "  \`IPC_V1\` §3's inline bound, so it could not have travelled as a length"
 echo "  the service still proves all $PROVED_ALL device-side facts of Stage 4D-2"
-echo "  NOT claimed: more than one request through the queue (Stage 4D-3),"
-echo "  writing (4D-5), durability, a payload region crossing IPC, restart, or"
-echo "  anything about performance"
+echo "  NOT claimed: that the client read a sector. 512 bytes of block data did"
+echo "  not cross IPC; one number computed from them did. The boundary of"
+echo "  docs/research/STAGE4_DATA_PATH_BOUNDARY.md §1 — client memory through"
+echo "  IPC to the service's DMA memory — is not reached here"
+echo "  NOT claimed either: that an interface name was published or looked up."
+echo "  No interface name travels in this protocol, and the authority the"
+echo "  publisher presented is an ordinary endpoint rather than a capability"
+echo "  whose nominal type is the interface (CAPABILITY_V1 §6) — ADR-0093-Q1"
+echo "  NOT claimed either: more than one request through the queue (4D-3),"
+echo "  writing (4D-5), durability, restart, or anything about performance"

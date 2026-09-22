@@ -7,15 +7,27 @@
 // source, no DMA region and no memory authority; it has no name for the block
 // service either, until the registry gives it one.
 //
-//   look up `block.device.v1`
+//   look up the registered service
 //     -> a capability arrives on the inbox
-//     -> call it, naming a sector
-//     -> the answer is how many of that sector's 512 bytes are zero
+//     -> call it, naming a sector in the message's payload
+//     -> the answer's payload is how many of that sector's 512 bytes are zero
 //
 // **The number is the device's, not this module's.** The service fills its DMA
 // buffer with 0xA5 before the request, so a run in which no DMA happened
-// answers 0. 256 is the inline bound of `IPC_V1` §3 and therefore what a whole
-// zero-filled sector reports.
+// answers 0. A whole zero-filled sector answers 512.
+//
+// **512 is why the payload is where a number belongs.** `IPC_V1` §3 bounds an
+// inline message at 256 bytes, so 512 cannot be the length of any message this
+// contract carries: an answer stating it as a length would be refused before it
+// was made. Both directions of this protocol therefore put their number in the
+// payload, where §3 puts a payload, and read `length` for the one thing it
+// states — that eight bytes arrived.
+//
+// **What this module does NOT receive is the sector.** 512 bytes of block data
+// never cross IPC here; what crosses is one number the service computed from
+// them after a real device read. The full path of
+// `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 — client memory through IPC
+// to the service's DMA memory — is not what this proves.
 
 module system.client.block version 1.4 profile full;
 
@@ -46,23 +58,26 @@ extern fn endpoint_receive_call(
     cap: system.ipc.Endpoint
 ) -> Result<system.ipc.ReceivedCall, i64> uses [inbox];
 
-// The call whose answer is a number rather than only a status.
-extern fn endpoint_call_for(
-    cap: system.ipc.Endpoint, length: u64
-) -> Result<u64, i64> uses [system.ipc.Endpoint];
+// The call whose request and answer are both payloads.
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [system.ipc.Endpoint];
 
 const OK: i64 = 0i64;
 // The sector this client asks for. Sector 0 of the reference backing image,
 // which is zero-filled — and the service has no way to know that is what makes
 // the answer checkable, because the service only reports what it found.
 const WANTED_SECTOR: u64 = 0u64;
-// A whole sector of zeroes, capped at `IPC_V1` §3's inline bound.
-const WHOLE_SECTOR: u64 = 256u64;
+// A whole sector of zeroes: 512, uncapped, and larger than any inline length.
+const WHOLE_SECTOR: u64 = 512u64;
+// What an answer of this protocol is: eight payload bytes and nothing else.
+const ANSWER_BYTES: u64 = 8u64;
 
 //  1  the lookup was answered
 //  2  a capability arrived on the inbox
 //  4  calling it reached the service and the service answered
-//  8  the answer is a whole sector of zeroes, so the device really wrote
+//  8  the answer has the shape this protocol requires: eight payload bytes
+// 16  and those bytes are 512, so the device really wrote the sector
 pub fn main() -> i64
     uses [registry, inbox, reply_to, system.ipc.Endpoint]
 {
@@ -74,11 +89,19 @@ pub fn main() -> i64
     match (endpoint_receive_call(inbox)) {
         Ok(delivery) => {
             found = found + 2i64;
-            match (endpoint_call_for(delivery.carried, WANTED_SECTOR)) {
-                Ok(zeros) => {
+            match (endpoint_call_word(delivery.carried, WANTED_SECTOR)) {
+                Ok(answer) => {
                     found = found + 4i64;
-                    if (zeros == WHOLE_SECTOR) {
+                    // **The length is checked before the payload is read.**
+                    // `IPC_V1` §1 keeps request/reply above the primitives, so
+                    // this is where an answer of the wrong shape is refused —
+                    // and without this check the eight bytes below would be
+                    // whatever this process's own message slot held.
+                    if (answer.length == ANSWER_BYTES) {
                         found = found + 8i64;
+                        if (answer.word == WHOLE_SECTOR) {
+                            found = found + 16i64;
+                        }
                     }
                 }
                 Err(refused) => { return refused - 1000i64; }
