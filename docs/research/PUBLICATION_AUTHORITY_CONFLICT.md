@@ -11,7 +11,15 @@ Date: 2026-09-23. Raised by an external audit of commits `6c17b10`, `b276fde`
 and `89f7599`, whose finding is confirmed here rather than argued with.
 **§9–§18 were added the same day**, on direction to examine Q1-A deeply: §9 is
 what that study established, §14 is the constraint that makes §5's sketch of Q1-A
-unimplementable as written, §13 corrects §7, and §18 is decision text nobody has
+unimplementable as written, and §13 corrects §7.
+
+**§19–§26 were added after a second review of `e2ad80a`, and they supersede
+§9–§18 wherever they contradict them.** Read them before acting on anything
+earlier. In short: §15's schema is self-contradictory (§20); the nominal interface
+is not preserved through a launch plan, so both retyping directions succeed today
+(§21); Q1-A therefore cannot prove the conformance item it exists for (§22); §11's
+"a trust boundary, not a hole" is withdrawn (§23); §17's recommendation of Q1-A is
+withdrawn and no replacement is offered (§26); and §18's decision text must not be
 adopted.
 
 ## 1. The finding, in one paragraph
@@ -357,6 +365,8 @@ with reason "a capability effect is not of the interface the operation requires"
 
 ## 11. B — two names for one endpoint, and why it is not a conversion
 
+**Its closing paragraph is withdrawn by §23**, which is where the two claims it conflated are separated. Everything before that paragraph stands.
+
 The publisher holds a capability nominally `block.device.V1Publisher` with
 `call`; the registry must hold one nominally `system.ipc.Endpoint` with
 `receive`, over the **same** runtime Endpoint object. The question is whether the
@@ -541,6 +551,8 @@ additional.**
 
 ## 15. E — the Tier-2 document Q1-A needs, as a proposal only
 
+**Superseded by §20 and §24a.** The table below omits `endow_for_launch`, which §20 shows the interface must declare, and the whole section assumes a nominal type that §21 shows is not preserved. Kept as the record of what was proposed.
+
 **Not written here, and this section does not create it.** What follows is the
 specification of a document the Project Architect would have to accept.
 
@@ -593,6 +605,8 @@ Answering §21's nine questions:
 
 ## 16. F — the four options, re-compared after the study
 
+**Superseded by §24c**, which recomputes it with Q1-A failing, a new Q1-A2, and Q1-B re-read on better terms than this section gave it.
+
 **No option is chosen here.** Q1-A is examined in depth because the direction
 asked for that; the others are re-weighed against what the study found.
 
@@ -624,6 +638,8 @@ asked for that; the others are re-weighed against what the study found.
 
 ## 17. Recommendation, offered as a recommendation
 
+**Withdrawn by §26.** It rested on §11's unproven sentence and on §15's self-contradictory schema, and it did not follow §12's own finding through to the negative gate. Kept as the record of what was recommended and why it was wrong.
+
 **Q1-A**, in the shape §10, §14 and §15 give it — and this is a technical
 recommendation, not a decision, and not a claim that the Project Architect should
 agree.
@@ -653,6 +669,8 @@ Against it, and the Architect should weigh these rather than take my ordering:
   `platform.*`**, and therefore the precedent for every later driver interface.
 
 ## 18. Decision text, if the Project Architect agrees
+
+**Not to be adopted.** It states that the nucleus, the ABI and the object-kind set are unchanged and that the negative evidence discharges ADR-0093 §10.1; §21 and §22 show the second of those is false under the schema it describes. Kept as the record of what was offered.
 
 **Offered for adoption or rejection, and adopted by nobody yet.** If it is
 adopted it belongs in a new ADR — ADR-0095 on the present numbering — with
@@ -708,3 +726,403 @@ journal's `open-questions` fence by the commit that closes it.
 > and Stage 4 do not close. **A second published interface is not authorised by
 > this decision**: at N = 2 the registry's endowment and the endpoint table no
 > longer fit, and whoever needs it returns with that as its own decision.
+
+## 19. Second review, 2026-09-23: Q1-A as §15 wrote it is not implementable
+
+**§9–§18 are superseded where this section contradicts them, and §17's
+recommendation is withdrawn.** A review of `e2ad80a` raised two connected
+questions; both are confirmed against the tree, and together they are decisive.
+§20 is the schema contradiction, §21 the retyping, §22 the normative reading,
+§23 what §11 got wrong, §24 the recomputed options including a new Q1-A2, §25 the
+adversarial evidence and what it would find today.
+
+**The short form.** §15 proposed an interface whose capability must arrive by
+endowment and which declares no operation that can endow it — self-contradictory.
+And with that operation added, the nominal type it depends on is **not preserved
+through the launch plan**: both retyping directions succeed, so "authority for
+`block.device.v1` and nothing else" collapses to "a `call` name on one endpoint",
+which is what the tree already has and what ADR-0093-Q1 was raised about. Q1-A
+would add a Tier 2 contract and change nothing enforceable.
+
+## 20. Confirmed: no `endow_for_launch`, and therefore no endowment
+
+`SYSTEM_INTERFACE_V1` §4, on the operation:
+
+> "**`endow_for_launch` is one operation declared by several interfaces** … It is
+> declared on **every interface whose capabilities may be a startup endowment,
+> and on no others.**"
+
+The six that declare it, read out of `ACCEPTED`: `system.ipc.Endpoint`,
+`system.memory.Authority`, `system.process.Control`, `platform.pci.Bus`,
+`platform.pci.FunctionConfig`, `platform.irq.Source`. `system.ipc.Reply` does not,
+and the document says why: "declaring an operation the ABI always refuses would be
+advertising something that does not work."
+
+So the implication runs both ways, and §15 took only one direction:
+
+1. §14 established that a nominal type can reach a module **only** through the
+   launch endowment, because `import capability` is answered from the launch
+   record (ADR-0061) and a message-delivered capability is typed by the producing
+   operation's result.
+2. Therefore `block.device.V1Publisher`'s capabilities **may be a startup
+   endowment** — they must be.
+3. Therefore, by §4's rule, the interface **must declare `endow_for_launch`**.
+4. §15 declared exactly one operation, `publish`. So a canonical textual launcher
+   holding such a capability has no operation that places it in a sealed plan, and
+   ADR-0093 §3a.1's "granted by its launcher from a sealed launch plan" is
+   unreachable.
+
+**A nucleus-side initial endowment is not an answer**, and the review is right to
+exclude it. `ADR-0093` §3a.1 names a launcher and a sealed launch plan;
+`STAGE3_LAUNCH_PLANS.md` and ADR-0077 §3–§5 make operation 22 the only way an
+entry enters one; and the boot process's own endowment is "the launcher's own
+stated constant until `/system/policy/` exists" (`CAPABILITY_V1` §2) — a constant
+that hands authority to the *first* process, not a way for that process to hand it
+on. A hard-coded initial grant would put the publication authority in the nucleus's
+constant and leave the sealed-plan path still unimplemented.
+
+**So §15's table is wrong on one row and the correction is not a repair.** Adding
+`endow_for_launch` makes the interface two operations, not one. That is
+mechanical. What it does not fix is §21.
+
+## 21. Confirmed: the nominal interface is not preserved, and both directions pass
+
+Read end to end, not from the descriptions.
+
+### 21a. Operation 22 never sees an interface
+
+`nucleus/src/syscall.rs::launch_plan_endow`:
+
+```rust
+let object = match capability::resolve(caller, frame.rdi, 0) { … };
+…
+let entry = crate::plan::Entry {
+    binding,
+    object,
+    rights: frame.r10 as u32 & capability::rights_of(caller, frame.rdi),
+    scope: 0,
+};
+```
+
+The capability is resolved **at right 0** — `SYSTEM_ABI_V1` row 22's "at no
+particular right" — and what is recorded is object, intersected rights and the
+binding. There is no interface argument in row 22 and no interface field in the
+entry.
+
+### 21b. The plan entry has four fields and none is an interface
+
+`nucleus/src/plan.rs`:
+
+```rust
+pub struct Entry {
+    pub binding: Binding,
+    pub object: Object,
+    pub rights: u32,
+    pub scope: u64,
+}
+```
+
+### 21c. Nor does the launch record
+
+`tos-launch::LaunchCapability`: `handle`, `object`, `rights`, `scope`, `binding`.
+Its own comment says why the binding is the key — "two imports of one interface
+are legal, so an interface path cannot tell them apart" — which is a statement
+about two imports of **one** interface and says nothing about two interfaces.
+
+### 21d. And `granted()` makes exactly one comparison
+
+`runtime-image/src/main.rs`: find the endowment whose binding equals
+`request.binding`; compute `wanted` from `interfaces::interface(request.interface)`'s
+`ObjectKind`; then
+
+```rust
+(capability.object == wanted).then(|| Handle::new(capability.handle))
+```
+
+One comparison, on the object kind.
+
+### 21e. Both counterexamples therefore pass
+
+| | parent holds | endowed under binding | child declares | `granted()` |
+|---|---|---|---|---|
+| **forward** | `block.device.V1Publisher`, `call`, over endpoint P | `generic` | `import capability system.ipc.Endpoint as generic` | `wanted = OBJECT_ENDPOINT`, entry's object is `OBJECT_ENDPOINT` → **granted** |
+| **reverse** | `system.ipc.Endpoint`, `call`, over an ordinary endpoint | `publication` | `import capability block.device.V1Publisher as publication` | `wanted = OBJECT_ENDPOINT` → **granted** |
+
+The forward direction is the one that matters: the child receives the publication
+endpoint as an ordinary endpoint and may reach `endpoint_call_carrying` on it,
+having never been given `block.device.V1Publisher`. **It can publish.**
+
+### 21f. Why nobody noticed: the map is injective today
+
+Ten accepted interfaces, ten distinct object kinds:
+
+| kind | interface |
+|---|---|
+| `Endpoint` | `system.ipc.Endpoint` |
+| `Reply` | `system.ipc.Reply` |
+| `MemoryAuthority` | `system.memory.Authority` |
+| `LaunchPlanBuilder` | `system.process.LaunchPlanBuilder` |
+| `LaunchPlan` | `system.process.LaunchPlan` |
+| `Process` | `system.process.Control` |
+| `PciBus` | `platform.pci.Bus` |
+| `PciFunction` | `platform.pci.FunctionConfig` |
+| `IrqSource` | `platform.irq.Source` |
+| `DmaRegion` | `platform.dma.Region` |
+
+interface → object kind is **injective**, so "a grant of the matching kind"
+determines the interface uniquely and retyping is unreachable. Q1-A would be the
+first pair to break that, and simultaneously the first design to rely on the
+nominal type to express authority. Those two together are the defect.
+
+### 21g. And a second, independent ceiling
+
+Even with the type preserved, `block.device.V1Publisher::publish` and
+`system.ipc.Endpoint::endpoint_call_carrying` are both `SYSTEM_ABI_V1`
+operation **3**, with the same register and transfer-slot layout. They are one
+instruction. So a nominal type can gate **which schema rows a module may name** —
+which the frontend and the verifier do enforce, on the artifact — and it can never
+be a check the nucleus performs on a handle. Any decision adopting a nominal
+publication type should say that, so that nobody later reads the type as a
+runtime boundary.
+
+## 22. The normative question, and it has not been decided
+
+The review asks whether the retyping is **A**, a forbidden retyping the model
+overlooked, or **B**, permitted launcher policy. The corpus supports each of two
+narrower statements, and it does not adjudicate between the two readings.
+
+### 22a. What says B — the mechanism is licensed
+
+- **`docs/42` §2**: an import "declares that the module may receive one opaque
+  value … whose nominal capability type is `system.time.Clock`. **It is a request,
+  not a grant. The process launcher/supervisor, not source text, maps the request
+  to a concrete grant after policy/trust evaluation.**"
+- **`CAPABILITY_V1` §3**: `capability = object + rights + scope + lifetime +
+  generation`. **The interface is not one of the five.** Nothing in §1–§4 attaches
+  an interface to a handle.
+- **`SYSTEM_INTERFACE_V1` §4**: "**The kind is a check, not the mechanism that
+  chooses a grant.** Which grant answers which request is decided by the binding
+  the module declared."
+- **ADR-0061** is the most explicit of all: "No accepted document joins the three,
+  so even 'match a request to a grant of the matching kind' is not derivable; **it
+  is a decision**" — and of the check it adopted, "the kind check is necessary
+  under **every** option and **is not a matching rule**."
+
+### 22b. What says A — the intent was that a mismatch be refused
+
+- **The precedent is exactly on point.** `system.process.LaunchPlanBuilder` and
+  `system.process.LaunchPlan` are one object in two states, and the model gave
+  them **two object kinds** rather than one kind plus a flag. `interfaces.rs`
+  records the reason: "a builder and a sealed plan declare *different*
+  operations, and **a launcher answering `import capability
+  system.process.LaunchPlan` with a builder would be answering a request for
+  something that has been decided with something that has not.**" Faced with two
+  interfaces that could have shared an object, the model added a kind so that the
+  launcher's check would refuse the mismatch — it did not trust the launcher.
+- **`SYSTEM_INTERFACE_V1` §4 states the check's purpose**: "so that a launcher
+  answering a module's request can **refuse a grant of the wrong kind** at startup
+  instead of letting the module discover it at its first call." For a shared kind
+  that purpose is vacuous.
+- **The prohibitions the review cites are real but do not reach this.** "No
+  **source** operation can widen a right, recreate a consumed linear capability,
+  or transfer a handle by encoding its bits" (`docs/42` §2); attenuation is
+  downward only; no accepted operation converts between capability interfaces. A
+  launcher answering a request is not a source operation on a capability, so none
+  of these forbids it — which is why the retyping is **unguarded** rather than
+  permitted by anyone's decision.
+
+### 22c. The determination
+
+**The contracts permit the mechanism and no decision ever authorised the power.**
+Those are different statements and the review is right to separate them:
+
+1. *the launcher decides who gets authority* — accepted, repeatedly and
+   explicitly;
+2. *the launcher decides which accepted operation set a child may exercise over a
+   given object at given rights* — **never decided, because until Q1-A it was
+   unreachable**, and the one time the model came near it (22b's precedent) it
+   removed the possibility rather than granting the power.
+
+Claim 2 does not follow from claim 1, and I am not going to resolve it: it is a
+Level 2-or-3 question about the capability model and it belongs to the Project
+Architect. **What does not need resolving is Q1-A's fate**, because it fails under
+either reading:
+
+- under **B**, the nominal type carries no authority, so ADR-0093 §10.1's negative
+  ("a service that was not granted the publication capability cannot publish") is
+  **unprovable**: the forward counterexample publishes. Q1-A would buy a Tier 2
+  contract, a verified-IR declaration of intent and a nicer denial message, and
+  would not establish the thing it exists to establish;
+- under **A**, the model must be changed to preserve the type, which is Q1-A2.
+
+## 23. What §11 got wrong
+
+§11 ended: "A launcher *could* endow the publication endpoint to a third module
+under a `system.ipc.Endpoint` binding … It is a trust boundary, not a hole."
+
+**That conflated the two claims of §22c and asserted the second as settled.** The
+sentence is withdrawn. What is true:
+
+- the launcher deciding *who* holds the authority is a trust boundary, accepted;
+- the launcher deciding *what type* the authority has, and thereby which accepted
+  operations are reachable over one object at one right, is an undecided power
+  that the accepted corpus neither grants nor forbids;
+- and the specific case §11 described is not merely a boundary: it is the
+  counterexample that makes ADR-0093 §10.1 unprovable under Q1-A, which §11 should
+  have noticed and did not.
+
+§12's layer table stands as written, including its conclusion that the nucleus
+cannot distinguish a publication capability from any other endpoint capability.
+What §12 did not do is follow that through to the negative gate, which is §22c.
+
+## 24. Q1-A2, and the options recomputed
+
+### 24a. Q1-A2 — Q1-A plus a type-preserving endowment
+
+**Only the minimum, and it is not designed further than the comparison needs.**
+
+| question | answer |
+|---|---|
+| must a plan entry hold an interface identity | yes — §21b is where the chain breaks first, and §21c is the second break. Both the plan entry and the launch record need it |
+| where does the identity come from | **from the verified operation row, never from a string the module supplies.** `endow_for_launch` is declared per interface (§20), so the bridge performing it knows which interface it is performing over; the verifier already proved the call site's exact nominal type (`V2013_CAPABILITY`). A module-supplied name would be `docs/37`'s "textual manifest grants itself authority" |
+| where is it compared | in `granted()`, beside the object-kind check: the stored identity must equal `request.interface` |
+| does it touch `SYSTEM_ABI_V1` operation 22 | **yes.** Row 22 has no channel for it. Either a second bounded string in the argument region at a new fixed offset with its length in `r8`, or the existing `LAUNCH_ENDOW_BINDING` becomes a two-field record. Either is a change to an accepted ABI row — not a new operation, which is cheaper than Q1-B's likely cost, but not "the ABI is unchanged" |
+| launch-plan / record format | `plan::Entry` and `LaunchCapability` each gain one bounded field. At `MAX_ENDOWMENT = 4` × `MAX_PLANS = 4` × `MAX_BINDING = 64` that is 1 KiB of additional static nucleus storage, bounded like everything else |
+| nucleus trusted base | grows by **an opaque field the nucleus never interprets**, exactly as it already carries a binding string: it never resolves an interface, never compares one to a list, and holds no namespace. Both ends of the comparison are in the runtime image, which is already in the trusted base and is already the party that performs the object-kind check |
+| verifier / runtime | no new verifier obligation: V2013 and V2033 already prove the call site's interface. The runtime image gains the write (parent side) and the comparison (child side) |
+| decision level | **argued both ways and not settled here.** Level 2 if extending row 22 is read as a contract extension preserving invariants; Level 3 if touching the ABI's closed table is read as moving a trust boundary. The accepting ADR must make that argument rather than assume it |
+| compatibility | every existing entry has no identity, so absence must mean something. **It must be refused, not treated as a wildcard**: a wildcard is the retyping with extra steps, since a parent could simply omit the field. So the bridge always writes it and an entry without one fails the child's startup — which is compatible only because the bridge is the sole path to operation 22 from canonical text |
+
+**Why a module cannot forge the identity.** A TOS Core module has no inline
+assembly, no raw system call and no pointer; the typed bridge is its only route to
+operation 22, and the bridge derives the identity from the `PERFORMED` row the
+verified instruction named. The nucleus is trusting the runtime image, which it
+already trusts for the object-kind check.
+
+**What Q1-A2 buys beyond Q1-A.** It closes §21's chain, so the forward
+counterexample is refused and ADR-0093 §10.1's negative becomes provable. It does
+**not** touch §21g: `publish` and `endpoint_call_carrying` remain one instruction,
+so the type is still an artifact-level gate and never a nucleus check on a handle.
+And it is **generic** — it fixes the degree of freedom for every future interface
+pair, not only for publication.
+
+### 24b. Q1-B, re-read — and it is better than §16 said
+
+§16 repeated ADR-0093 §4's objection that Q1-B puts "an interface-name namespace
+in ring 0". **On re-reading, filling `OBJECT_INTERFACE` does not require a
+namespace.** An `InterfacePublication` object can be an *unnamed* object of a new
+kind, minted at the boot/platform boundary under `CAPABILITY_V1` §2's third origin
+class, one per published interface, with which interface it *means* recorded in
+the launcher's plan and in the audit record — exactly where the meaning of every
+other endowment lives. The nucleus would then hold a kind and no names.
+
+If that is right, Q1-B's cost is one object kind — whose number is **already
+allocated and reserved** for this (`OBJECT_INTERFACE = 4`, ADR-0093 §2) — plus
+whatever mints one, and:
+
+- **it restores injectivity**, so the retyping of §21e is refused by the object-
+  kind check that already exists. No plan field, no launch-record field, no change
+  to operation 22;
+- the nucleus distinguishes a publication capability from an endpoint capability,
+  so §21g's ceiling disappears too: `publish` would be an operation on a different
+  object kind, and a `call` on an endpoint could not reach it.
+
+**This materially changes the weighing and it is not a recommendation.** ADR-0093
+declined **P2**, which was a *registry in the nucleus*; filling `OBJECT_INTERFACE`
+without a registry is not P2, and §4's stated objection may not apply to it. That
+is the Project Architect's reading to make, not mine — and it is the single most
+important thing this section has to say.
+
+### 24c. The recomputed comparison
+
+| | Q1-A | **Q1-A2** | **Q1-B** (unnamed kind) | Q1-C | Q1-D |
+|---|---|---|---|---|---|
+| **implementable as written** | **no** (§20, §21) | yes | yes | yes | yes, it is the status quo |
+| **ADR-0093 §10.1 provable** | **no** — the forward counterexample publishes | yes | yes | no — no per-interface authority exists to withhold | no |
+| **`CAPABILITY_V1` §6** | claimed, not achieved | achieved at the artifact layer | achieved at the nucleus layer | **narrowed**, explicitly | unmet, explicitly |
+| **nucleus / trusted base** | none | one opaque uninterpreted field, 1 KiB static | one object kind, number already reserved; **no namespace** if §24b is right | none | none |
+| **`SYSTEM_ABI_V1`** | unchanged | **operation 22 extended** | likely one operation added to mint the object | unchanged | unchanged |
+| **new Tier 2 surface** | one document, two operations | same | same | none | none |
+| **generality** | — | **generic**: fixes every future interface pair | specific to publication | — | — |
+| **§21g ceiling (two rows, one instruction)** | remains | remains | **removed** | n/a | n/a |
+| **textual registry** | unchanged | unchanged | small change: it holds a publication object rather than an endpoint | grows: keys entries by a parsed name | unchanged |
+| **endpoint / endowment budget** | fits at N = 1 only | same | **better**: no per-interface endpoint is needed | best: one endpoint for all interfaces | unchanged |
+| **Stage 5** | nothing to reconcile | nothing to reconcile | an object kind to carry forward; **no** `/system`–`/dev` namespace question if unnamed | nothing structural | ADR-0051's evidence stays unsatisfiable |
+| **reversibility** | high | medium: an ABI row and two formats | low: an object kind is the hardest thing here to withdraw | high | total |
+
+**Internally inconsistent options, restated.** Q1-A is now one of them: it cannot
+deliver the conformance item it exists to deliver. Q1-C remains unable to be
+described as implementing `CAPABILITY_V1` §6. Q1-A2, Q1-B and Q1-D are each
+internally consistent.
+
+## 25. Adversarial evidence, designed and not implemented
+
+Two negatives, and **both would be accepted by the architecture today** — which
+is the research result, not a test to be adjusted until Q1-A passes.
+
+### 25a. A publication capability cannot be endowed as an ordinary endpoint
+
+- **Topology**: a launcher holding `block.device.V1Publisher` with `call` over
+  endpoint P; a child declaring `import capability system.ipc.Endpoint as generic`;
+  the launcher endows P under binding `generic`.
+- **Required outcome**: the child is refused before its first instruction, and the
+  audit record names both interfaces — the one endowed and the one requested.
+- **Today**: `granted()` compares only the object kind, both sides are
+  `OBJECT_ENDPOINT`, and the child **starts and holds the publication endpoint as
+  an ordinary endpoint**. The test fails, and it fails at the architecture rather
+  than at an implementation.
+- **Under Q1-A2**: refused, with the stored identity and the requested interface
+  both nameable in the refusal.
+- **Under Q1-B**: refused by the existing kind check, because the kinds differ.
+
+### 25b. An ordinary endpoint cannot be endowed as `block.device.V1Publisher`
+
+- **Topology**: the mirror — an ordinary endpoint endowed under a binding the
+  child declared as the publication interface.
+- **Required outcome**: refused at startup.
+- **Today**: granted, for the same reason.
+- **Why it matters even though its direct effect is harmless** — the child would
+  hold "publication authority" over an endpoint nobody publishes on, and its calls
+  would reach whatever receives there. It matters because it is the same defect
+  seen from the other side, and because a model that admits it cannot claim the
+  nominal type means anything about what a handle names.
+
+### 25c. A third negative any type-preserving option needs
+
+An entry carrying **no** interface identity must be refused rather than treated as
+matching, or the retyping returns by omission (§24a, compatibility row). Worth
+stating now because it is the kind of case a later implementer reads as a
+compatibility convenience.
+
+### 25d. The positive that must accompany them
+
+A child's `import capability X` is answered by an entry endowed **through X**, and
+the boot log shows the identity that travelled. Without it the three negatives
+could all be satisfied by a check that refuses everything.
+
+## 26. Where this leaves the decision
+
+**§17's recommendation of Q1-A is withdrawn.** It rested on §11's unproven
+sentence and on a schema §20 shows to be self-contradictory, and it did not follow
+§12's own finding through to the negative gate.
+
+**No replacement recommendation is offered, and that is deliberate**, because the
+choice now turns on a question of the capability model that is not mine to answer:
+§22c's claim 2 — whether a launcher may decide which accepted operation set a
+child exercises over one object at one right. That question is prior to Q1-A2
+versus Q1-B:
+
+- if claim 2 is **rejected**, the model owes type preservation regardless of
+  publication, and Q1-A2 is the generic fix — with ADR-0093-Q1 becoming a
+  consumer of it rather than the reason for it;
+- if claim 2 is **accepted**, no amount of nominal typing can carry this authority
+  and the honest options are Q1-B (put it in the kind, where the nucleus can see
+  it) or Q1-C (stop pretending the type carries it, and record the narrowing).
+
+**What is now established, and should not be re-derived.** Q1-A as written is not
+implementable (§20) and would not prove what it exists to prove (§21, §22c). The
+retyping passes in both directions today (§21e), unreachably so until now (§21f).
+`OBJECT_INTERFACE` can probably be filled without a ring-0 namespace (§24b),
+which reopens Q1-B on better terms than §16 gave it. ADR-0093-Q1 stays open, and
+the question above may deserve an open question of its own — which is also the
+Project Architect's call, since raising one is a claim about the model.
