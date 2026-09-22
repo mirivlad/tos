@@ -10,12 +10,12 @@
 // somewhere else — a separate textual process that holds nothing but a way to
 // call it, and which was given that way by the ADR-0093 P3 registry.
 //
-// **What the registry does and does not settle.** It hands out the one endpoint
-// that was registered with it. No interface name travels in this protocol, and
-// the capability the publisher presented is an ordinary `system.ipc.Endpoint`
-// rather than one whose nominal type is the interface being published — which
-// is what `CAPABILITY_V1` §6 and ADR-0051 §2 require of a publication
-// authority. That gap is tracked as ADR-0093-Q1 and is not closed here.
+// **What the registry settles.** It hands out the one endpoint registered with
+// it, and the endpoint this module publishes *through* is the publication
+// authority for `block.device.v1`: `CAPABILITY_V1` §6 as ADR-0095 amended it
+// makes the authority a dedicated channel whose identity fixes what may be
+// published, so possession of a `call` name for it is the permission. No
+// interface name travels in this protocol and none needs to.
 //
 //   client --lookup--> registry --the endpoint--> client
 //   client --call, naming a sector--> THIS --DMA/VirtIO/IRQ--> device

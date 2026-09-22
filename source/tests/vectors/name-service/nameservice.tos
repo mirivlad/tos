@@ -9,15 +9,18 @@
 // because this module checks a list — because it holds no name for the other
 // endpoint.
 //
-// **That is not yet `CAPABILITY_V1` §6, and this comment used to claim it
-// was.** §6 makes the right to publish a capability *whose nominal type is the
-// interface being published*, and ADR-0051 §2 makes the launcher's reading of
-// `capability_imports` the mediation. What arrives on `publish` here is an
-// ordinary `system.ipc.Endpoint`: this registry holds one unnamed entry, no
-// interface name travels in the protocol, and nothing here names
-// `block.device.v1` at all. Closing that gap needs a capability type whose path
-// is the interface, which no accepted schema declares — tracked as ADR-0093-Q1,
-// and not decided in text that merely implements.
+// **That is `CAPABILITY_V1` §6 as ADR-0095 amended it.** §6 makes the right to
+// publish a capability naming a **dedicated publication object** whose identity
+// fixes what may be published through it — so the endpoint this module receives
+// on *is* the authority for `block.device.v1`, and possession of a `call` name
+// for it is what permits publication. No interface name travels in the protocol,
+// because this endpoint represents exactly one publication class.
+//
+// It said the opposite until 2026-09-23, when §6 still required the authority's
+// nominal type to be the published interface. That requirement asked for an
+// enforcement no layer of this system performs — a launch plan records object,
+// rights and binding, and the startup check compares object *kinds* — and
+// ADR-0095 §1 records why it was narrowed instead of implemented.
 //
 // **An answer cannot carry a capability**, so the answer to a lookup is not
 // the delivery. `ipc::hand` copies payload bytes from the replier's region

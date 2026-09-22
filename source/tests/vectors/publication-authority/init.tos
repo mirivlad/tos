@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The launcher of the publication-authority negative, and its whole content is
+// what it does **not** hand over.
+//
+// `CAPABILITY_V1` §6, as ADR-0095 amended it, makes the right to publish
+// `block.device.v1` a capability naming the dedicated publication endpoint. So
+// the negative is one endowment short of the positive and identical otherwise:
+//
+//   registry   `receive` on the publication endpoint
+//   claimant   its own inbox, and **no name for the publication endpoint**
+//
+// The claimant's source declares `import capability system.ipc.Endpoint as
+// publish`, exactly as an authorised publisher would. It is refused before its
+// first instruction because nothing answers that request — not because of its
+// name, its text, or anything the registry decides.
+//
+// **The mutation this exists to permit.** Endowing `publish_call` to the
+// claimant's plan under the binding `publish`, and changing nothing else, makes
+// it start and publish. That is what shows the negative tests possession of
+// authority over that endpoint object and not some other condition
+// (ADR-0095 §5.3).
+
+module system.boot.init version 1.4 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as publish_full;
+import capability system.ipc.Endpoint as inbox_full;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 12,
+    imports: 12
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_SEND: u64 = 1u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+const CHILD_GRANT: u64 = 8388608u64;
+
+// The registry: `receive` on the publication endpoint, and nothing else. It is
+// the only holder of `receive` there, which `IPC_V1` §2 requires.
+fn registry_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, publish_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(publish_full, builder, RIGHT_RECEIVE, "publish") != OK) {
+                return Err(-1001i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 1200i64); }
+    }
+}
+
+// The claimant. **One endowment, and it is not the publication endpoint.** Its
+// own inbox is here so that its plan is not empty and so that the process is an
+// ordinary one in every respect but the authority it lacks.
+fn claimant_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(inbox_full, builder, RIGHT_SEND, "own") != OK) {
+                return Err(-2001i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2200i64); }
+    }
+}
+
+fn start(plan: system.process.LaunchPlan, entry: string) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(
+        process, memory, plan, entry, CHILD_GRANT, NO_SELF_RIGHTS
+    )) {
+        Ok(child) => { return OK; }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+//  1  the registry was created
+//  2  the claimant was created — the process exists; whether it runs is the
+//     startup check's answer, and that is the point of the boot
+//  4  the launcher let go of its own receiving name, without which the registry
+//     could not have been given one (`IPC_V1` §2)
+pub fn main() -> i64
+    uses [process, memory, publish_full, inbox_full, system.ipc.Endpoint]
+{
+    match (registry_plan()) {
+        Ok(registry) => {
+            match (claimant_plan()) {
+                Ok(claimant) => {
+                    let mut found: i64 = 0i64;
+                    if (capability_release(publish_full) == OK) {
+                        found = found + 4i64;
+                    }
+                    let started_registry: i64 = start(registry, "system/registry/nameservice.tos");
+                    if (started_registry != OK) { return started_registry - 5000i64; }
+                    found = found + 1i64;
+                    let started_claimant: i64 = start(claimant, "system/service/claimant.tos");
+                    if (started_claimant != OK) { return started_claimant - 6000i64; }
+                    found = found + 2i64;
+                    return found;
+                }
+                Err(refused) => { return refused; }
+            }
+        }
+        Err(refused) => { return refused; }
+    }
+}

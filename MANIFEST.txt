@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 517
+- files in the release package: 519
 - active system invariants: 21
-- architecture decision records: 94 (40 accepted)
+- architecture decision records: 96 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -136,8 +136,10 @@ Architecture decision records
 - docs/adr/0090-the-resolved-closure-import-edge-ceiling.md — ADR-0090: the resolved-closure import-edge ceiling [**Accepted (Project Architect-approved, 2026-09-15)**]
 - docs/adr/0091-the-transitive-import-envelope.md — ADR-0091: `resource imports` is a count of modules, and it is counted [**Accepted (Project Architect-approved, 2026-09-15)**]
 - docs/adr/0092-reset-authority.md — ADR-0092: Who may reset a PCI function, and what "reset" means [**Accepted (option R1a)** (Project Architect-approved, 2026-09-21)]
-- docs/adr/0093-block-device-publication-and-lifetime.md — ADR-0093: Publication and lifetime of `block.device.v1` [**Accepted (option P3)** (Project Architect-approved, 2026-09-21)]
+- docs/adr/0093-block-device-publication-and-lifetime.md — ADR-0093: Publication and lifetime of `block.device.v1` [**Accepted (option P3)** (Project Architect-approved, 2026-09-21), **amended 2026-09-23 by ADR-0095** — the publication authority is a]
 - docs/adr/0094-capability-transfer-from-canonical-text.md — ADR-0094: How a canonical textual module carries a capability in a message [**Resolved as §6.1's option A — textual schema and runtime only, over]
+- docs/adr/0095-publication-authority-is-a-dedicated-channel.md — ADR-0095: A publication authority is a dedicated channel, not a nominal type [**Accepted** (Project Architect-directed, 2026-09-23)]
+- docs/adr/0096-nominal-interface-identity-under-delegation.md — ADR-0096: Must a nominal interface survive delegation and endowment? [**Proposed** (raised 2026-09-23 on Project Architect direction; **not]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

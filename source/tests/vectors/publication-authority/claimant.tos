@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A process that would publish `block.device.v1` and cannot.
+//
+// **Its source is an authorised publisher's source.** It requests the
+// publication endpoint under the binding an authorised publisher requests it
+// under, and it would call it the moment it ran. Nothing here is weakened, no
+// check is stubbed, and no string is compared: the only difference between this
+// module running and not running is whether its launcher endowed a capability
+// naming that endpoint.
+//
+// That is `CAPABILITY_V1` §6 as ADR-0095 amended it. The authority is the
+// endpoint object's identity and possession of a name for it, so a process that
+// holds no such name cannot reach the registry's publication channel at all —
+// the registry is never consulted and has no branch that could get this wrong.
+//
+// **What the boot shows.** The startup check answers this module's request
+// before its first instruction, so `main` never runs and the refusal is in the
+// audit record with the binding and the interface named
+// (`PROCESS_IDENTITY_V1` §7.3). The value below is therefore never reported, and
+// a boot in which it *is* reported is a boot in which this module was given the
+// authority — which is exactly the mutation ADR-0095 §5.3 requires.
+
+module system.service.claimant version 1.4 profile full;
+
+import capability system.ipc.Endpoint as publish;
+import capability system.ipc.Endpoint as own;
+
+resource [
+    fuel: 16384,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_call_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [own, publish];
+
+const OK: i64 = 0i64;
+
+// 64 — the registration was accepted. Reachable only by a process that holds a
+// capability naming the publication endpoint.
+//
+// **A value no other module in this boot reports**, which is not decoration: the
+// gate reads accounts out of one log, and two modules answering with the same
+// number would let a count of one be satisfied by the wrong one of them.
+const ACCEPTED: i64 = 64i64;
+
+pub fn main() -> i64 uses [publish, own] {
+    let mut found: i64 = 0i64;
+    if (endpoint_call_carrying(own, publish, 0u64) == OK) {
+        found = found + ACCEPTED;
+    }
+    return found;
+}

@@ -150,11 +150,12 @@ client does not read a sector. 512 bytes of block data do not cross IPC: one
 number computed from them does. The data path
 `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes — client memory
 through IPC into the service's DMA memory — is not reached, because a region
-cannot yet be transferred in a message from canonical text. And the publication
-authority is not yet the one `CAPABILITY_V1` §6 accepts: what a publisher
-presents is an ordinary endpoint capability rather than one whose nominal type
-is the published interface, no interface name travels in the protocol, and that
-gap is tracked as ADR-0093-Q1 rather than glossed.
+cannot yet be transferred in a message from canonical text. The publication
+authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095 amended it on
+2026-09-23: a dedicated publication endpoint whose identity fixes what may be
+published through it, with the registry holding `receive` and the authorised
+service holding `call`, so no interface name travels in the protocol and a
+process that cannot name that endpoint cannot publish.
 
 TOS is not yet a user shell, application environment, or desktop operating
 system. What it does with a disk is single sector reads and one write, reached
@@ -432,11 +433,9 @@ device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
 It does **not** prove that block *data* crosses IPC — 512 bytes never do, one
 number does — nor queue multiplexing, scheduling, filesystem integration, a
-generic driver subsystem, restart and republication (ADR-0093 case C), or
-publication authority in the sense `CAPABILITY_V1` §6 fixes (ADR-0093-Q1). None
-of those is designed. The two honest next slices are a region crossing IPC from
-canonical text, and a decision on ADR-0093-Q1; the order between them is the
-Project Architect's.
+generic driver subsystem, or restart and republication (ADR-0093 case C). None of
+those is designed. The next slice is a region crossing IPC from canonical text,
+which is what turns "the client got a number" into "the client got the bytes".
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a

@@ -453,13 +453,25 @@ qemu_capability_transfer() {
 # scalar computed from them does. `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1
 # puts the boundary at client memory through IPC into the service's DMA memory,
 # and no accepted schema row can carry a region in a message, so that boundary is
-# not reached here. Nor is publication authority in `CAPABILITY_V1` §6's sense:
-# ADR-0093-Q1. The claim gate reads this comment, which is why it says so.
+# not reached here. The claim gate reads this comment, which is why it says so.
+#
+# Publication authority *is* `CAPABILITY_V1` §6's, as ADR-0095 amended it: the
+# publish endpoint's identity is the authority, and the negative — that a process
+# holding no capability naming it cannot publish — is `qemu_publication_authority`.
 qemu_block_service() {
     bash "$ROOT/source/host-tools/qemu-test/block-service.sh"
 }
 qemu_name_service() {
     bash "$ROOT/source/host-tools/qemu-test/name-service.sh"
+}
+# `CAPABILITY_V1` §6 as ADR-0095 amended it: the right to publish
+# `block.device.v1` is a capability naming a dedicated publication endpoint, so
+# possession of a name for that endpoint is the authority. Two boots of one
+# capsule differing in exactly one endowment — the claimant's source, binding and
+# registry are identical in both, and only the capability moves. ADR-0095 §5.2 is
+# the negative and §5.3 is the mutation, which is performed rather than described.
+qemu_publication_authority() {
+    bash "$ROOT/source/host-tools/qemu-test/publication-authority.sh"
 }
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
@@ -688,6 +700,7 @@ gate qemu       full-only "QEMU two requests outstanding together"         qemu_
 gate qemu       full-only "QEMU a textual driver writes a real sector"     qemu_virtio_block_write
 gate qemu       full-only "QEMU a capability crosses in a message"      qemu_capability_transfer
 gate qemu       full-only "QEMU a client looks a service up"            qemu_name_service
+gate qemu       full-only "QEMU publishing needs the publish endpoint" qemu_publication_authority
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

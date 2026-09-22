@@ -2,7 +2,10 @@
 
 # ADR-0093: Publication and lifetime of `block.device.v1`
 
-- Status: **Accepted (option P3)** (Project Architect-approved, 2026-09-21)
+- Status: **Accepted (option P3)** (Project Architect-approved, 2026-09-21), **amended 2026-09-23 by ADR-0095** — the publication authority is a
+  dedicated publication channel rather than a capability whose nominal type
+  is the published interface. P3 itself is unchanged: the registry is still an
+  ordinary textual service. §1, §3a.1, §3a.2, §10.1 and §11 carry the change
 - Project Architect approval: 2026-09-21, on the option set below — **granted
   before any of it was implemented**
 - Date: 2026-09-21
@@ -51,9 +54,14 @@ offer, which on present analysis it does not.
   `capability_imports` from the verified IR and grants or denies under policy.
   `docs/37`'s Stage 3 failure condition "textual manifest grants itself
   authority" is why.
-- **The right to publish is itself a capability** whose nominal type is the
-  interface (`CAPABILITY_V1` §6). There is no self-declared `provides`, and the
-  registry never holds an entry no one granted.
+- **The right to publish is itself a capability** (`CAPABILITY_V1` §6). **As
+  amended by ADR-0095** it names a *dedicated publication object* whose identity
+  fixes what may be published through it, and the authority is possession of a
+  capability naming that object — not a nominal capability type. There is no
+  self-declared `provides`, no name written into a message is authority, and the
+  registry never holds an entry no one granted. This bullet said "whose nominal
+  type is the interface" until 2026-09-23; ADR-0095 §1 records why that was not
+  implementable.
 - **Endowment needs no new mechanism.** A sealed launch plan carries whatever
   the creator gives the child (ADR-0077 §3–§5, operations 19 and 20).
 - **Endpoints, delegation, attenuation and revocation are decided**
@@ -122,12 +130,21 @@ described.
 ### The answers to §3's eight questions
 
 1. **Who holds the publication capability.** Each publisher, granted by its
-   launcher from a sealed launch plan (ADR-0077 §3–§5), as the authority to
-   publish `block.device.v1` and nothing else. The name service holds the
-   registry; it does not hold anyone's right to publish.
+   launcher (ADR-0077 §3–§5), as `call` on the **dedicated publication endpoint**
+   for `block.device.v1` and nothing else. The name service holds the registry
+   and holds `receive` on that endpoint; it does not hold anyone's right to
+   publish. **Amended by ADR-0095**: what makes the authority specific to
+   `block.device.v1` is the identity of that endpoint object, not a nominal type.
+   Whether the launcher delivers it in the sealed plan or hands it over in a
+   message afterwards is bounded by ADR-0077 §2's four-capability plan limit and
+   is not part of this decision — the launcher decides who holds it either way.
 2. **How a published interface comes into existence.** The block service calls
-   the name service over IPC, presenting its publication capability and the
-   endpoint it wants named. No self-declaration; ADR-0051 §2 unchanged.
+   the name service **on the publication endpoint**, delegating the endpoint it
+   wants named. Reaching that endpoint is the presentation of the authority:
+   possession is what the nucleus checks, and a process that cannot name it cannot
+   make the call. **No interface name travels in the protocol**, because the
+   endpoint represents exactly one publication class (ADR-0095 §3). No
+   self-declaration; ADR-0051 §2 unchanged.
 3. **How a client obtains a capability naming it.** A lookup call to the name
    service, which answers with an endpoint capability for the publisher. The
    client must therefore hold an endpoint capability for the **name service**,
@@ -385,8 +402,16 @@ into any evidence document before the tests exist and are gated — evidence
 follows a passing gate and never precedes one. Under P3 as accepted, item 5
 does not arise.
 
-1. A service that was not granted the publication capability cannot publish,
-   and says so in the audit record (ADR-0051's requirement, finally testable).
+1. **Replaced by ADR-0095 §5, which is what this item now means.** A process
+   that is not given a capability naming the dedicated publication endpoint
+   cannot publish; the refusal is attributable in the audit record; and granting
+   that same process `call` on that endpoint — changing nothing else — makes the
+   negative stop proving denial. The third part is required, not advisory: it is
+   what shows the evidence tests possession of the authority and not some other
+   condition. The original wording asked for a service "not granted the
+   publication capability" while the capability was a nominal type, which
+   `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §21 showed was not a
+   property the model could establish.
 2. A client reaches the service holding **only** an endpoint capability: no
    function, no window, no source, no DMA region, and no means of naming the
    device.
@@ -397,7 +422,7 @@ does not arise.
 5. Under P2: the nucleus still contains no device-protocol vocabulary, and the
    namespace it gained is bounded and stated.
 
-## 11. Implementation divergence found 2026-09-23, and what it leaves open
+## 11. Implementation divergence found 2026-09-23, and how it was closed
 
 **Dated amendment. Nothing above is changed and nothing above is withdrawn.**
 §3a.1, §3a.2 and §10.1 are what this decision accepted; this section records
@@ -424,11 +449,24 @@ a message handed it (ADR-0094 §11). The gap, the four options and what each one
 touches are in `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md`, which accepts
 nothing.
 
-- Open question: ADR-0093-Q1 — the publication authority of §3a.1–§3a.2,
-  `CAPABILITY_V1` §6 and ADR-0051 §2 is not implemented: what a publisher
-  presents is an ordinary endpoint capability rather than one whose nominal type
-  is the published interface, so §10.1's negative conformance evidence has no
-  subject and is recorded BLOCKED. Options Q1-A…Q1-D are in
-  `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §5 and none is chosen. Until
-  it is answered, no document may describe reaching a generic `publish` endpoint
-  as `CAPABILITY_V1` §6's publication authority.
+### 11a. ADR-0093-Q1, closed 2026-09-23 by ADR-0095
+
+**The question was: the publication authority is not a capability whose nominal
+type is the published interface, so §10.1's negative evidence has no subject.**
+It is closed by the decision going the other way — ADR-0095 amended
+`CAPABILITY_V1` §6 so that a publication authority is a dedicated channel, and
+possession of a capability naming that channel is the authority. The divergence
+§11 recorded therefore no longer exists: what the tree builds is what the
+contract now requires, and §10.1 as replaced by ADR-0095 §5 is testable.
+
+**It was closed by narrowing a contract, not by implementing a feature**, and
+that is worth saying plainly. The research behind it —
+`docs/research/PUBLICATION_AUTHORITY_CONFLICT.md`, including options Q1-A…Q1-D,
+the Q1-A feasibility study and its withdrawal — stays where it is as research and
+history. It is not rewritten as though the question had never been open.
+
+**One finding in it outlived the question and is now ADR-0096**: whether a
+nominal interface should survive delegation or endowment when two interfaces
+share one runtime object kind. That is a question about Stage 3's capability
+model, it does not block Stage 4, and Stage 4 creates no interface pair that
+exposes it.
