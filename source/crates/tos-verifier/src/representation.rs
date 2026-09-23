@@ -95,6 +95,37 @@ pub fn representation_of(interface: &str) -> Representation {
     }
 }
 
+/// The TOS Core minor a representation family first became valid in.
+///
+/// **One arm per non-default member**, so adding a third to the enumeration
+/// without deciding its minor does not compile. `AsInterface` answers `None`
+/// because it is the version 1 semantics and needs no minor at all.
+///
+/// The frontend keeps the same mapping and neither reads the other's: ADR-0085
+/// §13 and §17.7 make the minor a **verifier** obligation as well as a frontend
+/// one, because a hand-written artifact never met the frontend.
+pub fn minor_of(representation: Representation) -> Option<u32> {
+    match representation {
+        Representation::AsInterface => None,
+        // ADR-0085, TOS Core 1.3.
+        Representation::DmaRegionFamily => Some(3),
+        // ADR-0097, TOS Core 1.5.
+        Representation::RegionFamily => Some(5),
+    }
+}
+
+/// The representation family a **type** belongs to, or the default.
+///
+/// The type-keyed half of the derivation, kept beside [`interface_of`] because
+/// they answer two halves of one question: which interface, and which family.
+pub fn family_of(ty: &TypeDef) -> Representation {
+    match ty {
+        TypeDef::DmaRegion(_) | TypeDef::DmaRegionMut(_) => Representation::DmaRegionFamily,
+        TypeDef::Region(_) | TypeDef::RegionMut(_) => Representation::RegionFamily,
+        _ => Representation::AsInterface,
+    }
+}
+
 /// Whether an `import capability` could produce a value of this
 /// representation (ADR-0085 §4a).
 ///

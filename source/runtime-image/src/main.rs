@@ -1229,6 +1229,23 @@ enum Produced {
     /// an unusable extent is `E_NO_CAPABILITY` and not an empty region, because a
     /// region of no bytes is a thing a protocol could mistake for one of some.
     ReceivedRegion,
+    /// `Result<system.ipc.ReceivedCallRegion, i64>`: everything one accepted
+    /// message carried (ADR-0098 §2a).
+    ///
+    /// **The superset of [`Produced::ReceivedCall`] and [`Produced::ReceivedRegion`]
+    /// read from one receive**, because a service of a three-operation protocol
+    /// cannot know which shape is next and a second receive would take the *next*
+    /// message. `system.ipc.ReceivedCall` is untouched (ADR-0097 §8c).
+    ///
+    /// **Absence is `None` and never a zero handle.** A conforming `WRITE` carries
+    /// no answer endpoint and a `CAPACITY` carries neither, so both optional
+    /// positions are `Option`: the transfer slot and the region slot are zeroed by
+    /// the nucleus when a message carried nothing, and this reports that as
+    /// absence rather than handing a module a name for nothing. For the region it
+    /// is the only safe form — an endpoint operation on a dead handle answers
+    /// `E_NO_CAPABILITY`, but an indexed access to a region this host holds no
+    /// mapping for is a *trap*.
+    ReceivedCallRegion,
     /// `Result<system.process.ChildEnding, i64>`: the record operation 14 wrote
     /// at `WAIT_CHILD_RECORD`, as the value it describes.
     ///
@@ -1388,6 +1405,40 @@ const PERFORMED: &[Performed] = &[
         capabilities: &[Placed::Register(Reg::Rdi), Placed::Region(0)],
         values: &[Slot::Fixed(Reg::Rsi, 0), Slot::Fixed(Reg::R8, 1)],
         result: Produced::Status,
+    },
+    // One call carrying the request word **and** one immutable ordinary region in
+    // the same message (ADR-0098 §2a). Every placement it needs already exists:
+    // `Placed::Region(0)` writes `MESSAGE_REGIONS[0]`, `Slot::Word` puts the
+    // request where `IPC_V1` §3 puts a payload and fills the length register
+    // itself, and the fixed `1` is the region count in `r8` — a different
+    // register from the capability count, because they are different areas.
+    //
+    // **Nothing below this row is new.** Operation 3 has always passed `frame.r8`
+    // to `send_transaction` as a region count and supplied the reply capability;
+    // what did not exist was a schema row by which canonical text could name it.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_call_word_region",
+        operation: ENDPOINT_CALL,
+        capabilities: &[Placed::Register(Reg::Rdi), Placed::Region(0)],
+        values: &[
+            Slot::Word {
+                length: Reg::Rsi,
+                at: tos_launch::MESSAGE_PAYLOAD,
+            },
+            Slot::Fixed(Reg::R8, 1),
+        ],
+        result: Produced::Answer,
+    },
+    // The receive that serves such a call: the same selector as
+    // `endpoint_receive`, producing everything one message carried.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_receive_call_region",
+        operation: ENDPOINT_RECEIVE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::ReceivedCallRegion,
     },
     // And the receive that produces it. The same selector as `endpoint_receive`,
     // and its own row rather than a field on `ReceivedCall` (ADR-0097 §8c).
@@ -2544,7 +2595,17 @@ impl System for Endowment<'_> {
         //
         // **A failed send changes nothing**, which is why this reads `status`: if
         // the message did not go, the region is still the sender's.
-        if let (Some(region), OK) = (transferred_region, status) {
+        // **A call that was queued and then cancelled has also given its region
+        // away.** `send_transaction` refuses before it commits, so
+        // `E_BAD_ARGUMENT`, `E_NO_CAPABILITY` and `E_LIMIT` all leave the region
+        // the sender's; but a caller only reaches `Waiting::Reply` *after* its
+        // message is queued, so `E_CANCELLED` from operation 3 proves the
+        // transfer happened. Retiring on it is the fail-closed direction: a
+        // mapping wrongly retired makes a later access refuse, and one wrongly
+        // kept lets this process read memory it has given away.
+        let gave_it_away =
+            status == OK || (performed.operation == ENDPOINT_CALL && status == E_CANCELLED);
+        if let (Some(region), true) = (transferred_region, gave_it_away) {
             self.mappings.retire(region);
         }
         if performed.name == "capability_release" && status == OK {
@@ -2743,6 +2804,83 @@ impl System for Endowment<'_> {
                     ));
                 }
                 Value::Capability(Handle::new(arrived.handle))
+            }
+            Produced::ReceivedCallRegion => {
+                // SAFETY: the transfer table is at the offset ADR-0058 fixes in
+                // this process's own argument region, and both indices are inside
+                // `MAX_TRANSFERRED_CAPABILITIES`.
+                let reply = unsafe {
+                    transferred(
+                        self.arguments,
+                        tos_launch::MAX_TRANSFERRED_CAPABILITIES as usize - 1,
+                    )
+                };
+                // SAFETY: as above.
+                let carried = unsafe { transferred(self.arguments, 0) };
+                // SAFETY: the region area is at the offset ADR-0058 fixes in this
+                // process's own argument region, and slot zero is inside the
+                // contract's maximum.
+                let arrived = unsafe { region_handed_over(self.arguments, 0) };
+                // SAFETY: a constant offset of this process's own argument region,
+                // which the launcher mapped a whole frame at, so eight bytes there
+                // are mapped and aligned.
+                let word =
+                    unsafe { word_at((self.arguments + tos_launch::MESSAGE_PAYLOAD) as usize) };
+                // **A message that carried no capability leaves the slot zero**,
+                // and a handle of all zeros names nothing in any table — so this
+                // reports absence rather than passing that number on as a name.
+                let carried = match carried {
+                    0 => Value::Variant {
+                        index: 0,
+                        payload: alloc::vec![],
+                    },
+                    handle => Value::Variant {
+                        index: 1,
+                        payload: alloc::vec![Value::Capability(Handle::new(handle))],
+                    },
+                };
+                // **And a message that carried no region leaves its record
+                // zeroed.** The same fail-closed test `Produced::ReceivedRegion`
+                // makes — a zero handle, a zero base or an extent of no bytes is
+                // not a region a protocol may be handed — except that here it is
+                // `None` rather than a refusal, because this row serves a protocol
+                // in which arriving without a region is a legal request.
+                let region = if arrived.handle == 0 || arrived.base == 0 || arrived.length == 0 {
+                    Value::Variant {
+                        index: 0,
+                        payload: alloc::vec![],
+                    }
+                } else {
+                    let window = tos_launch::MmioMapRecord {
+                        base: arrived.base,
+                        length: arrived.length,
+                    };
+                    // Read-only: what crosses a message is the immutable form, and
+                    // `IPC_V1` §5 admits no other.
+                    if !self.remember(arrived.handle, window, false) {
+                        return Err(Trap::new(
+                            "RUNTIME_REGION_REFUSED",
+                            alloc::string::String::from(
+                                "more mapped regions than this process may hold",
+                            ),
+                            0,
+                        ));
+                    }
+                    Value::Variant {
+                        index: 1,
+                        payload: alloc::vec![Value::Capability(Handle::new(arrived.handle))],
+                    }
+                };
+                Value::Aggregate(alloc::vec![
+                    Value::Capability(Handle::new(reply)),
+                    carried,
+                    region,
+                    // The inline length this receive returned, and the eight bytes
+                    // the payload begins with. Whether the length makes them mean
+                    // anything is the protocol's check, in canonical text.
+                    Value::Int(IntKind::U64, u128::from(value) as i128),
+                    Value::Int(IntKind::U64, u128::from(word) as i128),
+                ])
             }
             Produced::ChildEnding => {
                 // SAFETY: as above, for the record operation 14 writes at its

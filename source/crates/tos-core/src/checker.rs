@@ -818,10 +818,69 @@ fn refuse_capability_representation(
 /// declares answers `None`: it names no interface, so it has no representation,
 /// and whatever is wrong with such a module is wrong for a different reason.
 fn representation_minor(path: &str) -> Option<u32> {
-    match crate::interfaces::representation_of(path) {
+    match minor_of_representation(crate::interfaces::representation_of(path)) {
+        Some(minor) => Some(minor),
+        // Not an interface with a non-default representation. It may still be a
+        // **record** an accepted schema declares whose *fields* carry one, and a
+        // module that names such a record holds those values without ever writing
+        // their types (ADR-0098 §2a).
+        None => record_representation_minor(path, SCHEMA_RECORD_DEPTH),
+    }
+}
+
+/// Which minor one representation family needs.
+///
+/// **One arm per non-default member**, so that adding a third to the enumeration
+/// without deciding its minor does not compile.
+fn minor_of_representation(representation: crate::interfaces::Representation) -> Option<u32> {
+    match representation {
         crate::interfaces::Representation::AsInterface => None,
         crate::interfaces::Representation::DmaRegionFamily => Some(CAPABILITY_REPRESENTATION_MINOR),
         crate::interfaces::Representation::RegionFamily => Some(REGION_REPRESENTATION_MINOR),
+    }
+}
+
+/// How deep a schema record may nest before this walk gives up.
+///
+/// No accepted record nests at all today. The bound exists so that a schema which
+/// one day declared a record naming itself would make this terminate rather than
+/// recurse — the same reason [`super::lower`] interns a record empty before
+/// resolving its fields.
+const SCHEMA_RECORD_DEPTH: u32 = 8;
+
+/// Which minor a schema **record**'s fields need — the largest any of them does.
+///
+/// **This is the half a written-type walk cannot see**, and leaving it out was a
+/// hole rather than an omission: a module writes
+/// `Result<system.ipc.ReceivedCallRegion, i64>`, which names a *record*, and a
+/// record path has no representation of its own — so without this, a module
+/// declaring an earlier minor could name that record and be handed a `Region<u8>`
+/// it could not legally have written down. ADR-0098 §2a requires the propagation
+/// and requires the verifier to enforce it independently.
+fn record_representation_minor(path: &str, depth: u32) -> Option<u32> {
+    if depth == 0 {
+        return None;
+    }
+    let record = crate::interfaces::record(path)?;
+    record
+        .fields
+        .iter()
+        .filter_map(|field| field_representation_minor(field.ty, depth - 1))
+        .max()
+}
+
+/// Which minor one declared field spelling needs.
+fn field_representation_minor(spelled: &str, depth: u32) -> Option<u32> {
+    if let Some(inner) = spelled
+        .strip_prefix("Option<")
+        .and_then(|rest| rest.strip_suffix('>'))
+    {
+        return field_representation_minor(inner, depth);
+    }
+    match crate::interfaces::representation_of_schema_field(spelled) {
+        Some(representation) => minor_of_representation(representation),
+        // A field whose type is itself a schema record.
+        None => record_representation_minor(spelled, depth),
     }
 }
 

@@ -304,6 +304,8 @@ such a module whole by its header.
 | `endpoint_send_region` | `system.ipc.Endpoint` with `send`, then `system.memory.Region` with `none` | *(none)* | `i64` | 1 |
 | `endpoint_receive_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<Region<u8>, i64>` | 2 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
+| `endpoint_call_word_region` | `system.ipc.Endpoint` with `call`, then `system.memory.Region` with `none` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
+| `endpoint_receive_call_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCallRegion, i64>` | 2 |
 | `capability_release` | `system.ipc.Endpoint` with `none` | *(none)* | `i64` | 6 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
@@ -389,6 +391,27 @@ its mappings atomically (ADR-0075 §5a). After it the sender holds nothing: a la
 indexed access through that region is refused rather than reading memory it no
 longer owns. A `Region<mut u8>` may not be sent at all and there is no row that
 sends one.
+
+`endpoint_call_word_region` is **one call carrying the request word and one
+immutable ordinary region in the same message** (ADR-0098 §2a). The word goes
+where `endpoint_call_word` puts one and fills the length register itself; the
+region goes into the message's region area with its own count of one in `r8`.
+
+**It exists because a two-message write is not a protocol.** Sending a region and
+then making a call is correct only where one client is serialized against itself:
+§3 gives a message a payload, a capability area and a region area and ties no
+message to another, so with two clients the region of one request and the word of
+another are indistinguishable in one queue. **Nothing below this row is new** —
+`SYSTEM_ABI_V1` operation 3 has always carried a region count and supplied the
+reply capability; what did not exist was a way for canonical text to name it. The
+region declares `none` and the transfer is **linear**, exactly as
+`endpoint_send_region`'s is.
+
+`endpoint_receive_call_region` is the receive that serves such a call, and it is
+**the superset row**: a service cannot know before receiving whether the next call
+carries a region, an answer endpoint or neither, so a row serving a protocol of
+several operations has to produce all of it. `system.ipc.ReceivedCall` is
+unchanged.
 
 **`endpoint_receive_region` is its own row and does not extend
 `system.ipc.ReceivedCall`** (ADR-0097 §8c). That record is what the
@@ -675,6 +698,42 @@ the answer somewhere honest to travel, and producing the length beside it lets
 canonical text refuse an answer of the wrong shape. `endpoint_reply_word` is the
 other half: the same ABI selector as `endpoint_reply`, with the answer's `u64`
 written where a payload goes.
+
+### `system.ipc.ReceivedCallRegion`
+
+| Field | Type |
+|---|---|
+| `reply` | `system.ipc.Reply` |
+| `carried` | `Option<system.ipc.Endpoint>` |
+| `region` | `Option<Region<u8>>` |
+| `length` | `u64` |
+| `word` | `u64` |
+
+What one `endpoint_receive_call_region` produced (ADR-0098 §2a): five facts from
+one receive, for the reason `system.ipc.ReceivedCall` is a record — the nucleus
+writes the capabilities into the receiver's transfer table and the region records
+at `MESSAGE_REGIONS` before the receive returns, and a second receive to fetch any
+of the rest would take the *next* message.
+
+**Both optional positions are `Option`, and neither is a zero handle.** A
+conforming request of a protocol like `block.device.v1` carries a region for a
+write, an answer endpoint for a read, and neither for a query — so absence is an
+ordinary outcome rather than an error state, and ADR-0067's rule applies as it does
+to `system.process.ChildEnding`: absence is the true value, and a zero would be a
+claim its caller never made.
+
+**For the region it is the only safe form.** A zero capability handle names nothing
+in any table, so an endpoint operation on one answers `E_NO_CAPABILITY` — a refusal
+a service recovers from. An indexed access to a region the host holds no mapping
+for is a **trap**, which ends the process. A service that had to touch a region to
+learn whether one arrived could not serve a read at all.
+
+**A module naming this record inherits the language minor its fields require.**
+`region` is of the `RegionFamily` representation, which is TOS Core 1.5 (§4.3,
+ADR-0097), and a module holds that value without writing its type — so the minor a
+record's fields need is required of every module that names the record. Both the
+frontend and the independent verifier enforce it, the verifier on the artifact's
+own type table, because a hand-written artifact never met a frontend.
 
 ### `system.process.ChildEnding`
 

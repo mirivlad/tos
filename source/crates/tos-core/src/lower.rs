@@ -804,10 +804,16 @@ impl<'source> Lowerer<'source> {
     ///
     /// The spellings a schema may use are the ones `boundary::type_text`
     /// produces, and this admits exactly the ones a record actually declares:
-    /// a `u64`, an `Option` of one, and a capability of an accepted interface.
-    /// Anything else is a gap rather than a guess — a schema that grew a field
-    /// type nothing here can build would be a contract this frontend claims to
-    /// carry and does not.
+    /// a `u64`, an `Option` of one, a capability of an accepted interface, an
+    /// immutable ordinary region, and another schema record. Anything else is a
+    /// gap rather than a guess — a schema that grew a field type nothing here can
+    /// build would be a contract this frontend claims to carry and does not.
+    ///
+    /// **The `Region` arm is ADR-0098's**, and it is deliberately the immutable
+    /// form only. `IPC_V1` §5 admits no other form across a message, so a record
+    /// describing what a message delivered has nowhere to put a `Region<mut u8>`
+    /// — and the element type is `u8` alone (ADR-0085 §18, ADR-0097 §8b), which
+    /// is why this matches one spelling rather than parsing a type argument.
     fn schema_field_type(&mut self, spelled: &str, at: crate::parser::Span) -> Result<TypeId, Gap> {
         if let Some(kind) = IntKind::parse(spelled) {
             return Ok(self.intern(TypeDef::Int(kind)));
@@ -818,6 +824,10 @@ impl<'source> Lowerer<'source> {
         {
             let inner = self.schema_field_type(inner, at)?;
             return Ok(self.intern(TypeDef::Option(inner)));
+        }
+        if spelled == "Region<u8>" {
+            let element = self.intern(TypeDef::Int(IntKind::U8));
+            return Ok(self.intern(TypeDef::Region(element)));
         }
         if crate::interfaces::interface(spelled).is_some() {
             return Ok(self.intern(TypeDef::Capability(String::from(spelled))));

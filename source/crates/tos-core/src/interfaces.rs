@@ -347,6 +347,50 @@ pub const RECORDS: &[Record] = &[
             },
         ],
     },
+    // What one `endpoint_receive_call_region` produced (ADR-0098 §2a).
+    //
+    // **Five facts from one receive**, for `system.ipc.ReceivedCall`'s reason:
+    // the nucleus writes the capabilities into the receiver's transfer table and
+    // the region records at `MESSAGE_REGIONS` before the receive returns, and a
+    // second receive to fetch any of the rest would take the *next* message.
+    //
+    // **Both optional positions are `Option`, and neither is a zero handle.** A
+    // conforming `WRITE` carries no answer endpoint and a `CAPACITY` carries
+    // neither, so absence is an ordinary outcome of the protocol rather than an
+    // error state — ADR-0067's rule, which this table already applies to
+    // `system.process.ChildEnding`: absence is the true value and a zero would be
+    // a claim its caller never made.
+    //
+    // **For the region it is the only safe form.** An endpoint operation on a
+    // zero handle answers `E_NO_CAPABILITY`, which a service recovers from; an
+    // indexed access to a region the host holds no mapping for is a *trap*, which
+    // ends the process. A service that had to touch a region to learn whether one
+    // arrived could not serve `READ` at all.
+    Record {
+        path: "system.ipc.ReceivedCallRegion",
+        fields: &[
+            Field {
+                name: "reply",
+                ty: "system.ipc.Reply",
+            },
+            Field {
+                name: "carried",
+                ty: "Option<system.ipc.Endpoint>",
+            },
+            Field {
+                name: "region",
+                ty: "Option<Region<u8>>",
+            },
+            Field {
+                name: "length",
+                ty: "u64",
+            },
+            Field {
+                name: "word",
+                ty: "u64",
+            },
+        ],
+    },
     // What a wait observed, as `PROCESS_IDENTITY_V1` and ADR-0067 record it.
     //
     // **The three optional facts are `Option`, not a value beside a flag.**
@@ -594,6 +638,47 @@ pub const ACCEPTED: &[Interface] = &[
                 capabilities: &[Requirement::of("system.ipc.Endpoint", "receive")],
                 parameters: &[],
                 result: "Result<Region<u8>, i64>",
+            },
+            // `endpoint_call_word_carrying`'s sibling for a region: one call
+            // carrying the request word **and** one immutable ordinary region in
+            // the same message (ADR-0098 §2a).
+            //
+            // **Why it must exist.** A two-message write — a region sent, then a
+            // call — is correct only where one client is serialized against
+            // itself. With two clients the region of one request and the word of
+            // another are indistinguishable in one queue, because `IPC_V1` §3
+            // gives a message a payload, a capability area and a region area and
+            // ties no message to another.
+            //
+            // **Nothing new below this row.** `syscall.rs`'s `call` already
+            // passes `frame.r8` to `send_transaction` as a region count and
+            // supplies the reply; `send_transaction` resolves, retains and
+            // linearly transfers a call's regions exactly as it does a send's.
+            // The region declares `held` for `endpoint_send_region`'s reason, and
+            // the transfer is linear: success takes the caller's handle and its
+            // mappings atomically (ADR-0075 §5a).
+            Operation {
+                name: "endpoint_call_word_region",
+                capabilities: &[
+                    Requirement::of("system.ipc.Endpoint", "call"),
+                    Requirement::held("system.memory.Region"),
+                ],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<system.ipc.Answer, i64>",
+            },
+            // The receive that serves such a call (ADR-0098 §2a).
+            //
+            // **The superset row, and that is why it is one row.** A service
+            // cannot know before receiving whether the next call carries a region
+            // (`WRITE`), an answer endpoint (`READ`) or neither (`CAPACITY`), so
+            // the row that serves a protocol of three operations has to produce
+            // all of it. `system.ipc.ReceivedCall` is unchanged, for ADR-0097
+            // §8c's reason.
+            Operation {
+                name: "endpoint_receive_call_region",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "receive")],
+                parameters: &[],
+                result: "Result<system.ipc.ReceivedCallRegion, i64>",
             },
             Operation {
                 name: "endow_for_launch",
@@ -1125,6 +1210,39 @@ pub fn representation_of(path: &str) -> Representation {
     match interface(path) {
         Some(interface) => interface.representation,
         None => Representation::AsInterface,
+    }
+}
+
+/// The representation family a **schema record field's** declared spelling
+/// carries, if any (ADR-0098 §2a).
+///
+/// **Why a spelling and not a lowered type.** A field's type is declared by this
+/// table as text, and the checker has to answer the language-minor question before
+/// anything is lowered — so the question is asked of the same spellings
+/// [`super::lower`]'s `schema_field_type` admits, and of nothing else.
+///
+/// `Option<T>` is transparent here: an `Option<Region<u8>>` field hands a module a
+/// region exactly as a bare one would, so wrapping cannot lower the minor a module
+/// needs. A spelling that names nothing with a representation answers `None`,
+/// which includes every integer and every `AsInterface` capability.
+pub fn representation_of_schema_field(spelled: &str) -> Option<Representation> {
+    if let Some(inner) = spelled
+        .strip_prefix("Option<")
+        .and_then(|rest| rest.strip_suffix('>'))
+    {
+        return representation_of_schema_field(inner);
+    }
+    // The immutable ordinary region, which is the only region form a message can
+    // deliver (`IPC_V1` §5) and therefore the only one a record can hold.
+    if spelled == "Region<u8>" {
+        return Some(Representation::RegionFamily);
+    }
+    match interface(spelled) {
+        Some(interface) => match interface.representation {
+            Representation::AsInterface => None,
+            other => Some(other),
+        },
+        None => None,
     }
 }
 
