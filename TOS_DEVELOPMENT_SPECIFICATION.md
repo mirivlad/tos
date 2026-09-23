@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `ec848b33304e595306a50f216012ff42dc11d208fd7e4ce5a5399f94bb9ed779`\
+Source-manifest SHA-256: `197944151970b812d8bc6469573c6113c4269673fae8656e6f86b5ee7f370a4b`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -5609,6 +5609,803 @@ speculative declaration §2 refuses, one layer down.
    executing it, and match the `uses` effects of its declared operations.
 
 <!-- END source/interfaces/platform/PLATFORM_INTERFACE_V1.md -->
+
+---
+
+<!-- BEGIN source/interfaces/device/BLOCK_DEVICE_V1.md -->
+
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS Block Device Interface — `block.device.v1`
+
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0098 (Project Architect-approved, 2026-09-24), which fixes the
+wire shape this contract states and answers ADR-0093 §9's reserved question.
+ADR-0093 §0 fixes the interface surface it covers.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
+ADR-0093 and ADR-0095 where those decisions fix its subject matter.
+
+**No implementation of this contract exists yet.** It is accepted as the shape the
+Stage 4 block service and its clients must take; the conformance evidence §11
+requires is outstanding, and `block-data-path` and `block-lifecycle` still carry
+their own fixture encoding until a later slice migrates them (ADR-0098 §3).
+
+## 1. Role
+
+`docs/11` §Driver interfaces names `block.device.v1` as a device-class interface
+whose purpose is that drivers publish it *"rather than exposing
+hardware-specific details to applications"*. `ADR-0093` §0 fixes its surface —
+`read`, `write`, `capacity` and nothing else — and its publication and lifetime.
+`ADR-0093` §9 left the wire shape undecided. This contract is that shape.
+
+**What it is not.** Not a filesystem, not a partition table, not a cache, not a
+VFS, not an object store, not a request scheduler, not a batching protocol. One
+sector per request, one request per call.
+
+## 2. Topology
+
+```text
+client  --(block.device.v1 endpoint, `call`)-->  block service  -->  device
+client  <--(one immutable Region<u8>)---------  block service
+```
+
+The client holds a `system.ipc.Endpoint` with `call` naming the service's request
+endpoint, and — for `READ` — a second endpoint it holds `send` and `receive` on,
+which it delegates with the request so the answer has somewhere to arrive. It
+holds **no** PCI bus, function, MMIO window, interrupt source or DMA region: the
+service is the only holder of hardware authority (`ADR-0079`, `ADR-0081`,
+`ADR-0082`, `ADR-0084`).
+
+## 3. Constants
+
+| Name | Value | Meaning |
+|---|---|---|
+| `SECTOR_BYTES` | `512` | the bytes of one sector, and of one request's payload |
+| `OPCODE_BITS` | `2` | the width of the opcode field in a request word |
+| `OP_READ` | `0` | read one sector |
+| `OP_WRITE` | `1` | write one sector |
+| `OP_CAPACITY` | `2` | report the addressable sector count |
+| `OP_RESERVED` | `3` | reserved; always refused |
+| `MAX_SECTOR` | `4611686018427387903` = `2^62 - 1` | the largest sector a v1 request can name |
+| `REQUEST_BYTES` | `8` | the inline length a well-formed request carries |
+| `REFUSED` | `9223372036854775808` = `2^63` | the reply-word bit that marks a refusal |
+
+All numeric values that appear on a wire are little-endian, as `ADR-0058` fixes
+for the message payload. `docs/40`'s rule applies: no `size` value is ever
+serialized; `sector`, the request word and the reply word are `u64`.
+
+## 4. The request word
+
+```text
+word = sector * 4 + opcode           opcode = word % 4,  sector = word / 4
+```
+
+The opcode occupies the low `OPCODE_BITS` bits; the sector occupies the
+remaining 62. **`MAX_SECTOR` is stated rather than implied**: a sector larger
+than `2^62 - 1` has no v1 encoding, and a device that reports a larger capacity
+has its excess sectors unreachable through this interface. That is a limitation
+of v1, not an error, and a client learns the reachable bound from §6.
+
+For `OP_CAPACITY` the sector field **must be zero**. A non-zero sector field on a
+capacity request is malformed, because a request that carries a number nobody
+reads is a request whose meaning two implementations could differ about.
+
+**There is no in-band protocol-version field in the word**, and the reason is the
+configured contract:
+
+- `block.device.v1` is a **versioned Tier 2 service contract**;
+- accepted publication, binding and launch topology supplies a client with an
+  endpoint **implementing that contract**;
+- v1 has **no runtime version negotiation**: there is nothing for a version tag to
+  select between;
+- so a per-request tag would be redundant with the service contract the topology
+  already configured.
+
+**It is not redundant with endpoint-object identity, and that must not be
+claimed.** `ADR-0095` §3's dedicated object fixes a publication class and
+authority; the endpoint later published as a service endpoint is a different
+object, and one protocol has more than one of them — `block-lifecycle.sh` runs two
+generations on two distinct service endpoints while both implement the same
+`block.device.v1`.
+
+## 5. The reply
+
+Every reply is sent with `endpoint_reply_word`, so its inline length is
+`REQUEST_BYTES` and its `word` is the answer. A client reads
+`system.ipc.Answer{length, word}` and checks `length == REQUEST_BYTES` before
+reading `word` at all.
+
+```text
+word < REFUSED     success. READ and WRITE answer 0. CAPACITY answers the
+                   addressable sector count (§6).
+word >= REFUSED    refusal. `word - REFUSED` is the refusal code of §7.
+```
+
+**One discriminator for all three operations**, which is why the bit is bit 63
+rather than a separate field: a capacity count and a refusal code would otherwise
+share a value space, and a device with three sectors would be indistinguishable
+from refusal code 3.
+
+## 6. The operations
+
+### 6a. `READ`
+
+```text
+client:   endpoint_call_word_carrying(answer_endpoint, service, sector * 4 + OP_READ)
+service:  endpoint_reply_word(reply, 0)
+service:  endpoint_send_region(carried, one immutable region covering >= SECTOR_BYTES)
+```
+
+The service performs one `VIRTIO_BLK_T_IN` of the named sector, copies
+`SECTOR_BYTES` out of device-visible memory into a region it allocated for the
+sector's bytes, and freezes it — **completely, before it replies**. Then it
+replies success. Then it sends the region to the endpoint the request delegated.
+
+**Control before data, and the order is normative.** The reverse — region first,
+reply second — admits an orphan response: the region is queued, the service dies,
+the caller's call is cancelled by the liveness rule, and the region stays on the
+answer endpoint. An endpoint object **lives for the boot**; a process dying
+releases its receive authority and does not make the endpoint a fresh object or
+drain what is queued on it. A later holder of receive — including a successor
+created from the same launch plan — could take that old region as the answer to
+its own request.
+
+The three observations have distinct meanings:
+
+| The client sees | It means |
+|---|---|
+| a **refusal** reply | refused; **no region follows** |
+| a **success** reply | the read succeeded and **exactly one region is owed** |
+| the **region** arriving | the `READ` is complete |
+
+**A client may have at most one outstanding `READ` per answer endpoint**, and may
+not issue another until the owed region has been received. Nothing enforces this
+in the nucleus and nothing needs to: a client that broke it could not say which
+region answered which of its own requests.
+
+**If the service dies after the success reply and before the send**, the client
+observes an incomplete operation through the ordinary liveness path — its receive
+blocks and is cancelled with `E_CANCELLED` (`SYSTEM_ABI_V1` §6) — and **no stale
+region has been queued**. If the region is sent, it belongs to the one
+outstanding successful operation.
+
+The region leaves the service linearly (`ADR-0075` §5a): after the send the
+service holds neither the handle nor the mapping.
+
+**A reply never carries the region.** `ipc::hand` copies payload bytes and
+touches neither the transfer table nor the region area, which is why the request
+has to say where to answer.
+
+### 6b. `WRITE`
+
+```text
+client:   endpoint_call_word_region(service, region, sector * 4 + OP_WRITE)
+service:  endpoint_reply_word(reply, 0)
+```
+
+**One message.** The request word and the payload region cross together, in the
+payload area and the region area of the same message (`ADR-0058`). The service
+reads `SECTOR_BYTES` out of the region, copies them into device-visible memory,
+performs one `VIRTIO_BLK_T_OUT`, and replies **after** the device has completed
+the request.
+
+The two-message form — a region sent, then a call — is **not** this protocol.
+It is correct only where one client is serialized against itself; with two
+clients the region of one request and the word of another are indistinguishable
+in one queue. `ADR-0098` §1 is the reasoning and §2a is the row that removes the
+need.
+
+### 6c. `CAPACITY`
+
+```text
+client:   endpoint_call_word(service, OP_CAPACITY)
+service:  endpoint_reply_word(reply, sectors)
+```
+
+`sectors` is the device's own reported 64-bit capacity in 512-byte sectors, read
+from the VirtIO configuration space under §2.5.1's generation protocol, **clamped
+to `MAX_SECTOR + 1`** so that every value the client receives is a count of
+sectors this protocol can name. It is never a constant compiled into the service.
+
+A client uses it to establish that its layout fits **before** writing anything. A
+client that instead discovered the bound by issuing a request it expected to be
+refused would be learning a fact by misbehaving, and would be indistinguishable
+from a client with a bug.
+
+## 7. Refusals
+
+| Code | Name | When |
+|---|---|---|
+| 1 | `BLK_OPCODE` | the opcode is `OP_RESERVED` |
+| 2 | `BLK_RANGE` | the sector is at or above the device's reported capacity, or above `MAX_SECTOR` |
+| 3 | `BLK_MALFORMED` | the inline length is not `REQUEST_BYTES`, or `OP_CAPACITY` carried a non-zero sector field |
+| 4 | `BLK_NO_REGION` | `OP_WRITE` whose call carried no region |
+| 5 | `BLK_NO_ANSWER` | `OP_READ` whose call carried no answer endpoint |
+| 6 | `BLK_DEVICE` | the device answered with a status other than `VIRTIO_BLK_S_OK` |
+
+**Every refusal is decided before the reply is sent, and that is why there is no
+code for a failed region delivery.** §6a puts the success reply **before** the
+region send, so a delivery that fails afterwards cannot become a refusal — the
+reply is already spent. A service in that position records the fault in its
+journal; the client sees an incomplete operation, not a refusal. `BLK_NO_ANSWER`
+is the part that *is* checkable, and it is checked **before** the sector is read,
+because the receive record reports an absent answer endpoint as absence rather
+than as a handle.
+
+**Every refusal leaves the device untouched**, with one stated exception that is
+not a refusal of the request: `BLK_DEVICE` reports what the device did.
+
+**A refusal is a reply, not a dropped call.** A service that failed to reply
+would leave the caller blocked until the liveness rule cancelled it
+(`SYSTEM_ABI_V1` §6), and a protocol whose error path is a cancellation gives a
+client no way to tell a refusal from a dead service.
+
+**Codes are small positive integers added to `REFUSED`,** so `word - REFUSED` is
+the code and an unrecognized code is still recognizable as a refusal. A client
+that does not know code 7 must still not read the reply as a success.
+
+## 8. The region rule, and what cannot be checked
+
+**A `WRITE` region and a `READ` region must cover at least `SECTOR_BYTES`, and
+only the first `SECTOR_BYTES` are the sector's.** Bytes beyond that are neither
+read nor written and carry no meaning.
+
+**Not "exactly `SECTOR_BYTES`", and the reason is the accepted mechanism.**
+`region_allocate` grants *"the whole frames covering `bytes`"*, so the smallest
+region any client can originate is one frame. A rule of *exactly* 512 bytes
+would be false of every conforming request.
+
+**A service cannot check this rule, and no service should pretend to.**
+Canonical text cannot read a received region's extent — the receive surface
+yields a handle and nothing else — and an out-of-range indexed access is a trap
+rather than a refusal, so probing for the extent would end the service. The rule
+is guaranteed at the origin instead: the only way to obtain a sendable region is
+`region_allocate` followed by `region_freeze`, and neither can produce one
+shorter than a frame.
+
+A **missing** region is different and is checked: the receive record's `region`
+is an `Option`, absence is `BLK_NO_REGION`, and nothing is touched. An absent
+**answer endpoint** on a `READ` is checked the same way and is `BLK_NO_ANSWER`.
+
+**Object size and transport extent are different quantities, and this contract
+keeps them apart.** A sector is exactly `SECTOR_BYTES`. The region that carries
+one covers **at least** that, currently at least one frame. Bytes at or beyond
+`SECTOR_BYTES` are ignored by the protocol: they are neither read, written,
+compared nor required to hold anything. A service allocates *a region for the
+512-byte sector* — not a 512-byte region — and touches only `[0, 512)` of it.
+
+## 9. Case D, retained unchanged
+
+> If the old block service accepted a write request and died before delivering
+> the reply, the client receives no guarantee that lets it distinguish "the write
+> was not performed" from "the write was performed and the reply was lost".
+
+`ADR-0093` §5 states this boundary and this contract does not move it. **No
+transaction identifier, request journal, retry rule, idempotency guarantee or
+exactly-once semantics exists at v1**, and none is added for the purpose of
+removing case D. A client that needs to know re-reads the sector.
+
+## 10. What v1 does not claim
+
+- **no power-loss durability, no `VIRTIO_BLK_F_FLUSH`, no ungraceful-termination
+  behaviour, no crash consistency** (`ADR-0092` §0, Branch A). A successful
+  `WRITE` means the device accepted and completed the request;
+- no more than one sector per request; no batching; no multiple outstanding
+  requests from one client; no queue multiplexing or scheduling policy;
+- no `TRIM`, `DISCARD`, `WRITE_ZEROES`, barriers or any other VirtIO block
+  feature;
+- no filesystem, partition, cache, VFS or object store;
+- no ordering guarantee between two requests except that each is answered after
+  the device completed it;
+- no statement about who may hold a `block.device.v1` endpoint, which is
+  `ADR-0093`'s and `ADR-0095`'s.
+
+## 11. Conformance evidence
+
+`ADR-0098` §4 is the obligation list: normative read; normative atomic write;
+capacity against the device's own report; invalid-opcode, out-of-range,
+absent-region, absent-answer-endpoint and malformed-length negatives; an assertion
+that a successful `READ`'s reply is journalled **before** its region send; the
+decoy-region mutation that proves a `WRITE` uses the region its own call carried;
+and the ordering mutation that proves §6a's control-before-data rule is
+implemented rather than only written down.
+
+**One negative class is static, and is recorded as static.** A region shorter
+than `SECTOR_BYTES` cannot be constructed from canonical text (§8), so no boot
+can exhibit that refusal. This follows the precedent of
+`host-tools/qemu-test/virtio-queue.sh`, which records an MSI-X negative that
+*"was attempted and withdrawn"* because the reference device could not be made to
+fail it, rather than building a fake device to manufacture one.
+
+<!-- END source/interfaces/device/BLOCK_DEVICE_V1.md -->
+
+---
+
+<!-- BEGIN source/interfaces/state/STATE_STORE_V1.md -->
+
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS State Store Interface — `state.store.v1`
+
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0099 (Project Architect-approved, 2026-09-24), a Level 3 decision
+which fixes the persistent layout and the protocol this contract states. It
+consumes `BLOCK_DEVICE_V1` (ADR-0098) and nothing else.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
+docs/09, whose `/state` namespace class it does **not** implement (§1).
+
+**No implementation of this contract exists yet.** It is accepted as the shape the
+Stage 4 store must take; the conformance evidence §12 requires is outstanding, and
+Stage 4 does not close on an accepted contract.
+
+## 1. Role
+
+`docs/16` §Stage 4 owes *"persistent object/state storage"*, with the engineering
+exit *"persistent storage works through a textual user-space driver"*. This
+contract is the store's two halves: the **protocol** its clients speak, and the
+**persistent layout** it keeps on a block device.
+
+**Substrate, not a namespace.** It does not implement `docs/09`'s `/state`, and
+`/state` is unchanged: it remains the architectural namespace class that a later
+layer will map onto stores (`ADR-0099` §1). No paths, no directories, no VFS, no
+POSIX semantics, no mount.
+
+**What it is not.** Not a filesystem, not a database, not a key-value store with
+names, not a cache, not content-addressed, not a repository, and not a snapshot
+mechanism.
+
+## 2. Topology and authority
+
+```text
+provisioning
+    initializer  --(block.device.v1, `call`+`send`)-->  block service
+    (§4.4; collected before any state service starts)
+
+steady state
+    client  --(state.store.v1 endpoint, `call`)-->  state store  --(block.device.v1, `call`+`send`)-->  block service
+    client  <--(one immutable Region<u8>)---------  state store  <--(one immutable Region<u8>)-------  block service
+```
+
+- the store is **launcher-wired** from a sealed launch plan and publishes nothing,
+  and so is the initializer;
+- **the store never formats storage** (§4.4). Only the initializer writes an
+  initial header, and it is collected before the store starts — after which the
+  store is the sole holder of the block-service client capability;
+- the store holds **no** PCI bus, function, MMIO window, interrupt source or DMA
+  region;
+- a **client of the store holds no `block.device.v1` capability**. It cannot
+  address a sector, and that is the store's isolation boundary — capability
+  topology, readable from the boot journal.
+
+The store's own endowment at v1 is four capabilities, which is `MAX_ENDOWMENT`: a
+memory authority, `receive` on its request endpoint, `send | call` on the block
+service's endpoint, and `send | receive` on its own answer endpoint for the block
+service's replies.
+
+## 3. Constants
+
+| Name | Value | Meaning |
+|---|---|---|
+| `OBJECT_BYTES` | `512` | the payload of one object, and one sector |
+| `MIN_ID` | `1` | the lowest valid object id |
+| `MAX_ID` | `64` | the highest valid object id, and the width of `occupancy` |
+| `HEADER_SECTOR` | `0` | where the store header lives |
+| `STORE_SECTORS` | `65` | `MAX_ID + 1` — the whole bounded v1 layout |
+| `OPCODE_BITS` | `2` | the width of the opcode field in a request word |
+| `OP_GET` | `0` | read one object |
+| `OP_PUT` | `1` | create or update one object |
+| `OP_RESERVED_2`, `OP_RESERVED_3` | `2`, `3` | reserved; always refused |
+| `REQUEST_BYTES` | `8` | the inline length a well-formed request carries |
+| `REFUSED` | `9223372036854775808` = `2^63` | the reply-word bit that marks a refusal |
+| `MAGIC` | bytes `54 4F 53 53 54 4F 52 45` | `TOSSTORE` |
+| `FORMAT_VERSION` | `1` | this layout |
+
+`REQUEST_BYTES`, the request word, the reply word and every persistent field are
+fixed-width little-endian. `docs/40` forbids serializing `size` in a persistent
+or public form and requires *"one of the explicit fixed-width integers"*; the
+contract uses `u32` and `u64` only.
+
+## 4. The persistent layout
+
+```text
+sector 0        the store header
+sector id       the payload of object id, for id in MIN_ID..MAX_ID
+```
+
+**This contract gives meaning to sectors `0..64` and to no others.** It owns —
+reserves — exactly that bounded 65-sector extent in the Stage 4 reference layout,
+and it **never reads or writes a sector at or above `STORE_SECTORS`**.
+
+**It assigns no meaning and no owner to the remaining sectors.** They are not
+free, not reserved and not this store's: they are undecided. The
+capsule-to-repository handoff is a separate decision and must not overlap this
+extent without explicitly revisiting the layout.
+
+There are no partitions at Stage 4 and **no partition abstraction is
+introduced**; a base-offset field would have exactly one possible value, so there
+is none.
+
+### 4.1 The store header (512 bytes, sector 0)
+
+| Offset | Size | Field | Rule |
+|---|---|---|---|
+| 0 | 8 | `magic` | the bytes of `MAGIC`, in ascending address order. Read as bytes, so no endianness applies to it |
+| 8 | 4 | `format_version` | `u32` LE. `= FORMAT_VERSION` at v1 |
+| 12 | 4 | `schema_version` | `u32` LE. The **owner's** state schema version |
+| 16 | 8 | `schema_identifier` | `u64` LE. The **owner's** state schema identifier |
+| 24 | 8 | `occupancy` | `u64` LE. Bit `id - 1` is set exactly when object `id` is present |
+| 32 | 480 | `reserved` | every byte **must be zero** |
+
+**These offsets and widths are normative.** A layout described only by the
+canonical text that writes it is a layout no second implementation could be
+checked against, which is what `docs/02` I-09 requires of a versioned boundary.
+
+**There is no `object_capacity` field.** The capacity *is* the width of
+`occupancy`: 64 bits, 64 ids. A separate field could disagree with the bitmap
+that implements it, and one of the two would then be wrong.
+
+**There is no `payload_base_sector`, `object_bytes` or `header_bytes` field.**
+Each has exactly one value at v1, and `format_version` is what a later layout
+changes them through. A field whose value the version already determines is a
+second place for one fact.
+
+### 4.2 Three identities, kept distinct
+
+```text
+format_version       the layout of this header and of placement    — the store's
+schema_identifier    whose state this is                           — the owner's
+schema_version       the shape of the owner's object payloads      — the owner's
+```
+
+The store **interprets** the first and **compares** the other two. It never
+interprets a payload byte. At v1 a store has exactly one owner, whose schema
+identity is a constant of the store service's canonical text; a later version
+serving several owners needs per-owner identity, which is a layout change and
+therefore a `format_version` change.
+
+### 4.2a The scope of `schema_identifier`
+
+**It is not a global namespace**, and this contract creates none:
+
+```text
+schema_identifier
+    a u64 chosen by the owner of this store
+    stable for one schema lineage across compatible source revisions
+    interpreted only together with this STATE_STORE_V1 store extent
+    not globally unique
+    not a content id
+    not a module id
+    not a /state path id
+```
+
+`schema_version` versions that owner's schema **within** that lineage. The pair is
+what §4.3 compares on opening; a mismatch is a refusal, never a conversion.
+
+At Stage 4 there is exactly one owner and one store, so **no registry, no
+allocation mechanism and no uniqueness rule is needed**, and none is defined. A
+later multi-owner or multi-store design may need a stronger identity contract; it is
+not decided here.
+
+### 4.3 Validation
+
+A store is **open** only when sector 0 satisfies all of:
+
+- `magic` equals `MAGIC`;
+- `format_version == FORMAT_VERSION`;
+- every byte of `reserved` is zero;
+- `schema_identifier` and `schema_version` equal the opening service's own
+  declared constants.
+
+`occupancy` needs no validation: every one of its `2^64` values is a legal set of
+present ids, and `0` means an initialized but empty store — which is a valid
+store and is **not** the same thing as uninitialized storage.
+
+An all-zero sector 0 fails the first condition. **Uninitialized storage is not a
+store**, and a zero-filled device is exactly what a fresh image presents.
+
+### 4.4 Formatting, which is not something a state service does
+
+**No `state.store.v1` service ever formats storage.** A missing or invalid header
+means it **cannot open**, and it then refuses every request with `ST_STORE`. It
+does not repair, reformat or guess — and it could not decide to safely, because a
+child is never told its restart generation: the supervisor asserts it and, as
+`PROCESS_IDENTITY_V1` §3 records, the nucleus *"records it and never computes or
+increments it"*. Both generations run the same canonical module from the same
+shared launch plan, so a service cannot distinguish a fresh first start from a
+restart whose header failed to read, and one that auto-formatted would destroy a
+store to recover from a transient failure.
+
+**Formatting is a separate canonical textual bootstrap action**, performed once
+during provisioning by a short-lived **initializer** process:
+
+```text
+capacity()
+require capacity >= STORE_SECTORS
+
+READ HEADER_SECTOR
+
+if all 512 bytes are zero:
+    WRITE one complete valid header:
+        MAGIC, FORMAT_VERSION, the owner's schema identity,
+        occupancy = 0, reserved zero
+    terminate success
+else:
+    REFUSE TO FORMAT
+```
+
+It writes **no payload sector**. A device that cannot contain the whole bounded
+layout is refused before the header is written, rather than discovered later by
+running past the end of it — which is why `ADR-0098` keeps `capacity` in v1.
+
+**Only an all-zero header is permission to format.** An initializer that wrote
+unconditionally would silently reset `occupancy` against an existing store, losing
+every object in it while reporting success — unacceptable for an action that is
+separated from ordinary startup *because* it is destructive.
+
+**This test is deliberately stricter than §4.3.** Opening asks whether a store is
+usable; formatting asks whether there is certainly nothing at all. So none of these
+is permission to initialize:
+
+| Sector 0 holds | Why it is not permission |
+|---|---|
+| an **already valid** header | the store exists |
+| a header **valid but for another schema** | it is another owner's store, and `schema_identifier` is not a claim on this extent (§4.2a) |
+| a **future or unknown `FORMAT_VERSION`** | a v1 initializer cannot know what it would destroy |
+| a **corrupt** header | the likeliest reading is a store whose header failed to read |
+| **merely non-zero garbage** | something wrote it, and this contract gives no meaning to bytes it did not write |
+
+**Sectors 1..64 are not inspected before formatting, and must not be.** The Stage 4
+harness deliberately seeds some of them, so their contents say nothing about whether
+a store exists: `occupancy` is authoritative, and it is only meaningful once a store
+does.
+
+The initializer is canonical TOS text, reaches the device **only** through
+`block.device.v1`, holds **no** PCI, MMIO, IRQ or DMA authority, publishes
+nothing, and is **collected before the ordinary state service starts** — after
+which the state service is the sole holder of the block-service client capability.
+It is not a host path and not a harness step.
+
+### 4.5 Opening
+
+Both generations open the same way, from the device:
+
+```text
+read sector 0 through block.device.v1
+validate per §4.3
+```
+
+**Nothing is handed to a successor in memory**, which is what lets one canonical
+module serve every generation.
+
+## 5. Object semantics
+
+An object is exactly `OBJECT_BYTES` of opaque payload, and **there is no
+per-object header**. The store does not interpret the bytes.
+
+**Presence is determined solely by `occupancy`:**
+
+```text
+bit (id - 1) clear  ->  absent, whatever bytes sector `id` already holds
+bit (id - 1) set    ->  present
+```
+
+A `GET` of an absent id is refused and **its sector is not read**. This is what
+makes seeded, stale or adversarial sector contents **non-authoritative**: a store
+that inferred presence from bytes could be convinced by anything that had been on
+the device before it.
+
+**Not in v1:** delete, enumeration, `capacity`, `stat`, rename, variable-size
+objects, objects spanning sectors, an allocation cursor, a free list,
+transactions.
+
+## 6. The request word
+
+```text
+word = id * 4 + opcode           opcode = word % 4,  id = word / 4
+```
+
+`id` must be in `MIN_ID..MAX_ID`. **`id = 0` is never valid**, so a zero word —
+which is what an absent or malformed payload looks like — is refused rather than
+meaning something.
+
+**There is no in-band protocol-version field in the word.** `state.store.v1` is a
+versioned Tier 2 service contract; accepted binding and launch topology supplies a
+client with an endpoint **implementing that contract**; and v1 has **no runtime
+version negotiation**. A per-request tag would be redundant with the service
+contract the topology already configured — **not** with endpoint-object identity,
+which is a different thing and cannot carry a protocol version: one protocol may
+have several endpoint objects, as `block-lifecycle.sh` demonstrates for
+`block.device.v1` across two service generations.
+
+## 7. The reply
+
+Every reply is sent with `endpoint_reply_word`, so its inline length is
+`REQUEST_BYTES`. A client checks `length == REQUEST_BYTES` before reading `word`.
+
+```text
+word < REFUSED     success. Both operations answer 0.
+word >= REFUSED    refusal. `word - REFUSED` is the code of §9.
+```
+
+## 8. The operations
+
+### 8a. `PUT` — create or update
+
+```text
+client:  endpoint_call_word_region(store, region, id * 4 + OP_PUT)
+store:   endpoint_reply_word(reply, 0)
+```
+
+**One atomic call.** The request word and the payload region cross in the same
+message, through `ADR-0098` §2a's row. A region sent in one message and a request
+in another is **not** this protocol: it is correct only where one client is
+serialized against itself, and two clients' messages interleave in one queue.
+
+The store **forwards the client's region** to `block.device.v1`'s `WRITE`
+without copying it (§10), and replies only after the block service has
+acknowledged every device request the operation needed.
+
+Ordering, which is normative:
+
+```text
+previously absent (bit clear):   write payload sector `id`
+                                 write sector 0 with bit (id - 1) set
+                                 reply success
+
+already present (bit set):       write payload sector `id`
+                                 reply success
+```
+
+An object becomes visible only after its bytes are on the device, so a store that
+stopped between the two writes has a written sector and no object — a lost write,
+not a corrupt store. **No power-loss atomicity follows from this order**, and
+none is claimed (§11).
+
+### 8b. `GET` — read
+
+```text
+client:  endpoint_call_word_carrying(answer_endpoint, store, id * 4 + OP_GET)
+store:   endpoint_reply_word(reply, 0)
+store:   endpoint_send_region(carried, the object's region)
+```
+
+The store checks `occupancy` first and refuses an absent id **without reading its
+sector**. Otherwise it reads sector `id` through `block.device.v1`'s `READ`
+**completely**, replies success, and **then** forwards the region it received
+(§10) to the endpoint the request delegated.
+
+**Control before data, and the order is normative**, for `BLOCK_DEVICE_V1` §6a's
+reason: the reverse admits an orphan response. An endpoint object lives for the
+boot, so a region queued on an answer endpoint whose waiter then died stays there,
+and a later holder of receive — including a successor created from the same launch
+plan — could take it as the answer to its own request.
+
+| The client sees | It means |
+|---|---|
+| a **refusal** reply | refused; **no region follows** |
+| a **success** reply | the object was obtained and **exactly one region is owed** |
+| the **region** arriving | the `GET` is complete |
+
+**A client may have at most one outstanding `GET` per answer endpoint**, and may
+not issue another until the owed region has been received.
+
+**If the store dies after the success reply and before the send**, the client
+observes an incomplete operation through the ordinary liveness path — a blocked
+receive cancelled with `E_CANCELLED` (`SYSTEM_ABI_V1` §6) — and no stale region has
+been queued. If the region is sent, it belongs to the one outstanding successful
+operation.
+
+**A reply never carries a region**, which is why the request has to say where to
+answer.
+
+## 9. Refusals
+
+| Code | Name | When |
+|---|---|---|
+| 1 | `ST_OPCODE` | the opcode is reserved |
+| 2 | `ST_ID` | `id` is outside `MIN_ID..MAX_ID`, including `0` |
+| 3 | `ST_MALFORMED` | the inline length is not `REQUEST_BYTES` |
+| 4 | `ST_NO_REGION` | `OP_PUT` whose call carried no region |
+| 5 | `ST_NO_ANSWER` | `OP_GET` whose call carried no answer endpoint |
+| 6 | `ST_ABSENT` | `OP_GET` of an id whose occupancy bit is clear |
+| 7 | `ST_STORE` | the store is not open: no valid header, or the device is too small |
+| 8 | `ST_BLOCK` | `block.device.v1` refused, or reported a device failure |
+
+A refusal is always a **reply**: a store that failed to answer would leave its
+caller blocked until the liveness rule cancelled it (`SYSTEM_ABI_V1` §6), and a
+client could not tell a refusal from a dead store.
+
+**Every refusal is decided before the reply is sent, and that is why there is no
+code for a failed region delivery.** §8b replies success **before** sending the
+region, so a delivery that fails afterwards cannot become a refusal — the reply is
+already spent. A store in that position records the fault in its journal, and the
+client sees an incomplete operation. `ST_NO_ANSWER` is the part that *is*
+checkable, and it is checked before anything is read, because the receive record
+reports an absent answer endpoint as absence rather than as a handle.
+
+`ST_OPCODE`, `ST_ID`, `ST_MALFORMED`, `ST_NO_REGION`, `ST_NO_ANSWER` and
+`ST_ABSENT` touch the device not at all. `ST_BLOCK` reports what the layer below
+said. A refusal after a payload sector was written but before the occupancy bit
+was set leaves the object **absent**, which §8a's order is chosen to make true.
+
+## 10. The one-copy rule
+
+`docs/35` §Stage 4 budgets *"no more than one payload copy between client memory
+and device-visible memory"*, absolutely. So:
+
+```text
+PUT   client region  ->  store  ->  the same region  ->  block service  ->  DMA copy
+GET   block region   ->  store  ->  the same region   ->  client
+```
+
+**The store allocates no second payload region and copies no payload byte.**
+`ADR-0075` §5a makes the forward exact: a successful send takes the sender's
+handle and its mappings atomically, so after forwarding the store holds nothing
+and a later access through that handle is refused rather than reading memory it
+no longer owns.
+
+**Header construction is metadata, not payload.** The store allocates **a region
+for the 512-byte header**, composes the header in its first `OBJECT_BYTES`,
+freezes it and writes it as **its own block request**, accounted separately
+(`ADR-0099` §11).
+
+**A region for 512 bytes is not a 512-byte region.** An object and a sector are
+exactly `OBJECT_BYTES`; the region carrying one covers **at least** that —
+currently at least one frame — and every byte at or beyond `OBJECT_BYTES` is
+ignored by this protocol and by `block.device.v1` (§8 there). The rule is
+guaranteed at the origin: the only way to obtain a sendable region is
+`region_allocate` followed by `region_freeze`, and neither can produce one shorter
+than a frame, so a too-short region cannot be originated from canonical text at
+all.
+
+## 11. What v1 does not claim
+
+- **no power-loss durability, no `VIRTIO_BLK_F_FLUSH`, no ungraceful-termination
+  behaviour, no crash consistency, no journaling, no transactions**
+  (`ADR-0092` §0, Branch A);
+- **no exactly-once `PUT`.** If the store dies after some device effect and before
+  its reply, the outcome is deliberately ambiguous, consistently with `ADR-0093`
+  §5's case D. No transaction id, request journal, retry rule or idempotency
+  guarantee exists at v1;
+- no filesystem, `/state` mount, path, directory, VFS or POSIX semantics;
+- no content addressing, Git identity or repository semantics — an id bears no
+  relation to the bytes;
+- no enumeration, delete, rename or snapshot;
+- no multi-owner store, second store, or store discovery;
+- no ordering guarantee between two operations beyond §8a's within one `PUT`.
+
+## 12. Conformance evidence
+
+`ADR-0099` §13 is the obligation list: an initializer formatting a fresh device and
+being collected; a store service opening the header it wrote; two objects written by
+a writer that then ends; the store service ending, being retired and having its
+ending collected by its supervisor; a successor of the same canonical module
+re-reading and validating the header from the device; and a new reader — holding no
+`block.device.v1` capability — getting the second object and verifying all 512 bytes
+in canonical text.
+
+**One negative is about formatting rather than about persistence:** the initializer
+run against a **valid existing header** must refuse, and the header and `occupancy`
+must be **unchanged** afterwards. A mutation removing §4.4's zero-header check must
+turn that negative red.
+
+Its seven required mutations: omit the **initializer's** header write, so the state
+service cannot open; omit or falsify the payload device write; answer `get(2)` from
+object 1's sector; ignore the occupancy bitmap, which must make an id never created
+become visible and must turn the negative gate red; omit `PUT(2)`'s
+occupancy-header update, so that a successor reading the persisted header finds
+object 2 **absent** however much of its sector was written; send `GET`'s region
+before replying success, which must turn the ordering assertion red; and remove the
+initializer's zero-header check, which must turn the refuse-to-reformat negative
+red.
+
+<!-- END source/interfaces/state/STATE_STORE_V1.md -->
 
 ---
 
@@ -11911,7 +12708,9 @@ admission rule and `scripts/tests/check-interface-contract-authority.sh` require
 every contract in that tree to carry the accepted status and appear in
 `docs/SPECIFICATION_SOURCES.txt` — so a draft filed there would be authority a
 document assigned to itself. A draft states that it is proposed, names the ADR
-that would accept it, and moves to `source/interfaces/` on acceptance.
+that would accept it, and moves to `source/interfaces/` on acceptance. **The
+directory is empty whenever no draft is outstanding**, which is the ordinary state
+and not drift.
 
 ### `docs/language/`
 
@@ -34204,6 +35003,12 @@ belongs to whatever later decision allocates a third-party reset authority.
   dedicated publication channel rather than a capability whose nominal type
   is the published interface. P3 itself is unchanged: the registry is still an
   ordinary textual service. §1, §3a.1, §3a.2, §10.1 and §11 carry the change
+- **§9's reserved wire shape is answered 2026-09-24 by ADR-0098.** *"The wire shape
+  of `read`, `write` and `capacity`"* is no longer undecided: it is fixed by the
+  Tier 2 contract `source/interfaces/device/BLOCK_DEVICE_V1.md`, with all three
+  operations in v1. Nothing else in §9 moves, and nothing above this line is
+  rewritten — §9 recorded the question as open on its date, and this records where
+  it was closed
 - Project Architect approval: 2026-09-21, on the option set below — **granted
   before any of it was implemented**
 - Date: 2026-09-21
@@ -35245,6 +36050,1093 @@ differently, no operation number is added or re-specified, and `OBJECT_INTERFACE
 stays reserved and empty.
 
 <!-- END docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md -->
+
+---
+
+<!-- BEGIN docs/adr/0098-the-block-device-v1-wire-protocol.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region
+
+- Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
+  tree implements it yet**: acceptance fixes the contract and carries §4's
+  evidence obligations, which are outstanding
+- Date: 2026-09-23, accepted 2026-09-24
+- Decision level: **2** — a contract extension. It accepts a versioned service
+  protocol and adds two rows and one record to `SYSTEM_INTERFACE_V1` over ABI
+  operations that already perform exactly what the rows need. It adds no ABI
+  operation, no capability kind, no object kind, no nucleus mechanism, no IPC
+  bound and **no persistent byte layout**. §6 is the architecture impact
+  statement `docs/21` requires at this level
+- **Not Level 3, and not a language minor.** `ADR-0097` was Level 3 because it
+  added a member to `SYSTEM_INTERFACE_V1` §4.3's closed representation
+  enumeration, which by `ADR-0085` §13's own test — "a capability position a
+  conforming pre-amendment frontend and verifier reject becomes valid" — also
+  took a TOS Core minor. This decision adds **no** enumeration member and opens
+  **no** new capability position: a `system.memory.Region` parameter on an
+  endpoint operation is already valid, because `endpoint_send_region` has it.
+  `LANGUAGE_VERSION` does not move
+- Project Architect approval: 2026-09-24, as drafted — *"architecturally approved
+  as drafted, subject only to the normal status/contract promotion"* — after the
+  corrective round that reversed READ's control/data ordering, made both optional
+  payload positions `Option`, and replaced the endpoint-identity version rationale
+- Related: **ADR-0093** §0 (the surface is `read`, `write`, `capacity` and
+  nothing else) and **§9**, which reserved the wire shape and is answered here;
+  **ADR-0095** §3 (an endpoint object's identity fixes one publication class);
+  **ADR-0097** (the textual region surface, and §8c's reason not to extend
+  `system.ipc.ReceivedCall`); **ADR-0037** and `IPC_V1` §5 (transfer rules);
+  **ADR-0075** §5a (a successful linear transfer takes handle and mappings);
+  **ADR-0057**, **ADR-0058** (message bounds and areas); **ADR-0092** §0
+  (Branch A's persistence reading); `SYSTEM_ABI_V1` operations 2 and 3;
+  `docs/11` §Driver interfaces; `docs/02` I-09;
+  `docs/research/STAGE4_PERSISTENT_STATE_BOUNDARY.md` §7, which raised this and
+  is authority for nothing
+
+## 0. What this decides, and why it is needed now
+
+**`block.device.v1` has clients but no protocol.** `ADR-0093` fixed the
+interface's surface — `read`, `write`, `capacity` — and §9 deliberately left the
+wire shape out: *"Interface design inside `IPC_V1`; no new IPC mechanism,
+capability type or ABI operation is to be created for it."* What exists today is
+one fixture's encoding, documented as a fixture's in the fixture, in `README.md`
+and in `PROGRESS.md`: eight payload bytes carrying `sector * 2 + direction`, a
+region sent in a message of its own beforehand.
+
+**A second client is what turns that into a boundary.** The Stage 4 persistent
+object/state store (ADR-0099) is a client of this interface. Under `docs/02` I-09
+a driver contract is *"versioned from [its] first implementation"*, and
+`docs/11` §Driver interfaces gives `block.device.v1` its purpose — a device-class
+interface *"rather than exposing hardware-specific details to applications"*. A
+store built on a deliberately non-normative encoding would make a fixture its
+production dependency, and the first fixture change would be a silent protocol
+change.
+
+**So this decision does two things.** It fixes the protocol, in the Tier 2
+contract `BLOCK_DEVICE_V1` (`source/interfaces/device/BLOCK_DEVICE_V1.md`), and it fixes the
+one mechanism that protocol needs and canonical text cannot currently name: a
+**call that carries a region and a request word in the same message**.
+
+## 1. The two-message write is not promotable
+
+The fixture writes in two messages:
+
+```text
+endpoint_send_region(service, region)          message 1
+endpoint_call_word_carrying(inbox, service, w) message 2
+```
+
+**This is sound only under the fixture's sequencing.** One client, one request at
+a time, one receiver taking them in order. With two clients the messages of two
+requests interleave in one queue, and the service has no way to tell which region
+belongs to which word: `IPC_V1` §3 gives a message a payload, a capability area
+and a region area, and nothing ties one message to another. A protocol whose
+correctness depends on there being one client is not a protocol.
+
+**It is also unnecessary.** The nucleus already sends a call with a region:
+`syscall.rs`'s `call` (operation 3) passes `frame.r8` to `send_transaction` as
+the region count and supplies the reply capability, and `send_transaction`
+resolves, retains and linearly transfers regions for a call exactly as it does
+for a send. The receive half is the same: `write_regions` writes the arrived
+region records at `MESSAGE_REGIONS` in the receiver's own argument region for
+**every** accepted message, and the reply capability is in the last transfer
+slot. Both halves exist and are exercised; what does not exist is a *schema row*
+by which canonical text names them.
+
+## 2. The decision
+
+### 2a. Two additive schema rows and one record
+
+`SYSTEM_INTERFACE_V1` gains, on `system.ipc.Endpoint`:
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `endpoint_call_word_region` | `system.ipc.Endpoint` with `call`, then `system.memory.Region` with `none` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
+| `endpoint_receive_call_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCallRegion, i64>` | 2 |
+
+and one record:
+
+### `system.ipc.ReceivedCallRegion`
+
+| Field | Type |
+|---|---|
+| `reply` | `system.ipc.Reply` |
+| `carried` | `Option<system.ipc.Endpoint>` |
+| `region` | `Option<Region<u8>>` |
+| `length` | `u64` |
+| `word` | `u64` |
+
+**Five fields, and each is required by a request this protocol has.** `reply`
+answers the call. `word` is the request. `length` is what makes `word`
+trustworthy — `SYSTEM_INTERFACE_V1` §4.2 already states that `word` *"is
+meaningless unless `length` is at least eight — which is the receiver's check to
+make, in canonical text"*, and a service that could not make it would read a
+garbage opcode out of a malformed call as `READ` of sector 0. `carried` is how
+`READ` is answered, because a reply cannot carry a region. `region` is `WRITE`'s
+payload.
+
+**Both optional positions are `Option`, and neither is a zero handle.** A
+conforming `WRITE` carries no answer endpoint and a conforming `CAPACITY` carries
+neither, so absence is an ordinary outcome of this protocol rather than an error
+state. TOS Core already has the typed absence model — `system.process.ChildEnding`
+uses `Option<u64>` for exactly this reason, which `ADR-0067` states as *absence is
+the true value, and a zero would be a claim its caller never made* — and a record
+that said `system.ipc.Endpoint` while meaning "possibly nothing" would put that
+rule back in every reader's hands.
+
+**It is not merely tidier for the region; for the region it is the only safe
+form.** A zero capability handle *"names nothing in any table"*, so an endpoint
+operation on one answers `E_NO_CAPABILITY`, a refusal a service recovers from. An
+indexed access to a **region** the host holds no mapping for is a **trap**
+(`RUNTIME_DEVICE_REFUSED`), which ends the process — so a service that had to
+touch a region to learn whether one arrived could not serve `READ` at all. What
+was drafted as an asymmetry is a single rule with one position where breaking it
+is fatal rather than recoverable.
+
+**Verification, as the direction required, and it passes.** Neither field needs a
+new representation-family member or a language minor:
+
+- **no new family member.** `SYSTEM_INTERFACE_V1` §4.3's enumeration —
+  `AsInterface | DmaRegionFamily | RegionFamily` — stays closed and unchanged.
+  `system.ipc.Endpoint` is `AsInterface`; `system.memory.Region` is
+  `RegionFamily`, admitted by `ADR-0097`. Representation is a property of the
+  *interface*, and both derivation mirrors key on the type constructors
+  `Region`/`RegionMut`/`DmaRegion`/`DmaRegionMut`
+  (`interfaces::interface_of_representation`, `tos_verifier::representation::interface_of`).
+  `Option<T>` is a TOS Core V1 type constructor and represents nothing;
+  wrapping adds no family;
+- **`Option<system.ipc.Endpoint>` needs no change at all.** `lower.rs`'s
+  `schema_field_type` already strips `Option<…>` recursively and then resolves an
+  accepted interface path to `TypeDef::Capability`, so this field resolves under
+  the frontend as it stands;
+- **no language minor**, on `ADR-0085` §13's own test — whether a capability
+  position a conforming pre-amendment frontend and verifier reject becomes valid.
+  `RegionFamily` is valid from TOS Core 1.5, which `ADR-0097` established, and a
+  module obtaining a `Region<u8>` at 1.5 is doing what 1.5 admits.
+  `LANGUAGE_VERSION` does not move.
+
+**Two implementation obligations follow, and acceptance carries them.** They are
+bounded frontend work inside this decision, not a change of its class:
+
+1. **`schema_field_type` gains one arm for `Region<u8>`.** It admits integers,
+   `Option<…>`, accepted interface paths and schema records today, and a region
+   spelling is none of those — so `Option<Region<u8>>` would be a gap rather than
+   a type. The arm mirrors what `resolve_type` already does for written syntax
+   (`"Region" => TypeDef::Region(first)`), and the existing `Option` recursion
+   then covers the wrapper;
+2. **a schema record must propagate the largest representation minor its fields
+   require to every module that names it.** `checker.rs`'s
+   `named_representation_minor` walks the type syntax a module *writes*, and a
+   module writing `Result<system.ipc.ReceivedCallRegion, i64>` names a **record**
+   path, on which `representation_of` answers `AsInterface` — so a module
+   declaring 1.4 could name this record and obtain a `Region<u8>` without ever
+   writing a 1.5 form. That is the same class of hole as the feature-gate outer
+   guard corrected on 2026-09-23, and it must be closed in the checker **and** the
+   verifier, with a 1.4-module negative, before this record exists.
+
+**One receive row serves all three operations.** A service cannot know before
+receiving whether the next call carries a region (`WRITE`), an answer endpoint
+(`READ`) or neither (`CAPACITY`), so the row that serves the protocol must be the
+superset. `system.ipc.ReceivedCall` is **unchanged**, for `ADR-0097` §8c's
+reason: its four fields matched by position are part of what the
+capability-transfer, publication and lifecycle boots already prove.
+
+### 2b. What this is, stated as the distinction the direction asked for
+
+| | New? |
+|---|---|
+| a `SYSTEM_ABI_V1` operation | **no.** Operations 2 and 3, unchanged |
+| a nucleus IPC mechanism | **no.** `call` already passes `frame.r8` as a region count; `send_transaction` already resolves, retains and transfers a call's regions; `write_regions` already reports them to a receiver |
+| a capability kind | **no** |
+| an object kind | **no** |
+| an IPC bound | **no.** `ADR-0057`'s 256 inline bytes, four capabilities and two regions stand; this uses one region of the two, and a call's reply still takes the last capability slot |
+| a capability representation member | **no.** `ADR-0085`'s enumeration is closed and stays closed; `RegionFamily` already exists |
+| a `SYSTEM_INTERFACE_V1` / runtime-image surface | **yes, additively.** Two rows and one record, and one `Produced::ReceivedCallRegion` arm in the runtime image composing reads the image already performs |
+
+The contract's own version moves, because a document that gained rows is a new
+version of that document. Nothing it already said changes.
+
+### 2c. The protocol, in `BLOCK_DEVICE_V1`
+
+Accepted as a Tier 2 contract, `source/interfaces/device/BLOCK_DEVICE_V1.md`, whose
+normative content is summarized here and stated there:
+
+- **all three operations of `ADR-0093` §0's surface are in v1** — `READ`,
+  `WRITE` and `CAPACITY`. `CAPACITY` is not deferred: a bounded client must be
+  able to establish that its layout fits **before** it writes anything, and the
+  alternative — discovering the device's bounds by issuing a request designed to
+  be refused — is a client learning a fact by misbehaving;
+- **one request word**, opcode in the low two bits, sector in the rest:
+  `word = sector * 4 + opcode`, with `0 = READ`, `1 = WRITE`, `2 = CAPACITY`,
+  `3 = reserved`. The maximum addressable sector is stated as a constant rather
+  than left to overflow: `MAX_SECTOR = 2^62 - 1 = 4611686018427387903`. A device
+  reporting more sectors than that has the excess unreachable in v1, and the
+  contract says so;
+- **no in-band protocol-version field in the word**, and the reason is the
+  configured contract rather than the endpoint object. `block.device.v1` is a
+  **versioned Tier 2 service contract**; accepted publication, binding and launch
+  topology supplies a client with an endpoint *implementing* that contract; and
+  v1 has **no runtime version negotiation**. A per-request version tag would
+  therefore be redundant with the service contract the topology already
+  configured.
+
+  **It is specifically not redundant with endpoint-object identity, and an
+  earlier draft of this ADR had that wrong.** `ADR-0095` §3's dedicated object
+  fixes a *publication class and authority*; the endpoint later published as a
+  service endpoint is a **different object**. The lifecycle evidence proves the
+  distinction directly: `block-lifecycle.sh` uses two distinct service endpoint
+  objects for the two generations — `serve_a` and `serve_b`, which `ADR-0093`
+  §3a answers 5 and 7 require to be distinct — while **both instances implement
+  the same `block.device.v1`**. So endpoint object identity cannot be the
+  protocol version: one protocol already has more than one endpoint object;
+- **`WRITE` is one atomic call** carrying the request word and one immutable
+  region, through §2a's row. There is no preceding region message;
+- **`READ` is a call carrying the caller's answer endpoint**, and its control
+  reply comes **before** its data. The service obtains the sector completely,
+  replies, and only then sends exactly one immutable region to the delegated
+  endpoint. §2d is why that order and not the other one;
+- **`CAPACITY` is an ordinary call** whose sector field must be zero and whose
+  answer is the addressable sector count;
+- **one reply discriminator for all three.** Bit 63 of the reply word clear means
+  success; set means refusal, with the refusal code in the low bits. So a
+  refusal is never mistaken for a capacity, and a client checks one thing.
+
+### 2d. Why `READ`'s reply precedes its region
+
+An earlier draft had the service send the region and *then* reply success. That
+admits an **orphan response**:
+
+```text
+region queued on the answer endpoint
+service dies
+the caller's call is cancelled by the liveness rule
+the region is still queued
+```
+
+**An endpoint object lives for the boot.** A process dying releases its
+*receive authority*; it does not make the endpoint a fresh object, and nothing
+drains what is queued on one. A later holder of receive on that endpoint —
+including a successor created from the same launch plan, which is how two
+generations share one inbox within `MAX_ENDPOINTS` — could then take an old
+response as the answer to its own request. That is a correctness failure of the
+protocol, not of the process that died.
+
+**So v1 fixes the order as control-then-data:**
+
+```text
+obtain the requested data completely
+reply success
+send exactly one region to the delegated answer endpoint
+```
+
+and the three observations have distinct meanings:
+
+| The client sees | It means |
+|---|---|
+| a **refusal** reply | the operation was refused; **no region follows** |
+| a **success** reply | the read succeeded and **exactly one region is now owed** |
+| the **region** arriving | the `READ` is complete |
+
+**Two rules make that sound, and both are the client's:** a client may have **at
+most one outstanding `READ` per answer endpoint**, and it may not issue another
+until the owed region has been received. Nothing enforces this in the nucleus and
+nothing needs to: a client that broke it would be unable to say which region
+answered which of its own requests, which is a statement about that client and not
+about the wire.
+
+**What a death in the gap now looks like.** If the service dies after replying
+success and before sending the region, the client observes an **incomplete
+operation** through the ordinary liveness path — its receive blocks and is
+cancelled with `E_CANCELLED` (`SYSTEM_ABI_V1` §6) — and **no stale region has been
+queued**. If the region was sent, it belongs to the one outstanding successful
+operation. That is strictly better than the orphan case and it costs nothing.
+
+**No request identifiers, sequence numbers, reply-carrying-region nucleus
+semantics or any other IPC mechanism** is added to reach it. The ordering is the
+whole of the fix.
+
+**And a consequence for the refusal set:** a failure that happens *after* success
+has been replied **cannot become a refusal**, because the reply is already spent.
+So `BLK_ANSWER` — drafted as "the region could not be delivered" — is withdrawn as
+a refusal code. What remains is the pre-reply check that the new `Option` makes
+possible: a `READ` whose call carried **no** answer endpoint is refused before
+anything is read, as `BLK_NO_ANSWER`. A send that fails after success was replied
+is a service fault, recorded in the service's journal, and the client learns of it
+as an incomplete operation.
+
+## 3. What this deliberately does not decide
+
+- **Persistent bytes.** Nothing here gives any byte of any sector a meaning. That
+  is ADR-0099's, and the reason these are two decisions.
+- **Case D.** `ADR-0093` §5's boundary is retained verbatim: a `WRITE` accepted
+  by a service that dies before delivering the reply leaves the client unable to
+  distinguish "not performed" from "performed and the reply lost". **No
+  transaction id, request journal, retry rule, idempotency guarantee or
+  exactly-once semantics** is added, at Stage 4, for any purpose including
+  removing case D.
+- **Durability.** `ADR-0092` §0 Branch A stands: no power-loss durability, no
+  `VIRTIO_BLK_F_FLUSH`, no ungraceful-termination evidence, no crash consistency.
+  A successful `WRITE` means the device accepted and completed the request.
+- **More than one sector per request**, request batching, multiple outstanding
+  requests from one client, queue multiplexing policy, scheduling, `TRIM`,
+  `FLUSH`, or any other VirtIO block feature.
+- **Filesystems, partitions, caches, VFS or object stores** — `ADR-0093` §0 and
+  `ADR-0097` §5, unchanged.
+- **Who may hold a `block.device.v1` endpoint.** Publication and lifetime are
+  `ADR-0093`'s and `ADR-0095`'s; this is the shape of the messages only.
+- **Migrating the existing fixtures.** `block-data-path` and `block-lifecycle`
+  keep their encoding until a later slice moves them, and that migration is
+  explicitly not part of this decision. Their accepted evidence is evidence about
+  what it was taken on.
+
+## 4. Conformance evidence this decision requires
+
+**Acceptance carries these obligations**, and they are not satisfied today:
+
+1. **normative `READ`** — a client holding only a `block.device.v1` endpoint and
+   an answer endpoint reads one sector through the encoding above, and verifies
+   its bytes in canonical text;
+2. **normative atomic `WRITE`** — one call carrying word and region, and an
+   independent read-back proving the device holds those bytes;
+3. **`CAPACITY`** — the answer equals the device's own reported sector count,
+   clamped as §2c states, and is not a constant in the client;
+4. **invalid-opcode negative** — opcode 3 is refused with its own code, and
+   nothing is written;
+5. **out-of-range negative** — a sector at or above the reported capacity is
+   refused with its own code, and nothing is written. The existing
+   `STAGE4_BLOCK_SECTORS` harness option already builds a deliberately small
+   device for a capacity negative;
+6. **absent-region negative** — a `WRITE` whose call carries no region is refused
+   with its own code rather than trapping the service, which is what §2a's
+   `Option` is for;
+7. **absent-answer-endpoint negative** — a `READ` whose call carries no answer
+   endpoint is refused as `BLK_NO_ANSWER` **before** the sector is read, which is
+   the other half of what §2a's two `Option` fields are for;
+8. **malformed-length negative** — a call whose inline length is not eight is
+   refused, and its `word` is not acted on;
+9. **the ordering assertion** — for a successful `READ` the journal shows the
+   reply **before** the region send, which is §2d's claim and the one an
+   implementation could silently get backwards;
+10. **the atomicity mutation** — the client sends a decoy region by
+    `endpoint_send_region` *before* its atomic `WRITE` call, with a different
+    pattern. A service taking its payload from a separate
+    `endpoint_receive_region` writes the decoy and the read-back witness fails;
+    the conforming service writes the call's own region. This is the mutation that
+    proves §1's claim;
+11. **the ordering mutation** — a service that sends the region before replying
+    must turn obligation 9 red. It is the mutation that proves §2d is implemented
+    rather than merely written down.
+
+**One obligation the direction asked for cannot be met, and the reason is the
+region mechanism rather than an omission.** A *wrong-length* region negative is
+**not exhibitable from canonical text**, and the contract must say so rather than
+fake it:
+
+- `region_allocate` grants *"the whole frames covering `bytes`"*, so the smallest
+  region any client can originate is one frame — 4096 bytes, already more than a
+  sector. A region too short to hold 512 bytes cannot be constructed;
+- `region_freeze` preserves base and length, so freezing cannot shrink one;
+- canonical text **cannot read a received region's extent**: `Produced::ReceivedRegion`
+  yields a handle and nothing else, and an out-of-range indexed access is a trap,
+  not a refusal — so a service cannot probe for the length either.
+
+The contract therefore states the size rule as **"the region must cover at least
+`SECTOR_BYTES`, and only the first `SECTOR_BYTES` are the sector's"**, notes that
+it is guaranteed by the only mechanism that can originate a sendable region, and
+classes the negative as **static**, in the same form
+`host-tools/qemu-test/virtio-queue.sh` uses for the MSI-X negative that *"was
+attempted and withdrawn"* because the reference device could not be made to
+exhibit it. A rule stated as *exactly* 512 bytes would be worse than
+unenforceable — it would be false of every conforming request.
+
+## 5. `ADR-0093` §9 is answered
+
+`ADR-0093` §9's reserved item *"The wire shape of `read`, `write` and
+`capacity`"* is answered by this decision, and a dated amendment line has been
+added to `ADR-0093` saying so — the mechanism `ADR-0095` used, and for the same
+reason: an accepted decision is not rewritten, and a later one does not amend it
+silently.
+
+`ADR-0093` §9's other reserved items are untouched: idempotency of `write` stays
+a lever nobody has pulled, restart policy stays canonical supervisor text, and
+*"Persistent object/state storage and the capsule-to-repository handoff"* stay
+separate deliverables — the first of which is ADR-0099 and the second of which is
+nobody's yet.
+
+## 6. Architecture impact statement (`docs/21`)
+
+- **Which invariants are affected?** I-09, satisfied rather than strained: a
+  driver contract gains the version it was required to have from its first
+  implementation. I-01 and I-16 are unaffected — the protocol is implemented in
+  canonical text on both sides. I-13 is the reason obligation 8 exists.
+- **What becomes canonical after the change?** `BLOCK_DEVICE_V1` becomes the
+  canonical `block.device.v1` wire shape. The fixture encoding becomes what it
+  was already documented as: one fixture's, pending migration.
+- **What enters or leaves the trusted base?** Nothing. No nucleus change, no ABI
+  operation, no capability or object kind. The runtime image gains one result
+  arm, and the runtime image is a verified ring-3 artifact, not the trusted base.
+- **Can the active runtime still identify its exact source?** Unchanged.
+- **Can all derived artifacts be discarded and regenerated?** Unchanged; nothing
+  here is cached or persistent.
+- **Can the owner still recover and boot a previous commit?** Unchanged.
+- **Does the change create a hidden host dependency?** No. The host harness
+  judges reported results; the protocol is performed by textual modules.
+- **Does it alter licensing or patent exposure?** No. The VirtIO citation surface
+  is unchanged and this adds no third-party mechanism.
+- **How is the behavior tested?** §4's eight obligations, one of which is a
+  mutation and four of which are negatives, plus §4's honest statement of the one
+  negative class that is static.
+
+<!-- END docs/adr/0098-the-block-device-v1-wire-protocol.md -->
+
+---
+
+<!-- BEGIN docs/adr/0099-stage-4-persistent-object-state-storage.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0099: Stage 4 persistent object/state storage — a private native store, substrate first
+
+- Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
+  tree implements it yet**: acceptance fixes the format and the protocol and
+  carries §13's evidence obligations, which are outstanding
+- Date: 2026-09-23, accepted 2026-09-24
+- Decision level: **3** — architectural, **requiring Project Architect
+  approval**. `docs/21` places *"changes persistent formats"* at Level 3, and
+  `ADR-0017` applied that test to itself in as many words — *"Explicitly **not**
+  Level 3: no capsule byte changes"*. This decision **creates** the first
+  normative persistent state format, which is not less architectural than
+  changing one. §12 is the architecture impact statement `docs/21` requires
+- Project Architect approval: 2026-09-24, **as a Level 3 architectural decision**,
+  after the corrective round that split formatting from startup, made the
+  initializer refuse any non-zero header, bounded `schema_identifier`'s scope, and
+  corrected the receiver/reclamation wording of §13a
+- Depends on: **ADR-0098**, accepted on the same date and necessarily before this
+  one. This decision's store reaches the device only through `block.device.v1`, and
+  building it on the lifecycle fixture's deliberately non-normative encoding would
+  make a fixture a production dependency
+- Related: **ADR-0092** §0 (Branch A: the Stage 4 persistence reading);
+  **ADR-0093** §5 (case D), §9 (which names this deliverable as separate);
+  **ADR-0095** §6 (a second published interface is undecided); **ADR-0097**
+  (the textual region surface); **ADR-0075** §5a (linear transfer);
+  **ADR-0077** (launch plans); `docs/09` §`/state`, §State schema versions,
+  §Filesystem implementations; `docs/11` §Bootstrapping step 4; `docs/16`
+  §Stage 4; `docs/19` §Decisions still requiring ADRs; `docs/35` §Stage 4;
+  `docs/40` §primitive types; `docs/02` I-04, I-09, I-13, I-16;
+  `docs/research/STAGE4_PERSISTENT_STATE_BOUNDARY.md`, which is the note this was
+  raised from and is authority for nothing
+
+## 0. What this decides
+
+`docs/16` §Stage 4 owes **persistent object/state storage**, and the stage's
+engineering exit is *"persistent storage works through a textual user-space
+driver"*. `docs/19` §Decisions still requiring ADRs already names *"first
+persistent object/state filesystem"* as a decision requiring one. This is it.
+
+**It decides seven things and no more:** the Stage 4 reading of the deliverable,
+who owns the store and what authority it holds, what identifies an object, where
+objects live, where format and schema identity live, the `state.store.v1`
+protocol, and how the `docs/35` handoff budget is measured. The contract is
+`source/interfaces/state/STATE_STORE_V1.md`.
+
+## 1. Stage 4 interpretation: substrate first
+
+**Stage 4 delivers a private native persistent object-store substrate. It does
+not expose `/state`.** No path namespace, no VFS, no directories, no POSIX
+semantics, no mount.
+
+`docs/09`'s `/state` is **unchanged and not redefined**: it remains the
+architectural namespace class for *"Mutable durable state owned by services"*,
+whose paths are *"namespaced by service identity and protected by
+capabilities"*, and a later layer will map it onto stores. Two accepted clauses
+put the substrate first: `docs/09` §Filesystem implementations admits that *"the
+first implementation may use a simple native object store and state filesystem
+under QEMU"* while separately requiring that *"the VFS and capability contracts
+must not assume a particular disk format"* — a VFS arriving above a store that
+already exists — and `docs/11` §Bootstrapping step 4 is *"Text driver initializes
+persistent storage"*, which is substrate language.
+
+**The format is not a VFS dependency.** No VFS exists here, and a later VFS
+contract must remain format-independent exactly as `docs/09` requires. What this
+decision fixes is the bytes **one service** writes and reads; nothing above it is
+permitted to assume them.
+
+## 2. Ownership, authority and topology
+
+```text
+provisioning:   initializer          --(block.device.v1)-->  block service  -->  device
+                (collected before the state service starts)
+
+steady state:   client  --(state.store.v1)-->  state store  --(block.device.v1)-->  block service  -->  device
+```
+
+- **The state store service is launcher-wired.** It receives its endpoints from a
+  sealed launch plan (`ADR-0077` §3–§5), which is what `ADR-0093` §3a answer 3
+  already requires of every client's first capability. **It does not publish**,
+  and this decision introduces **no second publication class** — `ADR-0095` §6
+  leaves that undecided and §8 states that the spare endpoints are not an
+  argument for it;
+- **once provisioning is over it is the steady-state holder of the block-service
+  client capability.** The only other process ever endowed with one is §6's
+  initializer, which exists before it and is collected before it starts. Clients
+  of the store hold no `block.device.v1` capability at all, which is what makes
+  "the reader could not have reached a sector" a fact about the boot's capability
+  topology rather than a claim about its source;
+- **it holds no PCI bus, function, MMIO window, interrupt source or DMA region.**
+  The block service remains the only holder of hardware authority. The store's
+  isolation boundary **is** capability topology, and the boot journal is where it
+  is read.
+
+## 3. Object identity: a store-local `u64`, bounded to 1..64
+
+An object is named by a `u64` **object id**, and the valid domain at v1 is
+`1..64` inclusive. `0` is not an id, so a zero word is never a valid request.
+
+- **not a path**, and not a name. A later `/state` layer may map names onto these
+  ids without changing v1 object identity, because a resolution layer above the
+  store is additive;
+- **not a content id.** It bears no relation to the bytes, so nothing here can be
+  mistaken for `docs/08`'s content-addressed model or for a Git identity;
+- **private to this store instance and its owner.** It has no global meaning, and
+  two stores' id spaces are unrelated. `docs/09`'s *"namespaced by service
+  identity"* is satisfied at the capability layer — which store endpoint a service
+  holds is which store it can reach — and not by the id, because the store cannot
+  learn who is calling: `system.ipc.ReceivedCall` and
+  `system.ipc.ReceivedCallRegion` carry no caller identity.
+
+**Why 64 and not a larger bound.** The bound is the width of the occupancy field
+in §5's header, and choosing them together is the point: an object capacity
+recorded as its own field could disagree with the bitmap that implements it.
+
+## 4. Object semantics
+
+Each present object is exactly **`SECTOR_BYTES` = 512 opaque payload bytes**, and
+**there is no per-object header**. The store does not interpret them.
+
+**Presence is determined solely by the header's occupancy bitmap:**
+
+```text
+bit (id - 1) clear  ->  object absent, whatever bytes its sector already holds
+bit (id - 1) set    ->  object present
+```
+
+This is deliberate, and it is the mechanism by which **seeded or stale sector
+contents are non-authoritative**. A store that inferred presence from the bytes
+could be convinced by anything that had been on the device before it, including
+the Stage 4 harness's own seeded sectors.
+
+**Not in v1:** delete, enumeration, variable-size objects, an allocation cursor,
+a free list, rename, transactions, or objects larger than one sector.
+
+## 5. Placement and the persistent layout
+
+**Deterministic placement with a versioned store header and an occupancy
+bitmap.** The logical shape:
+
+```text
+sector 0        the store header
+sector id       the payload of object id, for id in 1..64
+```
+
+**`STATE_STORE_V1` gives meaning to sectors `0..64` and to no others.** It
+reserves exactly that bounded 65-sector extent in the Stage 4 reference layout,
+and it **never reads or writes a sector at or above 65**. There are no partitions
+at Stage 4 and no partition abstraction is introduced; a base-offset field would
+have one possible value, which is why there is none.
+
+**This decision assigns no meaning and no owner to the remaining sectors.** They
+are not free, not reserved and not the store's — they are undecided. The
+capsule-to-repository handoff is a separate decision (§14) and **must not overlap
+this extent without explicitly revisiting the layout**, which is a statement this
+decision makes so that a later one cannot make it by accident.
+
+The header is 512 bytes, all numbers little-endian and fixed-width under
+`docs/40`'s rule that *"Public and persistent forms use one of the explicit
+fixed-width integers"* and that `size` *"MUST NOT be serialized in a
+persistent/public format"*:
+
+| Offset | Size | Field | v1 rule |
+|---|---|---|---|
+| 0 | 8 | `magic` | the bytes `54 4F 53 53 54 4F 52 45` (`TOSSTORE`), read as bytes so no endianness applies |
+| 8 | 4 | `format_version` | `u32` LE, `= 1` |
+| 12 | 4 | `schema_version` | `u32` LE, the owner's state schema version |
+| 16 | 8 | `schema_identifier` | `u64` LE, the owner's state schema identifier |
+| 24 | 8 | `occupancy` | `u64` LE, bit `id - 1` set iff object `id` is present |
+| 32 | 480 | `reserved` | **must be zero** |
+
+**The exact offsets and widths are normative in `STATE_STORE_V1`**, not
+implementation comments in a module — a layout described only by the code that
+writes it is a layout no second implementation can be checked against.
+
+**Why deterministic placement rather than an allocation index.** A store with 64
+fixed slots needs no cursor, no free list and no reuse policy, and therefore has
+no two-write allocation ordering question at a stage where power loss is out of
+scope. What it does need is a header, and the reason is the row above: without one,
+`get` of an id never written is indistinguishable from `get` of an id written as
+zeros, so the "simplification" of having no persistent metadata does not survive
+contact with the first absent object.
+
+**What a future change costs.** Variable-size objects, more than 64 objects,
+delete-and-reuse or multi-owner stores all need a different layout — and
+`format_version` is what makes each of them a recognizable successor rather than
+a misread. A v1 reader refuses a version it does not know instead of interpreting
+it.
+
+## 6. Formatting is a separate action from opening
+
+**An earlier draft said the first generation may initialize and a successor never
+does. That is not implementable**, and the reason is worth stating because it is a
+property of the accepted launch model rather than of this design: the **supervisor**
+knows a child's restart generation — it asserts it, through
+`process_create_with_generation` — and `PROCESS_IDENTITY_V1` §3 records that the
+nucleus *"records it and never computes or increments it"*. The child is told
+nothing. Both state generations run the same canonical module from the same shared
+launch plan (§13), so a service asked to decide for itself cannot distinguish
+
+```text
+a fresh first start                  from     a restart whose header is missing or corrupt
+```
+
+and a service that auto-formatted on an invalid header would **destroy a store to
+recover from a transient failure to read one**. So it does not.
+
+### 6a. The initializer
+
+Formatting is a separate canonical textual bootstrap action, performed once during
+provisioning by its own short-lived process:
+
+```text
+state-store initializer
+    capacity()
+    require capacity >= STORE_SECTORS                  (65)
+
+    READ HEADER_SECTOR
+
+    if all 512 bytes are zero:
+        WRITE one complete initial STATE_STORE_V1 header
+        terminate success
+    else:
+        REFUSE TO FORMAT
+```
+
+The header it writes is exactly: magic, `format_version = 1`, the owner's schema
+identity, `occupancy = 0`, `reserved` zero. It writes **no** payload sector.
+
+**It reads before it writes, and only an all-zero header is permission to
+format.** An initializer that wrote unconditionally would silently reset
+`occupancy` if it were ever run against an existing store — losing every object in
+it while reporting success. For a provisioning action that is deliberately
+separated *because* it is destructive, that is not acceptable.
+
+**The test is deliberately stricter than §6b's ordinary validation**, and the
+difference is the point. Ordinary opening asks "is this a store I can use?";
+formatting asks "is this certainly nothing at all?". So none of the following is
+permission to initialize:
+
+- a header that is **already valid** — the store exists;
+- one valid **but for another schema** — it is somebody else's store, and
+  `schema_identifier` is not a claim on the extent (§7a);
+- one of a **future or unknown `format_version`** — a v1 initializer cannot know
+  what it would be destroying;
+- a **corrupt** header — the most likely reading is a store whose header failed to
+  read, which is exactly the case §6's opening paragraphs refuse to paper over;
+- **merely non-zero garbage** — something put bytes there, and this decision
+  assigns no meaning to bytes it did not write.
+
+Only the all-zero sector denotes the fresh, uninitialized reference state, which is
+also what the Stage 4 harness presents on a new image.
+
+**It does not inspect sectors 1..64 before formatting, and must not.** The harness
+deliberately seeds some of them, so their contents say nothing about whether a
+store exists; `occupancy` is authoritative, and `occupancy` is only meaningful once
+a store does.
+
+The initializer:
+
+- **is canonical TOS text**, verified and launched like any other module. It is
+  **not** a host path, not a harness step and not a privileged helper;
+- reaches the device **only** through `block.device.v1`;
+- holds **no** PCI bus, function, MMIO window, interrupt source or DMA region;
+- **exists only during provisioning** and is collected before the ordinary state
+  service is created, which is also what keeps the block-service client capability
+  single-holder in steady state (§2);
+- is **not** a second publication class: it publishes nothing and is
+  launcher-wired like everything else here.
+
+**This is the other reason `ADR-0098` keeps `capacity` in v1.** The initializer
+must establish that the whole bounded layout fits **before** it writes a header it
+would otherwise run past the end of, and it must do so without learning the bound
+by issuing a request built to be refused.
+
+### 6b. Opening
+
+**The ordinary state service never formats storage.** It opens, or it cannot open:
+
+```text
+state service
+    read sector 0 through block.device.v1
+    validate: magic equal; format_version == 1; reserved all zero;
+              schema_identifier and schema_version equal its own constants
+```
+
+- **an all-zero sector 0 is not a valid store.** Uninitialized storage is
+  uninitialized, and a zero-filled device is exactly what the Stage 4 harness
+  presents on a fresh image;
+- a missing or invalid header means the service **cannot open**, and every request
+  it then receives is refused with `ST_STORE`. It does not repair, reformat or
+  guess;
+- **nothing is handed to a successor in memory.** Both generations open the same
+  way, from the device, which is why one canonical module serves both.
+
+## 7. State schema identity, and the Stage 4 migration policy
+
+**The store header is the persistent location of format and schema identity.**
+Not per-object headers, which would cost payload out of the 512 bytes an object
+is and which v1 does not need with one schema and one producer. And **not
+source-only identity**: a service's source tells you what the running code
+expects, never what is on the device, so after the first source revision the
+bytes would be unidentifiable — and `docs/09` §State schema versions requires
+*migration functions* and a *maximum supported migration chain*, both of which
+presuppose reading the version the bytes were written with. I-16's traceability
+points the same way.
+
+Three distinct facts, and the contract keeps them distinct:
+
+```text
+format_version       the layout of the header and of placement — this decision's
+schema_identifier    whose state this is — the owner's
+schema_version       the shape of the owner's object payloads — the owner's
+```
+
+The store interprets the first and **compares** the other two; it never
+interprets a payload.
+
+**Stage 4 migration policy, stated explicitly as `docs/09` requires:**
+
+- v1 has **no predecessor**; the migration chain length is **zero**;
+- there are **no migration functions**, because there is nothing to migrate from;
+- the **downgrade policy is none** — a v1 reader refuses any other
+  `format_version` rather than attempting to read it;
+- **compatible source-module versions** are those declaring the same
+  `schema_identifier` and `schema_version`; a mismatch is a refusal, not a
+  conversion;
+- the **snapshot mechanism remains a separate `docs/19` decision** and is not
+  part of this one. `docs/09` §Snapshot linkage and §Transaction boundaries stay
+  unimplemented, and nothing here claims otherwise.
+
+**At v1 a store has exactly one owner**, whose schema identity is a constant of
+the store service's canonical text. A later version serving several owners needs
+per-owner schema identity, which is a layout change and therefore a
+`format_version` change.
+
+### 7a. What `schema_identifier` is, and what it is not
+
+**It creates no global schema-ID namespace**, and stating that is the point of this
+subsection — an identifier written into a persistent format is exactly the kind of
+field that acquires a registry nobody decided on.
+
+```text
+schema_identifier
+    a u64 chosen by the owner of this store
+    stable for one schema lineage across compatible source revisions
+    interpreted only together with this STATE_STORE_V1 store extent
+    not globally unique
+    not a content id
+    not a module id
+    not a /state path id
+```
+
+`schema_version` versions that owner's schema **within** that lineage; the pair is
+what §6b compares on opening, and a mismatch is a refusal rather than a
+conversion.
+
+At Stage 4 there is exactly **one owner and one store**, so no registry, no
+allocation mechanism and no uniqueness rule is needed — and none is created. A
+later multi-owner or multi-store design may need a stronger identity contract, and
+**that is not decided here**.
+
+## 8. The `state.store.v1` protocol
+
+**A new versioned userspace service protocol under I-09**, which lists *"IPC
+schemas"* among what is versioned from first implementation. Being built out of
+generic Endpoint and Region operations exempts it from nothing: the publication
+path is the precedent in the other direction, since `ADR-0093` and `ADR-0095`
+decided a naming protocol that also added no ABI operation and still took two
+decisions and a negative gate.
+
+At Stage 4 it exposes two operations and no others:
+
+```text
+put(id, Region<u8>)      create or update
+get(id) -> Region<u8>
+```
+
+- **`PUT` is one atomic call** carrying the request word and one immutable region
+  covering at least the object's 512 bytes, through `ADR-0098` §2a's
+  `endpoint_call_word_region`. It is **not** a region message followed by a
+  request, for `ADR-0098` §1's reason;
+- **`GET` is a call carrying the client's answer endpoint**, and its **control
+  reply precedes its data**: the store obtains the object completely, replies
+  success, and only then sends exactly one region to the delegated endpoint. That
+  is `ADR-0098` §2d's ordering and it is here for the same reason — the reverse
+  order can leave an orphan region queued on an endpoint that outlives the process
+  that was waiting for it. A client may have **at most one outstanding `GET` per
+  answer endpoint**;
+- the request encoding, refusal codes, region-extent rule and id bound are fixed
+  in `STATE_STORE_V1`.
+
+**A failure after success has been replied cannot become a refusal**, so there is
+no refusal code for a failed region delivery. `ST_ANSWER` as first drafted is
+withdrawn; what remains is the pre-reply check the `Option` fields make possible —
+a `GET` carrying no answer endpoint is refused as `ST_NO_ANSWER` **before**
+anything is read.
+
+**No `delete`, no enumeration, no `capacity`, no `stat`, no rename.** A client
+learns an object is absent by asking for it.
+
+## 9. `PUT` ordering, and what does not follow from it
+
+```text
+previously absent object:   write payload sector
+                            write header with its occupancy bit set
+                            acknowledge
+
+existing object:            write payload sector
+                            acknowledge
+```
+
+The order is the useful one: an object becomes visible only after its bytes are
+on the device, so a store that stopped between the two writes has a sector
+written and no object — which is a lost write, not a corrupt store.
+
+**No power-loss atomicity follows from this order, and none is claimed.**
+`ADR-0092` §0 Branch A excludes power-loss durability, `VIRTIO_BLK_F_FLUSH` and
+ungraceful-termination evidence from Stage 4, and this decision adds no crash
+consistency, no journal and no transaction. If the service dies after some device
+effect and before its reply, the outcome is **deliberately ambiguous**,
+consistently with `ADR-0093` §5's case D, which `ADR-0098` §9 retains verbatim.
+**No transaction id, request journal, retry rule, idempotency guarantee or
+exactly-once `PUT`.**
+
+## 10. The one-copy rule
+
+`docs/35` §Stage 4 budgets *"no more than one payload copy between client memory
+and device-visible memory"*, in absolute terms. The store therefore **forwards**
+payload regions linearly and never copies one:
+
+```text
+PUT   client region  ->  state store  ->  the same region  ->  block service  ->  DMA copy
+GET   block service region  ->  state store  ->  the same region  ->  client
+```
+
+`ADR-0075` §5a makes the forward exact: a successful send takes the sender's
+handle and its mappings atomically, so the store does not hold what it passed
+on. **The store allocates no second payload region and copies no payload byte.**
+
+**Header construction is metadata, not payload.** The store allocates **a region
+for the 512-byte header**, composes the header in its first 512 bytes, freezes it
+and writes it as **its own block request** — separately accounted, and never mixed
+with a payload region.
+
+**A region for 512 bytes is not a 512-byte region**, and the contract keeps the
+two quantities apart (§4, `BLOCK_DEVICE_V1` §8): an object and a sector are exactly
+512 bytes, while the region carrying one covers **at least** that — currently at
+least one frame — and every byte at or beyond 512 is ignored by both protocols.
+
+## 11. The `docs/35` handoff budget: measurement endpoints
+
+**Recorded as a clarification of what the accepted budget measures, not a
+relaxation of it.** `docs/35` §Stage 4's *"no more than four address-space/
+scheduler handoffs per unbatched request"* sits among siblings that are all
+per-completed-block-request and device-facing, so its endpoints are
+
+```text
+immediate block client  <->  block service  <->  device        one completed block request
+```
+
+A `state.store` operation may issue **several** block requests — a `PUT` of an
+absent object issues two — and **each remains subject to the block budget
+independently**. No end-to-end conformance for a state operation is claimed from
+it, and none may be inferred.
+
+**What the Stage 4 performance-contract report must therefore do:** measure the
+block-request budget explicitly against these endpoints, and retain end-to-end
+`state.store` latency and handoff counts as a **separate observational metric**
+unless and until a threshold is assigned to them. Today the metric is **P0** —
+unmeasured design — and `docs/35` §Reporting status is that *"No stage closes on
+P0 for a metric assigned to that stage."* The hard block-driver budget is not
+weakened: it is given the endpoints it was always about.
+
+## 12. Architecture impact statement (`docs/21`)
+
+- **Which invariants are affected?** I-09 — a persistent format and a service
+  protocol are versioned from their first implementation, which §5 and §8 are how.
+  I-04 — the store holds runtime state and touches no system commit; it is not
+  `/system` and cannot become it. I-13 — §13's mutations exist because a
+  demonstration must exercise the real contract. I-16 — traceability is why §7
+  refuses source-only schema identity. No invariant is amended.
+- **What becomes canonical after the change?** `STATE_STORE_V1`'s header layout
+  and protocol, for this store. Nothing above the store may assume the layout,
+  and `docs/09`'s `/state` is unchanged.
+- **What enters or leaves the trusted base?** Nothing. No nucleus change, no ABI
+  operation, no capability or object kind; the store is an ordinary textual
+  service with no hardware authority.
+- **Can the active runtime still identify its exact source?** Yes, unchanged; and
+  the store now records which schema wrote its bytes, which is a traceability
+  gain rather than a cost.
+- **Can all derived artifacts be discarded and regenerated?** The store's bytes
+  are **not** a derived artifact — they are the mutable durable state I-01
+  distinguishes from caches, and deleting them is data loss, which `docs/09`
+  §Namespace classes at a glance already says of `/state`. No cache format
+  changes.
+- **Can the owner still recover and boot a previous commit?** Yes. The store is
+  not in the boot path, holds no part of `/system`, and no activation depends on
+  it. I-05 is untouched.
+- **Does the change create a hidden host dependency?** No. The host harness seeds
+  and retains a raw image and judges reported results; every byte that crosses is
+  moved by textual modules.
+- **Does it alter licensing or patent exposure?** No third-party format, algorithm
+  or mechanism is adopted. The layout is the project's own and deliberately
+  unlike any existing filesystem.
+- **How is the behavior tested?** §13.
+
+## 13. Conformance evidence this decision requires
+
+**At least two ids**, and the shape is:
+
+```text
+initializer      capacity() >= 65; reads sector 0; finds it all-zero;
+                 writes one initial header; terminates
+                 its ending is collected
+state store A    opens and validates the existing header
+writer           put(1, pattern A); put(2, pattern B)
+                 its ending is collected
+state store A    ends; is retired; the supervisor collects its ending
+state store B    the same canonical module; reads and validates the header
+                 from the device
+reader           get(2); verifies all 512 bytes of pattern B in canonical text
+```
+
+### 13a. The bounds, counted before implementation
+
+Seven process instances, and none of the accepted bounds moves. **`MAX_PLANS` is
+not raised**, and the reason it does not need to be is that a sealed plan *"is not
+consumed by the creation that reads it"* (`plan.rs`), so one plan may launch two
+sequential processes:
+
+| Bound | Value | This fixture |
+|---|---|---|
+| `MAX_PROCESSES` | 4 | peak **4**: `init + block + state + client`. The initializer is collected before state A is created, and the writer and state A are collected before state B and the reader exist |
+| `MAX_PLANS` | 4 | exactly **4**: block; initializer; **state**, shared by A and B; **client**, shared by writer and reader |
+| `MAX_ENDPOINTS` | 6 | **4**: `block-serve`, `state-serve`, `state-inbox`, `client-inbox`. Two spare |
+| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **2** (`budget`, `block-serve` send\|call); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive) |
+| `MAX_CAPABILITIES` | 16 per process | the supervisor is the only one near it, as in `block-lifecycle`; its peak must be counted during implementation and child controls released after each collection |
+
+**One client plan for the writer and the reader**, as directed: they are
+sequential, and the writer simply does not use the `client-inbox` the plan grants
+it — a `PUT` is one atomic call answered by a word, so only the reader needs an
+inbox at all. An unused grant is not a defect; a plan is a policy, and
+`granted()` records what was installed.
+
+**The initializer needs no inbox either**, because `CAPACITY` is an ordinary call
+and `WRITE` is an atomic call carrying its region — neither is answered with a
+region. That is what keeps it at two endowments.
+
+**Sharing one plan makes the receive-holder rule load-bearing, and three separate
+things must not be merged into one claim.**
+
+| | What enforces it |
+|---|---|
+| **receiver exclusivity** — while state A is live and holds `receive(state-serve)`, creating state B from the same plan is **refused** | the **nucleus**. `IPC_V1` §2 admits one receive-rights holder at a time and `capability.rs` answers `NotGranted::ReceiverExists` |
+| **process-slot reuse** — six instances over four slots | the **nucleus**, as `MAX_PROCESSES` |
+| **the exact order "A ends, A retired, `wait_child(A)`, A's ending collected, B created"** | **canonical supervisor policy**, and the gate's journal evidence. Not the nucleus |
+
+**The third row is not a nucleus guarantee, and an earlier draft claimed it was.**
+`process::retire` sets the slot `Over` and calls `capability::clear`, so A's receive
+authority is gone at **retirement** — before `wait_child` collects its tombstone. If
+another process slot were already free, B could in principle occupy it before that
+collection. Nothing in the nucleus makes collection the only possible ordering.
+
+**The fixture still requires that order, as an evidence obligation on the
+supervisor.** The persistence proof needs A's address space and capabilities gone
+before B exists, and an explicit collection gives a far stronger journal witness
+than an inference from timing — which is why the supervisor performs it and the
+gate asserts it, rather than the ADR asserting that nothing else was possible.
+
+- **the reader holds no `block.device.v1` endpoint**, asserted from the boot
+  journal's capability records, not from source;
+- **the successor re-reads the header from the device**, and no state crosses from
+  A in memory. The nucleus refuses to create B from the shared plan while A is
+  **live** (`IPC_V1` §2, `NotGranted::ReceiverExists`); the stronger ordering the
+  proof relies on — A retired, collected by `wait_child`, *then* B created — is
+  the **supervisor's** policy and an assertion this gate makes on the journal, not
+  something the nucleus guarantees (§13a);
+- **the patterns vary per byte.** The harness seeds sectors 1–4 with 512 copies of
+  `0xC0 + n` and leaves sector 0 zeroed, so a constant fill and a zero fill are
+  both distinguishable from either pattern — and ids 1 and 2 land on seeded
+  sectors on purpose;
+- **the byte comparison happens in canonical text.** The host gate judges reported
+  account bits and journal order;
+- **the supervisor's ordering is asserted on the journal**, as §13a requires: A
+  retired, `wait_child(A)` returning, then B created.
+
+**And one negative that is about formatting rather than persistence.** It is a
+separate obligation because it proves a separate claim:
+
+```text
+run the initializer against a valid existing header
+    -> it refuses to format
+    -> the header and its occupancy are unchanged afterwards
+```
+
+"Unchanged" is checked by reading the header back and by a subsequent `get` of an
+object the header said was present. Mutation 7 removes the zero-header check and
+must turn this red.
+
+**Required mutations**, each of which must turn the gate red on its own
+assertion:
+
+1. **omit the initializer's header write** — state service A **cannot open**, and
+   every request it receives is refused with `ST_STORE`. This is a claim about
+   *formatting*, and it is kept separate from claim 5 on purpose;
+2. **omit or falsify the real payload device write** — the final byte witness
+   fails;
+3. **answer `get(2)` from object 1's sector** — the final byte witness fails;
+4. **ignore the occupancy bitmap** — `get(3)`, an id never created, must be
+   refused as absent; the mutation makes it answer with sector 3's seeded `0xC3`
+   fill instead, and the negative gate must fail;
+5. **omit `PUT(2)`'s occupancy-header update** — A may well have written sector 2,
+   the successor reads the **persisted** header, and `get(2)` is therefore
+   **absent**. This is a claim about *persistence of the occupancy record*, and it
+   is a different claim from 1: 1 says an unformatted store cannot be opened, 5
+   says an object whose bit never reached the device does not exist however much
+   of it did;
+6. **send `GET`'s region before replying success** — the ordering assertion of
+   `ADR-0098` §4 obligation 9, applied to this protocol, must turn red;
+7. **remove the initializer's zero-header check** — the refuse-to-reformat negative
+   below must turn red.
+
+**Non-claims the evidence must state**, in the form `block-lifecycle.sh` uses:
+no power-loss durability; no `FLUSH`; no ungraceful-termination behaviour; no
+crash consistency; no exactly-once `PUT`; no filesystem; no `/state` mount; no
+content addressing; no repository semantics; and **no Stage 4 closure**.
+
+## 14. What this does not decide
+
+- **`/state` path exposure, a VFS, directories or POSIX semantics** — §1;
+- **the capsule-to-repository handoff**, which is a separate `docs/16`
+  deliverable, lives at `docs/08` §Work decomposition's G1 and beyond, and sits on
+  a different trust boundary because `docs/08` puts object-store traversal and
+  protected ref primitives in the nucleus while this store holds nothing the
+  nucleus reads;
+- **the state snapshot mechanism** and snapshot linkage — `docs/19`'s, separately;
+- **multi-owner stores, multiple stores, or store discovery** — the store is
+  launcher-wired and there is one;
+- **restart policy** for the store service, which stays canonical supervisor text
+  (`ADR-0077` §8);
+- **Stage 4 closure.** Stage 4C, Stage 4D and Stage 4 do not close here.
+
+<!-- END docs/adr/0099-stage-4-persistent-object-state-storage.md -->
 
 ---
 

@@ -2,9 +2,10 @@
 
 # ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region
 
-- Status: **Proposed** (raised 2026-09-23 on Project Architect direction; **not
-  accepted, and nothing in the tree implements it**)
-- Date: 2026-09-23
+- Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
+  tree implements it yet**: acceptance fixes the contract and carries §4's
+  evidence obligations, which are outstanding
+- Date: 2026-09-23, accepted 2026-09-24
 - Decision level: **2** — a contract extension. It accepts a versioned service
   protocol and adds two rows and one record to `SYSTEM_INTERFACE_V1` over ABI
   operations that already perform exactly what the rows need. It adds no ABI
@@ -19,7 +20,10 @@
   **no** new capability position: a `system.memory.Region` parameter on an
   endpoint operation is already valid, because `endpoint_send_region` has it.
   `LANGUAGE_VERSION` does not move
-- Project Architect approval: **not granted; this is a draft for review**
+- Project Architect approval: 2026-09-24, as drafted — *"architecturally approved
+  as drafted, subject only to the normal status/contract promotion"* — after the
+  corrective round that reversed READ's control/data ordering, made both optional
+  payload positions `Option`, and replaced the endpoint-identity version rationale
 - Related: **ADR-0093** §0 (the surface is `read`, `write`, `capacity` and
   nothing else) and **§9**, which reserved the wire shape and is answered here;
   **ADR-0095** §3 (an endpoint object's identity fixes one publication class);
@@ -51,8 +55,8 @@ store built on a deliberately non-normative encoding would make a fixture its
 production dependency, and the first fixture change would be a silent protocol
 change.
 
-**So this decision does two things.** It fixes the protocol, in a proposed Tier 2
-contract `BLOCK_DEVICE_V1` (`docs/proposed/BLOCK_DEVICE_V1.md`), and it fixes the
+**So this decision does two things.** It fixes the protocol, in the Tier 2
+contract `BLOCK_DEVICE_V1` (`source/interfaces/device/BLOCK_DEVICE_V1.md`), and it fixes the
 one mechanism that protocol needs and canonical text cannot currently name: a
 **call that carries a region and a request word in the same message**.
 
@@ -197,7 +201,7 @@ version of that document. Nothing it already said changes.
 
 ### 2c. The protocol, in `BLOCK_DEVICE_V1`
 
-Accepted as a proposed Tier 2 contract, `docs/proposed/BLOCK_DEVICE_V1.md`, whose
+Accepted as a Tier 2 contract, `source/interfaces/device/BLOCK_DEVICE_V1.md`, whose
 normative content is summarized here and stated there:
 
 - **all three operations of `ADR-0093` §0's surface are in v1** — `READ`,
@@ -390,8 +394,8 @@ unenforceable — it would be false of every conforming request.
 
 ## 5. `ADR-0093` §9 is answered
 
-On acceptance, `ADR-0093` §9's reserved item *"The wire shape of `read`, `write`
-and `capacity`"* is answered by this decision, and a dated amendment line is
+`ADR-0093` §9's reserved item *"The wire shape of `read`, `write` and
+`capacity`"* is answered by this decision, and a dated amendment line has been
 added to `ADR-0093` saying so — the mechanism `ADR-0095` used, and for the same
 reason: an accepted decision is not rewritten, and a later one does not amend it
 silently.

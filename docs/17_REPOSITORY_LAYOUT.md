@@ -155,7 +155,9 @@ admission rule and `scripts/tests/check-interface-contract-authority.sh` require
 every contract in that tree to carry the accepted status and appear in
 `docs/SPECIFICATION_SOURCES.txt` — so a draft filed there would be authority a
 document assigned to itself. A draft states that it is proposed, names the ADR
-that would accept it, and moves to `source/interfaces/` on acceptance.
+that would accept it, and moves to `source/interfaces/` on acceptance. **The
+directory is empty whenever no draft is outstanding**, which is the ordinary state
+and not drift.
 
 ### `docs/language/`
 

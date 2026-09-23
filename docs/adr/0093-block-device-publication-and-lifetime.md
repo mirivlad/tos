@@ -6,6 +6,12 @@
   dedicated publication channel rather than a capability whose nominal type
   is the published interface. P3 itself is unchanged: the registry is still an
   ordinary textual service. §1, §3a.1, §3a.2, §10.1 and §11 carry the change
+- **§9's reserved wire shape is answered 2026-09-24 by ADR-0098.** *"The wire shape
+  of `read`, `write` and `capacity`"* is no longer undecided: it is fixed by the
+  Tier 2 contract `source/interfaces/device/BLOCK_DEVICE_V1.md`, with all three
+  operations in v1. Nothing else in §9 moves, and nothing above this line is
+  rewritten — §9 recorded the question as open on its date, and this records where
+  it was closed
 - Project Architect approval: 2026-09-21, on the option set below — **granted
   before any of it was implemented**
 - Date: 2026-09-21

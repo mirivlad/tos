@@ -5,8 +5,10 @@
 - Status: **note, not a decision.** Tier 4 under `docs/38`: research and
   explanatory material, incorporated by no ADR.
 - Date: 2026-09-23, **corrected 2026-09-23** after Project Architect review of
-  the first revision (commit `011f41c`), and **closed 2026-09-23** by the
-  rulings §0b records. §0a records what was withdrawn.
+  the first revision (commit `011f41c`), and **closed** by the rulings §0b
+  records. The decisions it fed — ADR-0098 and ADR-0099 — were **accepted
+  2026-09-24**, after which this note is a historical record and not a guide.
+  §0a records what was withdrawn.
 - Audience: the Project Architect, before any persistent-storage implementation
   is begun and before the decision surface in §15 is ruled on.
 
@@ -46,7 +48,8 @@ The findings in §16 are unchanged and were accepted.
 **The research phase is over.** The Project Architect ruled on every open choice
 below, and the decisions are drafted as **ADR-0098** (`block.device.v1`) and
 **ADR-0099** (Stage 4 persistent object/state storage), with proposed contracts
-`docs/proposed/BLOCK_DEVICE_V1.md` and `docs/proposed/STATE_STORE_V1.md`. The
+`source/interfaces/device/BLOCK_DEVICE_V1.md` and
+`source/interfaces/state/STATE_STORE_V1.md` — both **accepted 2026-09-24**. The
 alternatives are **kept** below as the record of what was weighed; they are no
 longer offered.
 
@@ -638,8 +641,9 @@ persistent storage at step 4, the versioned repository handoff at step 5.
 
 Two decisions, in this order. **Both are now drafted**: ADR-α is
 `docs/adr/0098-the-block-device-v1-wire-protocol.md` and ADR-β is
-`docs/adr/0099-stage-4-persistent-object-state-storage.md`, each `Proposed`, with
-the proposed contracts in `docs/proposed/`. The sketch below is what was asked
+`docs/adr/0099-stage-4-persistent-object-state-storage.md`, both **accepted
+2026-09-24** — ADR-0098 at Level 2, ADR-0099 at Level 3 — with their Tier 2
+contracts under `source/interfaces/`. The sketch below is what was asked
 for before they existed and is kept as the record of that request.
 
 **ADR-α — `block.device.v1` wire protocol.** Accepts a Tier 2

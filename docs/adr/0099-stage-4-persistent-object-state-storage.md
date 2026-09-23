@@ -2,20 +2,24 @@
 
 # ADR-0099: Stage 4 persistent object/state storage — a private native store, substrate first
 
-- Status: **Proposed** (raised 2026-09-23 on Project Architect direction; **not
-  accepted, and nothing in the tree implements it**)
-- Date: 2026-09-23
+- Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
+  tree implements it yet**: acceptance fixes the format and the protocol and
+  carries §13's evidence obligations, which are outstanding
+- Date: 2026-09-23, accepted 2026-09-24
 - Decision level: **3** — architectural, **requiring Project Architect
   approval**. `docs/21` places *"changes persistent formats"* at Level 3, and
   `ADR-0017` applied that test to itself in as many words — *"Explicitly **not**
   Level 3: no capsule byte changes"*. This decision **creates** the first
   normative persistent state format, which is not less architectural than
   changing one. §12 is the architecture impact statement `docs/21` requires
-- Project Architect approval: **not granted; this is a draft for review**
-- Depends on: **ADR-0098**, which must be accepted first. This decision's store
-  reaches the device only through `block.device.v1`, and building it on the
-  lifecycle fixture's deliberately non-normative encoding would make a fixture a
-  production dependency
+- Project Architect approval: 2026-09-24, **as a Level 3 architectural decision**,
+  after the corrective round that split formatting from startup, made the
+  initializer refuse any non-zero header, bounded `schema_identifier`'s scope, and
+  corrected the receiver/reclamation wording of §13a
+- Depends on: **ADR-0098**, accepted on the same date and necessarily before this
+  one. This decision's store reaches the device only through `block.device.v1`, and
+  building it on the lifecycle fixture's deliberately non-normative encoding would
+  make a fixture a production dependency
 - Related: **ADR-0092** §0 (Branch A: the Stage 4 persistence reading);
   **ADR-0093** §5 (case D), §9 (which names this deliverable as separate);
   **ADR-0095** §6 (a second published interface is undecided); **ADR-0097**
@@ -37,8 +41,8 @@ persistent object/state filesystem"* as a decision requiring one. This is it.
 **It decides seven things and no more:** the Stage 4 reading of the deliverable,
 who owns the store and what authority it holds, what identifies an object, where
 objects live, where format and schema identity live, the `state.store.v1`
-protocol, and how the `docs/35` handoff budget is measured. The proposed contract
-is `docs/proposed/STATE_STORE_V1.md`.
+protocol, and how the `docs/35` handoff budget is measured. The contract is
+`source/interfaces/state/STATE_STORE_V1.md`.
 
 ## 1. Stage 4 interpretation: substrate first
 
@@ -210,12 +214,47 @@ provisioning by its own short-lived process:
 state-store initializer
     capacity()
     require capacity >= STORE_SECTORS                  (65)
-    write one complete initial STATE_STORE_V1 header
-    terminate
+
+    READ HEADER_SECTOR
+
+    if all 512 bytes are zero:
+        WRITE one complete initial STATE_STORE_V1 header
+        terminate success
+    else:
+        REFUSE TO FORMAT
 ```
 
 The header it writes is exactly: magic, `format_version = 1`, the owner's schema
 identity, `occupancy = 0`, `reserved` zero. It writes **no** payload sector.
+
+**It reads before it writes, and only an all-zero header is permission to
+format.** An initializer that wrote unconditionally would silently reset
+`occupancy` if it were ever run against an existing store — losing every object in
+it while reporting success. For a provisioning action that is deliberately
+separated *because* it is destructive, that is not acceptable.
+
+**The test is deliberately stricter than §6b's ordinary validation**, and the
+difference is the point. Ordinary opening asks "is this a store I can use?";
+formatting asks "is this certainly nothing at all?". So none of the following is
+permission to initialize:
+
+- a header that is **already valid** — the store exists;
+- one valid **but for another schema** — it is somebody else's store, and
+  `schema_identifier` is not a claim on the extent (§7a);
+- one of a **future or unknown `format_version`** — a v1 initializer cannot know
+  what it would be destroying;
+- a **corrupt** header — the most likely reading is a store whose header failed to
+  read, which is exactly the case §6's opening paragraphs refuse to paper over;
+- **merely non-zero garbage** — something put bytes there, and this decision
+  assigns no meaning to bytes it did not write.
+
+Only the all-zero sector denotes the fresh, uninitialized reference state, which is
+also what the Stage 4 harness presents on a new image.
+
+**It does not inspect sectors 1..64 before formatting, and must not.** The harness
+deliberately seeds some of them, so their contents say nothing about whether a
+store exists; `occupancy` is authoritative, and `occupancy` is only meaningful once
+a store does.
 
 The initializer:
 
@@ -294,6 +333,32 @@ interprets a payload.
 the store service's canonical text. A later version serving several owners needs
 per-owner schema identity, which is a layout change and therefore a
 `format_version` change.
+
+### 7a. What `schema_identifier` is, and what it is not
+
+**It creates no global schema-ID namespace**, and stating that is the point of this
+subsection — an identifier written into a persistent format is exactly the kind of
+field that acquires a registry nobody decided on.
+
+```text
+schema_identifier
+    a u64 chosen by the owner of this store
+    stable for one schema lineage across compatible source revisions
+    interpreted only together with this STATE_STORE_V1 store extent
+    not globally unique
+    not a content id
+    not a module id
+    not a /state path id
+```
+
+`schema_version` versions that owner's schema **within** that lineage; the pair is
+what §6b compares on opening, and a mismatch is a refusal rather than a
+conversion.
+
+At Stage 4 there is exactly **one owner and one store**, so no registry, no
+allocation mechanism and no uniqueness rule is needed — and none is created. A
+later multi-owner or multi-store design may need a stronger identity contract, and
+**that is not decided here**.
 
 ## 8. The `state.store.v1` protocol
 
@@ -445,12 +510,13 @@ weakened: it is given the endpoints it was always about.
 **At least two ids**, and the shape is:
 
 ```text
-initializer      capacity() >= 65; writes one initial header; terminates
+initializer      capacity() >= 65; reads sector 0; finds it all-zero;
+                 writes one initial header; terminates
                  its ending is collected
 state store A    opens and validates the existing header
 writer           put(1, pattern A); put(2, pattern B)
                  its ending is collected
-state store A    ends; its ending is collected and its slot reclaimed
+state store A    ends; is retired; the supervisor collects its ending
 state store B    the same canonical module; reads and validates the header
                  from the device
 reader           get(2); verifies all 512 bytes of pattern B in canonical text
@@ -481,25 +547,56 @@ inbox at all. An unused grant is not a defect; a plan is a policy, and
 and `WRITE` is an atomic call carrying its region — neither is answered with a
 region. That is what keeps it at two endowments.
 
-**Sharing one plan is exactly what makes the receive-holder rule load-bearing.**
-`IPC_V1` §2 admits one receive-rights holder at a time and `capability.rs`
-enforces it as `NotGranted::ReceiverExists`, so creating state B or the reader
-before its predecessor's slot is reclaimed is **refused by the nucleus**. The
-sequencing above is not a convention the fixture observes; it is the only order in
-which the fixture can be built at all.
+**Sharing one plan makes the receive-holder rule load-bearing, and three separate
+things must not be merged into one claim.**
+
+| | What enforces it |
+|---|---|
+| **receiver exclusivity** — while state A is live and holds `receive(state-serve)`, creating state B from the same plan is **refused** | the **nucleus**. `IPC_V1` §2 admits one receive-rights holder at a time and `capability.rs` answers `NotGranted::ReceiverExists` |
+| **process-slot reuse** — six instances over four slots | the **nucleus**, as `MAX_PROCESSES` |
+| **the exact order "A ends, A retired, `wait_child(A)`, A's ending collected, B created"** | **canonical supervisor policy**, and the gate's journal evidence. Not the nucleus |
+
+**The third row is not a nucleus guarantee, and an earlier draft claimed it was.**
+`process::retire` sets the slot `Over` and calls `capability::clear`, so A's receive
+authority is gone at **retirement** — before `wait_child` collects its tombstone. If
+another process slot were already free, B could in principle occupy it before that
+collection. Nothing in the nucleus makes collection the only possible ordering.
+
+**The fixture still requires that order, as an evidence obligation on the
+supervisor.** The persistence proof needs A's address space and capabilities gone
+before B exists, and an explicit collection gives a far stronger journal witness
+than an inference from timing — which is why the supervisor performs it and the
+gate asserts it, rather than the ADR asserting that nothing else was possible.
 
 - **the reader holds no `block.device.v1` endpoint**, asserted from the boot
   journal's capability records, not from source;
-- **the successor re-reads the header from the device.** No state crosses from A
-  in memory, and `IPC_V1` §2's one-receiver rule makes B's creation impossible
-  until A's slot is reclaimed, so the sequencing is enforced rather than hoped
-  for;
+- **the successor re-reads the header from the device**, and no state crosses from
+  A in memory. The nucleus refuses to create B from the shared plan while A is
+  **live** (`IPC_V1` §2, `NotGranted::ReceiverExists`); the stronger ordering the
+  proof relies on — A retired, collected by `wait_child`, *then* B created — is
+  the **supervisor's** policy and an assertion this gate makes on the journal, not
+  something the nucleus guarantees (§13a);
 - **the patterns vary per byte.** The harness seeds sectors 1–4 with 512 copies of
   `0xC0 + n` and leaves sector 0 zeroed, so a constant fill and a zero fill are
   both distinguishable from either pattern — and ids 1 and 2 land on seeded
   sectors on purpose;
 - **the byte comparison happens in canonical text.** The host gate judges reported
-  account bits and journal order.
+  account bits and journal order;
+- **the supervisor's ordering is asserted on the journal**, as §13a requires: A
+  retired, `wait_child(A)` returning, then B created.
+
+**And one negative that is about formatting rather than persistence.** It is a
+separate obligation because it proves a separate claim:
+
+```text
+run the initializer against a valid existing header
+    -> it refuses to format
+    -> the header and its occupancy are unchanged afterwards
+```
+
+"Unchanged" is checked by reading the header back and by a subsequent `get` of an
+object the header said was present. Mutation 7 removes the zero-header check and
+must turn this red.
 
 **Required mutations**, each of which must turn the gate red on its own
 assertion:
@@ -520,7 +617,9 @@ assertion:
    says an object whose bit never reached the device does not exist however much
    of it did;
 6. **send `GET`'s region before replying success** — the ordering assertion of
-   `ADR-0098` §4 obligation 9, applied to this protocol, must turn red.
+   `ADR-0098` §4 obligation 9, applied to this protocol, must turn red;
+7. **remove the initializer's zero-header check** — the refuse-to-reformat negative
+   below must turn red.
 
 **Non-claims the evidence must state**, in the form `block-lifecycle.sh` uses:
 no power-loss durability; no `FLUSH`; no ungraceful-termination behaviour; no
