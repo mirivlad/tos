@@ -5,15 +5,12 @@
 - Status: **Proposed** (raised 2026-09-23 on Project Architect direction; **not
   accepted, and nothing in the tree implements it**)
 - Date: 2026-09-23
-- Decision level: **3 on this draft's reading, and the Project Architect directed
-  2.** §0a states the disagreement rather than resolving it quietly. `docs/21`
-  puts *"changes persistent formats"* at Level 3, and `ADR-0017` applied that
-  test to itself in as many words — *"Explicitly **not** Level 3: no capsule byte
-  changes"* — so on the project's own established reading, a decision that
-  **creates** the first persistent state format is Level 3 rather than Level 2.
-  The practical difference is the approval ceremony: `docs/21` requires the
-  nine-question impact statement at Level 2 **and** above, and it is in §12
-  either way. The level is the Project Architect's to set on approval
+- Decision level: **3** — architectural, **requiring Project Architect
+  approval**. `docs/21` places *"changes persistent formats"* at Level 3, and
+  `ADR-0017` applied that test to itself in as many words — *"Explicitly **not**
+  Level 3: no capsule byte changes"*. This decision **creates** the first
+  normative persistent state format, which is not less architectural than
+  changing one. §12 is the architecture impact statement `docs/21` requires
 - Project Architect approval: **not granted; this is a draft for review**
 - Depends on: **ADR-0098**, which must be accepted first. This decision's store
   reaches the device only through `block.device.v1`, and building it on the
@@ -43,30 +40,6 @@ objects live, where format and schema identity live, the `state.store.v1`
 protocol, and how the `docs/35` handoff budget is measured. The proposed contract
 is `docs/proposed/STATE_STORE_V1.md`.
 
-## 0a. The level, stated rather than assumed
-
-The Project Architect directed Level 2. This draft reads `docs/21` as putting it
-at Level 3, and records the reasoning so the ruling is made on the argument
-rather than on a classification nobody looked at:
-
-- `docs/21` §Level 3 is *"Moves trust boundaries, **changes persistent formats**,
-  introduces a runtime dependency, changes source identity or modifies owner
-  control"*;
-- `ADR-0017` is the project's own application of that clause. It classed itself
-  Level 2 with the explicit reason *"Explicitly **not** Level 3: no capsule byte
-  changes"*, which reads the clause as: touching the persistent bytes lifts the
-  level;
-- `ADR-0020`, also Level 2, said the same from the other side — it accepted
-  contracts *"without changing a Tier 0 invariant, runtime trust boundary,
-  **persistent byte layout** or implementation behavior"*;
-- this decision **creates** a persistent byte layout where none existed. Creating
-  the first one is not less consequential than changing one.
-
-Nothing else about the decision changes with the answer. It adds no ABI
-operation, no capability kind, no object kind, no nucleus change and no trust
-boundary movement either way, and §12 answers the nine questions that Level 2 and
-Level 3 both require.
-
 ## 1. Stage 4 interpretation: substrate first
 
 **Stage 4 delivers a private native persistent object-store substrate. It does
@@ -92,7 +65,10 @@ permitted to assume them.
 ## 2. Ownership, authority and topology
 
 ```text
-client  --(state.store.v1)-->  state store service  --(block.device.v1)-->  block service  -->  device
+provisioning:   initializer          --(block.device.v1)-->  block service  -->  device
+                (collected before the state service starts)
+
+steady state:   client  --(state.store.v1)-->  state store  --(block.device.v1)-->  block service  -->  device
 ```
 
 - **The state store service is launcher-wired.** It receives its endpoints from a
@@ -101,10 +77,12 @@ client  --(state.store.v1)-->  state store service  --(block.device.v1)-->  bloc
   and this decision introduces **no second publication class** — `ADR-0095` §6
   leaves that undecided and §8 states that the spare endpoints are not an
   argument for it;
-- **for this Stage 4 slice it is the sole ordinary client endowed with the block
-  service's endpoint.** Clients of the store hold no `block.device.v1` capability
-  at all, which is what makes "the reader could not have reached a sector" a fact
-  about the boot's capability topology rather than a claim about its source;
+- **once provisioning is over it is the steady-state holder of the block-service
+  client capability.** The only other process ever endowed with one is §6's
+  initializer, which exists before it and is collected before it starts. Clients
+  of the store hold no `block.device.v1` capability at all, which is what makes
+  "the reader could not have reached a sector" a fact about the boot's capability
+  topology rather than a claim about its source;
 - **it holds no PCI bus, function, MMIO window, interrupt source or DMA region.**
   The block service remains the only holder of hardware authority. The store's
   isolation boundary **is** capability topology, and the boot journal is where it
@@ -161,9 +139,17 @@ sector 0        the store header
 sector id       the payload of object id, for id in 1..64
 ```
 
-so the store occupies sectors `0..64` — 65 sectors — and owns the device from
-sector 0. There are no partitions at Stage 4 and one device, which is why a base
-offset would be a field with one possible value.
+**`STATE_STORE_V1` gives meaning to sectors `0..64` and to no others.** It
+reserves exactly that bounded 65-sector extent in the Stage 4 reference layout,
+and it **never reads or writes a sector at or above 65**. There are no partitions
+at Stage 4 and no partition abstraction is introduced; a base-offset field would
+have one possible value, which is why there is none.
+
+**This decision assigns no meaning and no owner to the remaining sectors.** They
+are not free, not reserved and not the store's — they are undecided. The
+capsule-to-repository handoff is a separate decision (§14) and **must not overlap
+this extent without explicitly revisiting the layout**, which is a statement this
+decision makes so that a later one cannot make it by accident.
 
 The header is 512 bytes, all numbers little-endian and fixed-width under
 `docs/40`'s rule that *"Public and persistent forms use one of the explicit
@@ -197,28 +183,76 @@ delete-and-reuse or multi-owner stores all need a different layout — and
 a misread. A v1 reader refuses a version it does not know instead of interpreting
 it.
 
-## 6. Initialization and opening
+## 6. Formatting is a separate action from opening
+
+**An earlier draft said the first generation may initialize and a successor never
+does. That is not implementable**, and the reason is worth stating because it is a
+property of the accepted launch model rather than of this design: the **supervisor**
+knows a child's restart generation — it asserts it, through
+`process_create_with_generation` — and `PROCESS_IDENTITY_V1` §3 records that the
+nucleus *"records it and never computes or increments it"*. The child is told
+nothing. Both state generations run the same canonical module from the same shared
+launch plan (§13), so a service asked to decide for itself cannot distinguish
 
 ```text
-capacity()                         must report at least 65 sectors
-read sector 0 through block.device.v1
+a fresh first start                  from     a restart whose header is missing or corrupt
+```
+
+and a service that auto-formatted on an invalid header would **destroy a store to
+recover from a transient failure to read one**. So it does not.
+
+### 6a. The initializer
+
+Formatting is a separate canonical textual bootstrap action, performed once during
+provisioning by its own short-lived process:
+
+```text
+state-store initializer
+    capacity()
+    require capacity >= STORE_SECTORS                  (65)
+    write one complete initial STATE_STORE_V1 header
+    terminate
+```
+
+The header it writes is exactly: magic, `format_version = 1`, the owner's schema
+identity, `occupancy = 0`, `reserved` zero. It writes **no** payload sector.
+
+The initializer:
+
+- **is canonical TOS text**, verified and launched like any other module. It is
+  **not** a host path, not a harness step and not a privileged helper;
+- reaches the device **only** through `block.device.v1`;
+- holds **no** PCI bus, function, MMIO window, interrupt source or DMA region;
+- **exists only during provisioning** and is collected before the ordinary state
+  service is created, which is also what keeps the block-service client capability
+  single-holder in steady state (§2);
+- is **not** a second publication class: it publishes nothing and is
+  launcher-wired like everything else here.
+
+**This is the other reason `ADR-0098` keeps `capacity` in v1.** The initializer
+must establish that the whole bounded layout fits **before** it writes a header it
+would otherwise run past the end of, and it must do so without learning the bound
+by issuing a request built to be refused.
+
+### 6b. Opening
+
+**The ordinary state service never formats storage.** It opens, or it cannot open:
+
+```text
+state service
+    read sector 0 through block.device.v1
+    validate: magic equal; format_version == 1; reserved all zero;
+              schema_identifier and schema_version equal its own constants
 ```
 
 - **an all-zero sector 0 is not a valid store.** Uninitialized storage is
   uninitialized, and a zero-filled device is exactly what the Stage 4 harness
   presents on a fresh image;
-- a **first-generation** service may **initialize** a new store by writing one
-  complete valid v1 header — magic, `format_version = 1`, its own schema identity,
-  `occupancy = 0`, reserved zero;
-- **before initializing, it calls `capacity()` and refuses to initialize if the
-  device cannot contain the whole bounded v1 layout.** This is why `ADR-0098`
-  keeps `capacity` in v1: a bounded store must establish that its layout fits
-  before it writes anything, rather than discovering the bound by issuing a
-  request built to be refused;
-- a **successor** opens **only** by reading and validating the header from the
-  device. It does not initialize, and nothing is handed to it in memory. Validation
-  is: magic equal; `format_version == 1`; `reserved` all zero; and
-  `schema_identifier` and `schema_version` equal to its own declared constants.
+- a missing or invalid header means the service **cannot open**, and every request
+  it then receives is refused with `ST_STORE`. It does not repair, reformat or
+  guess;
+- **nothing is handed to a successor in memory.** Both generations open the same
+  way, from the device, which is why one canonical module serves both.
 
 ## 7. State schema identity, and the Stage 4 migration policy
 
@@ -277,14 +311,25 @@ put(id, Region<u8>)      create or update
 get(id) -> Region<u8>
 ```
 
-- **`PUT` is one atomic call** carrying the request word and one immutable
-  512-byte-covering region, through `ADR-0098` §2a's `endpoint_call_word_region`.
-  It is **not** a region message followed by a request, for `ADR-0098` §1's
-  reason;
-- **`GET` is a call carrying the client's answer endpoint**, and the service sends
-  the immutable region there **before** replying success;
-- the request encoding, refusal codes, region-size rule and id bound are fixed in
-  `STATE_STORE_V1`.
+- **`PUT` is one atomic call** carrying the request word and one immutable region
+  covering at least the object's 512 bytes, through `ADR-0098` §2a's
+  `endpoint_call_word_region`. It is **not** a region message followed by a
+  request, for `ADR-0098` §1's reason;
+- **`GET` is a call carrying the client's answer endpoint**, and its **control
+  reply precedes its data**: the store obtains the object completely, replies
+  success, and only then sends exactly one region to the delegated endpoint. That
+  is `ADR-0098` §2d's ordering and it is here for the same reason — the reverse
+  order can leave an orphan region queued on an endpoint that outlives the process
+  that was waiting for it. A client may have **at most one outstanding `GET` per
+  answer endpoint**;
+- the request encoding, refusal codes, region-extent rule and id bound are fixed
+  in `STATE_STORE_V1`.
+
+**A failure after success has been replied cannot become a refusal**, so there is
+no refusal code for a failed region delivery. `ST_ANSWER` as first drafted is
+withdrawn; what remains is the pre-reply check the `Option` fields make possible —
+a `GET` carrying no answer endpoint is refused as `ST_NO_ANSWER` **before**
+anything is read.
 
 **No `delete`, no enumeration, no `capacity`, no `stat`, no rename.** A client
 learns an object is absent by asking for it.
@@ -328,10 +373,15 @@ GET   block service region  ->  state store  ->  the same region  ->  client
 handle and its mappings atomically, so the store does not hold what it passed
 on. **The store allocates no second payload region and copies no payload byte.**
 
-**Header construction is metadata, not payload.** The store allocates its own
-512-byte region for the header, composes it, freezes it and writes it as **its
-own block request** — separately accounted, and never mixed with a payload
-region.
+**Header construction is metadata, not payload.** The store allocates **a region
+for the 512-byte header**, composes the header in its first 512 bytes, freezes it
+and writes it as **its own block request** — separately accounted, and never mixed
+with a payload region.
+
+**A region for 512 bytes is not a 512-byte region**, and the contract keeps the
+two quantities apart (§4, `BLOCK_DEVICE_V1` §8): an object and a sector are exactly
+512 bytes, while the region carrying one covers **at least** that — currently at
+least one frame — and every byte at or beyond 512 is ignored by both protocols.
 
 ## 11. The `docs/35` handoff budget: measurement endpoints
 
@@ -395,13 +445,48 @@ weakened: it is given the endpoints it was always about.
 **At least two ids**, and the shape is:
 
 ```text
-state store A   opens, and on a fresh device initializes the store
-writer          put(1, pattern A); put(2, pattern B)
-writer ends     and its ending is collected
-state store A ends   and its ending is collected and its slot reclaimed
-state store B   the same canonical module; reads and validates the header from the device
-reader          get(2); verifies all 512 bytes of pattern B in canonical text
+initializer      capacity() >= 65; writes one initial header; terminates
+                 its ending is collected
+state store A    opens and validates the existing header
+writer           put(1, pattern A); put(2, pattern B)
+                 its ending is collected
+state store A    ends; its ending is collected and its slot reclaimed
+state store B    the same canonical module; reads and validates the header
+                 from the device
+reader           get(2); verifies all 512 bytes of pattern B in canonical text
 ```
+
+### 13a. The bounds, counted before implementation
+
+Seven process instances, and none of the accepted bounds moves. **`MAX_PLANS` is
+not raised**, and the reason it does not need to be is that a sealed plan *"is not
+consumed by the creation that reads it"* (`plan.rs`), so one plan may launch two
+sequential processes:
+
+| Bound | Value | This fixture |
+|---|---|---|
+| `MAX_PROCESSES` | 4 | peak **4**: `init + block + state + client`. The initializer is collected before state A is created, and the writer and state A are collected before state B and the reader exist |
+| `MAX_PLANS` | 4 | exactly **4**: block; initializer; **state**, shared by A and B; **client**, shared by writer and reader |
+| `MAX_ENDPOINTS` | 6 | **4**: `block-serve`, `state-serve`, `state-inbox`, `client-inbox`. Two spare |
+| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **2** (`budget`, `block-serve` send\|call); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive) |
+| `MAX_CAPABILITIES` | 16 per process | the supervisor is the only one near it, as in `block-lifecycle`; its peak must be counted during implementation and child controls released after each collection |
+
+**One client plan for the writer and the reader**, as directed: they are
+sequential, and the writer simply does not use the `client-inbox` the plan grants
+it — a `PUT` is one atomic call answered by a word, so only the reader needs an
+inbox at all. An unused grant is not a defect; a plan is a policy, and
+`granted()` records what was installed.
+
+**The initializer needs no inbox either**, because `CAPACITY` is an ordinary call
+and `WRITE` is an atomic call carrying its region — neither is answered with a
+region. That is what keeps it at two endowments.
+
+**Sharing one plan is exactly what makes the receive-holder rule load-bearing.**
+`IPC_V1` §2 admits one receive-rights holder at a time and `capability.rs`
+enforces it as `NotGranted::ReceiverExists`, so creating state B or the reader
+before its predecessor's slot is reclaimed is **refused by the nucleus**. The
+sequencing above is not a convention the fixture observes; it is the only order in
+which the fixture can be built at all.
 
 - **the reader holds no `block.device.v1` endpoint**, asserted from the boot
   journal's capability records, not from source;
@@ -419,14 +504,23 @@ reader          get(2); verifies all 512 bytes of pattern B in canonical text
 **Required mutations**, each of which must turn the gate red on its own
 assertion:
 
-1. **omit the persistent header write** — the successor cannot open the store, or
-   cannot find the object;
+1. **omit the initializer's header write** — state service A **cannot open**, and
+   every request it receives is refused with `ST_STORE`. This is a claim about
+   *formatting*, and it is kept separate from claim 5 on purpose;
 2. **omit or falsify the real payload device write** — the final byte witness
    fails;
 3. **answer `get(2)` from object 1's sector** — the final byte witness fails;
 4. **ignore the occupancy bitmap** — `get(3)`, an id never created, must be
-   refused as absent; the mutation makes it answer with sector 3's seeded
-   `0xC3` fill instead, and the negative gate must fail.
+   refused as absent; the mutation makes it answer with sector 3's seeded `0xC3`
+   fill instead, and the negative gate must fail;
+5. **omit `PUT(2)`'s occupancy-header update** — A may well have written sector 2,
+   the successor reads the **persisted** header, and `get(2)` is therefore
+   **absent**. This is a claim about *persistence of the occupancy record*, and it
+   is a different claim from 1: 1 says an unformatted store cannot be opened, 5
+   says an object whose bit never reached the device does not exist however much
+   of it did;
+6. **send `GET`'s region before replying success** — the ordering assertion of
+   `ADR-0098` §4 obligation 9, applied to this protocol, must turn red.
 
 **Non-claims the evidence must state**, in the form `block-lifecycle.sh` uses:
 no power-loss durability; no `FLUSH`; no ungraceful-termination behaviour; no

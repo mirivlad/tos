@@ -77,11 +77,23 @@ For `OP_CAPACITY` the sector field **must be zero**. A non-zero sector field on 
 capacity request is malformed, because a request that carries a number nobody
 reads is a request whose meaning two implementations could differ about.
 
-**There is no protocol-version field in the word.** The version is the identity
-of the endpoint object the request is sent to: `ADR-0095` §3 makes one object fix
-one publication class, so the object *is* the statement that this is
-`block.device.v1`. A version in every request would be a second place for the
-same fact.
+**There is no in-band protocol-version field in the word**, and the reason is the
+configured contract:
+
+- `block.device.v1` is a **versioned Tier 2 service contract**;
+- accepted publication, binding and launch topology supplies a client with an
+  endpoint **implementing that contract**;
+- v1 has **no runtime version negotiation**: there is nothing for a version tag to
+  select between;
+- so a per-request tag would be redundant with the service contract the topology
+  already configured.
+
+**It is not redundant with endpoint-object identity, and that must not be
+claimed.** `ADR-0095` §3's dedicated object fixes a publication class and
+authority; the endpoint later published as a service endpoint is a different
+object, and one protocol has more than one of them — `block-lifecycle.sh` runs two
+generations on two distinct service endpoints while both implement the same
+`block.device.v1`.
 
 ## 5. The reply
 
@@ -107,16 +119,42 @@ from refusal code 3.
 
 ```text
 client:   endpoint_call_word_carrying(answer_endpoint, service, sector * 4 + OP_READ)
-service:  endpoint_send_region(carried, one immutable region covering >= SECTOR_BYTES)
 service:  endpoint_reply_word(reply, 0)
+service:  endpoint_send_region(carried, one immutable region covering >= SECTOR_BYTES)
 ```
 
 The service performs one `VIRTIO_BLK_T_IN` of the named sector, copies
-`SECTOR_BYTES` out of device-visible memory into an ordinary region it allocated,
-freezes it, and sends it to the endpoint the request delegated. **The reply is
-sent only after that send has succeeded**, so a success answer means the region
-is in the client's inbox — a client that received a success and no region would
-have no way to tell that from a region it had not yet taken.
+`SECTOR_BYTES` out of device-visible memory into a region it allocated for the
+sector's bytes, and freezes it — **completely, before it replies**. Then it
+replies success. Then it sends the region to the endpoint the request delegated.
+
+**Control before data, and the order is normative.** The reverse — region first,
+reply second — admits an orphan response: the region is queued, the service dies,
+the caller's call is cancelled by the liveness rule, and the region stays on the
+answer endpoint. An endpoint object **lives for the boot**; a process dying
+releases its receive authority and does not make the endpoint a fresh object or
+drain what is queued on it. A later holder of receive — including a successor
+created from the same launch plan — could take that old region as the answer to
+its own request.
+
+The three observations have distinct meanings:
+
+| The client sees | It means |
+|---|---|
+| a **refusal** reply | refused; **no region follows** |
+| a **success** reply | the read succeeded and **exactly one region is owed** |
+| the **region** arriving | the `READ` is complete |
+
+**A client may have at most one outstanding `READ` per answer endpoint**, and may
+not issue another until the owed region has been received. Nothing enforces this
+in the nucleus and nothing needs to: a client that broke it could not say which
+region answered which of its own requests.
+
+**If the service dies after the success reply and before the send**, the client
+observes an incomplete operation through the ordinary liveness path — its receive
+blocks and is cancelled with `E_CANCELLED` (`SYSTEM_ABI_V1` §6) — and **no stale
+region has been queued**. If the region is sent, it belongs to the one
+outstanding successful operation.
 
 The region leaves the service linearly (`ADR-0075` §5a): after the send the
 service holds neither the handle nor the mapping.
@@ -169,13 +207,20 @@ from a client with a bug.
 | 2 | `BLK_RANGE` | the sector is at or above the device's reported capacity, or above `MAX_SECTOR` |
 | 3 | `BLK_MALFORMED` | the inline length is not `REQUEST_BYTES`, or `OP_CAPACITY` carried a non-zero sector field |
 | 4 | `BLK_NO_REGION` | `OP_WRITE` whose call carried no region |
-| 5 | `BLK_DEVICE` | the device answered with a status other than `VIRTIO_BLK_S_OK` |
-| 6 | `BLK_ANSWER` | `OP_READ` whose region could not be delivered to the delegated endpoint |
+| 5 | `BLK_NO_ANSWER` | `OP_READ` whose call carried no answer endpoint |
+| 6 | `BLK_DEVICE` | the device answered with a status other than `VIRTIO_BLK_S_OK` |
 
-**Every refusal leaves the device untouched**, with two stated exceptions that
-are not refusals of the request: `BLK_DEVICE` reports what the device did, and
-`BLK_ANSWER` is raised after a read has already happened — a read changes
-nothing, so the device is still untouched there too.
+**Every refusal is decided before the reply is sent, and that is why there is no
+code for a failed region delivery.** §6a puts the success reply **before** the
+region send, so a delivery that fails afterwards cannot become a refusal — the
+reply is already spent. A service in that position records the fault in its
+journal; the client sees an incomplete operation, not a refusal. `BLK_NO_ANSWER`
+is the part that *is* checkable, and it is checked **before** the sector is read,
+because the receive record reports an absent answer endpoint as absence rather
+than as a handle.
+
+**Every refusal leaves the device untouched**, with one stated exception that is
+not a refusal of the request: `BLK_DEVICE` reports what the device did.
 
 **A refusal is a reply, not a dropped call.** A service that failed to reply
 would leave the caller blocked until the liveness rule cancelled it
@@ -206,7 +251,15 @@ is guaranteed at the origin instead: the only way to obtain a sendable region is
 shorter than a frame.
 
 A **missing** region is different and is checked: the receive record's `region`
-is an `Option`, absence is `BLK_NO_REGION`, and nothing is touched.
+is an `Option`, absence is `BLK_NO_REGION`, and nothing is touched. An absent
+**answer endpoint** on a `READ` is checked the same way and is `BLK_NO_ANSWER`.
+
+**Object size and transport extent are different quantities, and this contract
+keeps them apart.** A sector is exactly `SECTOR_BYTES`. The region that carries
+one covers **at least** that, currently at least one frame. Bytes at or beyond
+`SECTOR_BYTES` are ignored by the protocol: they are neither read, written,
+compared nor required to hold anything. A service allocates *a region for the
+512-byte sector* — not a 512-byte region — and touches only `[0, 512)` of it.
 
 ## 9. Case D, retained unchanged
 
@@ -238,8 +291,11 @@ removing case D. A client that needs to know re-reads the sector.
 
 `ADR-0098` §4 is the obligation list: normative read; normative atomic write;
 capacity against the device's own report; invalid-opcode, out-of-range,
-absent-region and malformed-length negatives; and the decoy-region mutation that
-proves a `WRITE` uses the region its own call carried.
+absent-region, absent-answer-endpoint and malformed-length negatives; an assertion
+that a successful `READ`'s reply is journalled **before** its region send; the
+decoy-region mutation that proves a `WRITE` uses the region its own call carried;
+and the ordering mutation that proves §6a's control-before-data rule is
+implemented rather than only written down.
 
 **One negative class is static, and is recorded as static.** A region shorter
 than `SECTOR_BYTES` cannot be constructed from canonical text (§8), so no boot
