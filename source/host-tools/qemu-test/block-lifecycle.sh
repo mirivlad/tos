@@ -141,7 +141,7 @@ done
 # so a later entry cannot satisfy it by shadowing the old one.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=capability_release status=0$')" -ge 1 ] ||
     fail "no capability was released, so the registry never let go of publication A"
-# Exactly one refused delivery, and three that succeed: the registry's two answers
+# Exactly one refused delivery, and four that succeed: the registry's two answers
 # and the launcher's two handovers are four sends in all.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_carrying status=0$')" = 4 ] ||
     fail "the four capability handovers did not all succeed"
