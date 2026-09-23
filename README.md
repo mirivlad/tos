@@ -443,9 +443,8 @@ registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
 capability that crossed in a message (`qemu_capability_transfer`, ADR-0094). The
 device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
-It does **not** prove queue multiplexing, scheduling, filesystem integration, a
-generic driver subsystem, restart and republication (ADR-0093 case C), or writing
-through the client/service path. None of those is designed.
+It does **not** prove queue multiplexing, scheduling, filesystem integration or a
+generic driver subsystem. None of those is designed.
 
 **And since 2026-09-23 a service can die and be replaced without losing data.** A
 block service serves a write and ends still holding the function, the mapped
@@ -459,6 +458,15 @@ bytes the first instance wrote come back. That is ADR-0092 R1a's T1 recovery and
 ADR-0093's case C, and the stale capability is the experiment: the client still
 holds the name its first lookup gave it, calls it while the successor is waiting
 for a request, and is not served — so the name was never repaired.
+
+**Read that at the width of the fixture, which is narrow.** A write and a read now
+cross the client/service path, so the tree no longer merely reads; but the request
+encoding that carries them is **one fixture's**, and no normative general
+`block.device.v1` wire protocol has been accepted because it exists — ADR-0093 §9
+still leaves the wire shape of `read`, `write` and `capacity` open. One sector per
+request, no multi-sector scheduling, no filesystem, and nothing written is stored
+anywhere but the sector: there is no persistent object or state storage and no
+capsule-to-repository handoff.
 
 **What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
 separately rather than collected under one word:

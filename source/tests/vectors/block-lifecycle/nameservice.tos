@@ -16,14 +16,23 @@
 //   1  a registration arrives on `publish`      -> the entry is A's endpoint
 //   2  a lookup arrives                          -> A's endpoint is delivered
 //   3  a withdrawal arrives on `withdraw`        -> **the entry is released**
-//   4  a registration arrives on `publish`       -> the entry is B's endpoint
-//   5  a lookup arrives                          -> B's endpoint is delivered
+//   4  a lookup arrives                          -> **nothing is delivered**, and
+//                                                    the attempt to deliver the
+//                                                    released entry is refused
+//   5  a registration arrives on `publish`       -> the entry is B's endpoint
+//   6  a lookup arrives                          -> B's endpoint is delivered
 //
-// **Step 3 is where publication A stops existing, and it is observable.** The
-// entry is a capability this module holds; withdrawing it is
-// `capability_release`, whose status is in the audit record. After it this
-// registry holds no name for any service endpoint at all — so between steps 3 and
-// 4 there is nothing it could hand out, and it says so in its own account.
+// **Step 3 is where publication A stops existing, and step 4 is how that is
+// observable rather than asserted.** `capability_release`'s own status says a
+// release happened but not *which* capability it was, so this module goes on to
+// **try to deliver the released entry** on the next lookup. The nucleus refuses
+// it — the handle resolves to nothing — and that refusal is a fact about
+// publication A and about no other capability: a registry that had released
+// something else and kept A would have delivered A here.
+//
+// **And it cannot be satisfied by a later entry shadowing the old one**, because
+// step 4 happens before step 5: this module attempts the delivery while it holds
+// nothing at all, and only afterwards takes a second registration.
 //
 // **Nothing is ever retargeted.** A lookup answers with the capability this
 // module currently holds, and the capabilities it held for A and for B name
@@ -78,10 +87,12 @@ const OK: i64 = 0i64;
 
 //  1  the first registration arrived, carrying a capability
 //  2  the first lookup was answered with it
-//  4  the withdrawal arrived and the entry was **released** — after this the
-//     registry holds no service endpoint at all
-//  8  the second registration arrived, carrying a different capability
-// 16  the second lookup was answered with that one
+//  4  the withdrawal arrived and the entry was **released**
+//  8  and the released entry could no longer be delivered: a lookup arriving with
+//     no publication in existence was answered with nothing, and the attempt to
+//     send what this registry used to hold was **refused by the nucleus**
+// 16  the second registration arrived, carrying a different capability
+// 32  the third lookup was answered with that one
 pub fn main() -> i64
     uses [publish, lookup, withdraw, system.ipc.Endpoint, system.ipc.Reply]
 {
@@ -123,10 +134,28 @@ pub fn main() -> i64
                 Err(refused) => { return refused - 3100i64; }
             }
 
+            // --- the interval in which there is no publication ------------------
+            // A lookup answered while this registry holds nothing. **The attempt
+            // is the evidence**: `first_registration.carried` was released above,
+            // so sending it is refused, and a registry that had released some
+            // other capability while keeping A would have succeeded here.
+            match (endpoint_receive_call(lookup)) {
+                Ok(in_between) => {
+                    let refused_delivery: i64 =
+                        endpoint_send_carrying(first_registration.carried, in_between.carried, 0u64);
+                    if (refused_delivery == OK) { return -3201i64; }
+                    found = found + 8i64;
+                    // Answered with nothing. The asker gets a reply and no
+                    // capability, which is what "there is no publication" is.
+                    if (endpoint_reply(in_between.reply, 0u64) != OK) { return -3202i64; }
+                }
+                Err(refused) => { return refused - 3300i64; }
+            }
+
             // --- and the successor's publication ------------------------------
             match (endpoint_receive_call(publish)) {
                 Ok(second_registration) => {
-                    found = found + 8i64;
+                    found = found + 16i64;
                     if (endpoint_reply(second_registration.reply, 0u64) != OK) {
                         return -4001i64;
                     }
@@ -135,7 +164,7 @@ pub fn main() -> i64
                             if (endpoint_send_carrying(
                                 second_registration.carried, second_asker.carried, 0u64
                             ) == OK) {
-                                found = found + 16i64;
+                                found = found + 32i64;
                             }
                             if (endpoint_reply(second_asker.reply, 0u64) != OK) {
                                 return -4002i64;
