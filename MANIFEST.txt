@@ -141,7 +141,7 @@ Architecture decision records
 - docs/adr/0095-publication-authority-is-a-dedicated-channel.md — ADR-0095: A publication authority is a dedicated channel, not a nominal type [**Accepted** (Project Architect-directed, 2026-09-23)]
 - docs/adr/0096-nominal-interface-identity-under-delegation.md — ADR-0096: Must a nominal interface survive delegation and endowment? [**Proposed** (raised 2026-09-23 on Project Architect direction; **not]
 - docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md — ADR-0097: The textual surface by which an ordinary `Region<T>` crosses IPC [**Accepted (option R-A)** (Project Architect-approved, 2026-09-23), with]
-- docs/adr/0098-the-block-device-v1-wire-protocol.md — ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region [**Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the]
+- docs/adr/0098-the-block-device-v1-wire-protocol.md — ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region [**Accepted** (Project Architect-approved, 2026-09-24), and]
 - docs/adr/0099-stage-4-persistent-object-state-storage.md — ADR-0099: Stage 4 persistent object/state storage — a private native store, substrate first [**Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a

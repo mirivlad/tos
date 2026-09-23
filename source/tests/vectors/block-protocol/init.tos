@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The supervisor of the `BLOCK_DEVICE_V1` conformance boot. It creates two
+// children, collects both endings, and holds no hardware authority it does not
+// pass on.
+//
+//   the service is created, with `receive` on the request endpoint and the PCI root
+//   the client is created, with `send | call` on the same endpoint and an inbox
+//   both endings are collected (ADR-0067, operation 14)
+//
+// **Two processes and two endpoints**, which is the whole topology: the service is
+// **launcher-wired** and publishes nothing. ADR-0093 case C and the publication
+// path are proved by `block-lifecycle` and are not re-proved here, and ADR-0095 §6
+// leaves a second publication class undecided — so nothing in this boot asks for
+// one.
+//
+// **The client holds no part of the machine.** Not the PCI root, not a function,
+// not a window, not an interrupt source, not a DMA region: the only things it is
+// given are a memory authority, a way to call the service, and a channel for a
+// read's answer. The boot journal is where that is read, and it is a fact about
+// this plan rather than a claim about the client's source.
+//
+// **No restart, no policy.** One service instance serves every request and then
+// returns; what this boot is about is the protocol, and a restart would put two
+// questions in one boot.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as serve_all;
+import capability system.ipc.Endpoint as inbox_full;
+import capability platform.pci.Bus as device;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 12
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endow_for_launch(
+    held: platform.pci.Bus,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [device];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+// How this process learns a child has gone (ADR-0067, operation 14). The
+// authority is over **this** process object and what it scopes is its child
+// relation, so no handle for either child is needed to wait for one.
+extern fn process_wait_child(
+    cap: system.process.Control, flags: u64
+) -> Result<system.process.ChildEnding, i64> uses [process];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+// And how this process lets go of a receiving name **before** the child that
+// receives on it exists. `IPC_V1` §2 admits one receive-rights holder at a time,
+// enforced at creation: a launcher still holding `receive` cannot endow it, and the
+// creation is refused whole (ADR-0055) rather than half-endowed.
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_CALL: u64 = 4u64;
+const RIGHT_CLAIM: u64 = 2048u64;
+const RIGHT_SPEND: u64 = 128u64;
+// The one call flag this ABI version has is "ask, do not wait" (ADR-0059); zero is
+// the blocking form, and there is nothing else for this process to do.
+const BLOCKING: u64 = 0u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+const CLIENT_GRANT: u64 = 8388608u64;
+// The service compiles a large module and drives a device, so it is given more.
+const SERVICE_GRANT: u64 = 25165824u64;
+
+//   1  the service was created
+//   2  the client was created
+//   4  the first ending was collected
+//   8  the second ending was collected
+const CREATED_SERVICE: i64 = 1i64;
+const CREATED_CLIENT: i64 = 2i64;
+const FIRST_ENDING: i64 = 4i64;
+const SECOND_ENDING: i64 = 8i64;
+
+// The service: `receive` on the request endpoint, and the PCI root.
+//
+// **The authority to spend comes first, and the order matters.** The runtime image
+// exercises a process's *first* endowed capability after `main` returns, and for an
+// endpoint carrying `receive` that exercise is a blocking receive — a process still
+// blocked in its own epilogue is one the liveness census counts, which would stall
+// this boot instead of ending it. A memory authority's exercise blocks on nothing.
+fn service_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, serve_all, device, memory, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-2001i64);
+            }
+            if (endow_for_launch(serve_all, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2002i64);
+            }
+            if (endow_for_launch(device, builder, RIGHT_CLAIM, "device") != OK) {
+                return Err(-2003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2200i64); }
+    }
+}
+
+// The client: a budget, a way to call the service, and a channel to be answered on.
+//
+// **`send | call` and not `receive`.** `IPC_V1` §2 admits one receive-rights holder
+// per endpoint and the service is it; `send` is what lets this client put a decoy
+// region on the service's endpoint with no call behind it, which is the arrangement
+// ADR-0098 §4 obligation 10 turns into evidence.
+fn client_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, serve_all, inbox_full, memory, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-3001i64);
+            }
+            if (endow_for_launch(serve_all, builder, RIGHT_SEND | RIGHT_CALL, "service") != OK) {
+                return Err(-3002i64);
+            }
+            // **Two names for one endpoint, and they must be two.** `IPC_V1` §6
+            // delegates a capability at exactly the rights the sender holds, and
+            // §2 admits one receive-rights holder at a time — so a client that
+            // delegated a name carrying `receive` would be asking the service to
+            // become a second receiver, the accepting receive would refuse the
+            // whole message, and the request would sit in the queue while both
+            // processes waited. `inbox` takes the answer; `reply_to` is the
+            // send-only name the request hands over.
+            if (endow_for_launch(inbox_full, builder, RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-3003i64);
+            }
+            if (endow_for_launch(inbox_full, builder, RIGHT_SEND, "reply_to") != OK) {
+                return Err(-3004i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 3200i64); }
+    }
+}
+
+// Creates one child and lets go of the handle. **The handle is not kept**: this
+// process waits on its own child relation rather than on a name for any one child
+// (ADR-0067), and a capability table with sixteen slots has better uses.
+fn start(plan: system.process.LaunchPlan, entry: string, grant: u64) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(process, memory, plan, entry, grant, NO_SELF_RIGHTS)) {
+        Ok(child) => {
+            if (capability_release(child.control) != OK) { return -9001i64; }
+            return OK;
+        }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+pub fn main() -> i64
+    uses [process, memory, serve_all, inbox_full, device, system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    match (service_plan()) {
+        Ok(service) => {
+            match (client_plan()) {
+                Ok(client) => {
+                    // **Every receiving name this process holds, let go before the
+                    // children that receive on them exist.** Both plans already
+                    // hold references of their own (ADR-0077 §5), so letting go
+                    // gives nothing away — and keeping one would make this process
+                    // the receive-rights holder the nucleus refuses to duplicate.
+                    if (capability_release(serve_all) != OK) { return -8001i64; }
+                    if (capability_release(inbox_full) != OK) { return -8002i64; }
+
+                    // **The service first, and the order is not load-bearing.** A
+                    // call blocks for its answer, so a client created first would
+                    // simply wait; starting the service first is how a reader of
+                    // the journal sees the device initialized before the protocol
+                    // begins.
+                    if (start(service, "system/service/block.tos", SERVICE_GRANT) != OK) {
+                        return -1i64;
+                    }
+                    found = found + CREATED_SERVICE;
+                    if (start(client, "system/client/block.tos", CLIENT_GRANT) != OK) {
+                        return -2i64;
+                    }
+                    found = found + CREATED_CLIENT;
+                }
+                Err(unplanned) => { return unplanned - 20i64; }
+            }
+        }
+        Err(unplanned) => { return unplanned - 10i64; }
+    }
+
+    // --- both endings, collected --------------------------------------------
+    // **Two waits and no assumption about which order they end in.** The client
+    // finishes when its last read is verified and the service finishes when it has
+    // served its ninth request; which of those the nucleus reports first is not
+    // something this boot decides, and a supervisor that required an order would be
+    // asserting a schedule.
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(first) => { found = found + FIRST_ENDING; }
+        Err(refused) => { return refused - 30i64; }
+    }
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(second) => { found = found + SECOND_ENDING; }
+        Err(refused) => { return refused - 40i64; }
+    }
+    return found;
+}

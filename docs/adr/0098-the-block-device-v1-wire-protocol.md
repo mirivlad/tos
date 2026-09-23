@@ -2,9 +2,13 @@
 
 # ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region
 
-- Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
-  tree implements it yet**: acceptance fixes the contract and carries §4's
-  evidence obligations, which are outstanding
+- Status: **Accepted** (Project Architect-approved, 2026-09-24), and
+  **implemented 2026-09-24**. The additive schema surface, the two frontend and
+  verifier gaps §2a recorded, and a canonical textual service and client speaking
+  this protocol all exist; §4's obligations are met by
+  `host-tools/qemu-test/block-protocol.sh`, with the one exception §4 already
+  records as a static class. `block-data-path` and `block-lifecycle` keep their own
+  encoding until a later slice migrates them, as §3 says
 - Date: 2026-09-23, accepted 2026-09-24
 - Decision level: **2** — a contract extension. It accepts a versioned service
   protocol and adds two rows and one record to `SYSTEM_INTERFACE_V1` over ABI

@@ -459,13 +459,24 @@ ADR-0093's case C, and the stale capability is the experiment: the client still
 holds the name its first lookup gave it, calls it while the successor is waiting
 for a request, and is not served — so the name was never repaired.
 
-**Read that at the width of the fixture, which is narrow.** A write and a read now
-cross the client/service path, so the tree no longer merely reads; but the request
-encoding that carries them is **one fixture's**, and no normative general
-`block.device.v1` wire protocol has been accepted because it exists — ADR-0093 §9
-still leaves the wire shape of `read`, `write` and `capacity` open. One sector per
-request, no multi-sector scheduling, no filesystem, and nothing written is stored
-anywhere but the sector: there is no persistent object or state storage and no
+**And since 2026-09-24 there is a normative protocol under it.** `block.device.v1`
+has a wire shape: ADR-0098 answers ADR-0093 §9 and
+`source/interfaces/device/BLOCK_DEVICE_V1.md` states it — `word = sector * 4 +
+opcode`, all three of `read`, `write` and `capacity`, every refusal a reply, and a
+**write that arrives as one atomic call carrying its own region** rather than as a
+region followed by a call, which was correct only where one client was serialized
+against itself. A canonical textual service and a canonical textual client speak it
+in `block-protocol.sh`, where a decoy region sent just before a write proves the
+bytes written are the ones that call carried, and the journal proves a read replies
+before it sends. `capacity` is the device's own number, proved by a second boot
+against a smaller device from the same compiled module.
+
+**Read the rest at the width of the fixtures, which is narrow.** The older
+`block-data-path` and `block-lifecycle` boots still carry their own encoding until
+a later slice migrates them. One sector per request, no batching, no multi-sector
+scheduling, no filesystem, and nothing written is stored anywhere but the sector:
+**persistent object/state storage is decided and not built** — ADR-0099 and
+`STATE_STORE_V1` are accepted, and no line of it is implemented — and there is no
 capsule-to-repository handoff.
 
 **What Stage 4 still owes, from `docs/16`'s own deliverable list**, named

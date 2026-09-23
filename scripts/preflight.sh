@@ -513,6 +513,19 @@ qemu_block_data_path() {
 qemu_block_lifecycle() {
     bash "$ROOT/source/host-tools/qemu-test/block-lifecycle.sh"
 }
+# The accepted `block.device.v1` protocol (ADR-0098, `BLOCK_DEVICE_V1`), spoken by
+# canonical text on both sides instead of by a fixture's own encoding.
+#
+# `word = sector * 4 + opcode`, all three operations of ADR-0093 §0's surface, and
+# every refusal §7 states — each of them a reply. Two claims the gate is built
+# around: a **write uses the region its own call carried**, proved by a decoy region
+# sent just before it that a service of the old two-message shape would write
+# instead; and a **read replies before it sends**, because the reverse leaves an
+# orphan region queued on an endpoint that outlives its caller. `CAPACITY` answers
+# the device's own count, proved by a second boot against a smaller device.
+qemu_block_protocol() {
+    bash "$ROOT/source/host-tools/qemu-test/block-protocol.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -744,6 +757,7 @@ gate qemu       full-only "QEMU publishing needs the publish endpoint" qemu_publ
 gate qemu       full-only "QEMU a region payload crosses IPC"    region_ipc_payload
 gate qemu       full-only "QEMU a sector crosses IPC as a region"  qemu_block_data_path
 gate qemu       full-only "QEMU a successor restarts the device path" qemu_block_lifecycle
+gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_block_protocol
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
