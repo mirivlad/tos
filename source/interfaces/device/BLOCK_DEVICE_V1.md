@@ -2,20 +2,20 @@
 
 # TOS Block Device Interface — `block.device.v1`
 
-Status: **Proposed. Not accepted, and authority for nothing.**
+Status: **Accepted Tier 2 interface contract.**
 
-This is a draft of a versioned interface contract, filed **outside**
-`source/interfaces/` on purpose. `ADR-0020`'s admission rule grants Tier 2
-authority only to a contract whose status says `Accepted Tier 2 interface
-contract` and which is listed in `docs/SPECIFICATION_SOURCES.txt`, and — as
-`ADR-0048` put it — a proposal filed where accepted contracts live would be
-authority a document assigned to itself. On acceptance by **ADR-0098** this file
-moves to `source/interfaces/device/BLOCK_DEVICE_V1.md`, its status line becomes
-the accepted one, and it is added to the manifest.
+Accepted by ADR-0098 (Project Architect-approved, 2026-09-24), which fixes the
+wire shape this contract states and answers ADR-0093 §9's reserved question.
+ADR-0093 §0 fixes the interface surface it covers.
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
-contract would be subordinate to Tier 0 invariants and to accepted Tier 1 ADRs,
-and it cites `ADR-0093` and `ADR-0098` as the decisions that fix its subject.
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
+ADR-0093 and ADR-0095 where those decisions fix its subject matter.
+
+**No implementation of this contract exists yet.** It is accepted as the shape the
+Stage 4 block service and its clients must take; the conformance evidence §11
+requires is outstanding, and `block-data-path` and `block-lifecycle` still carry
+their own fixture encoding until a later slice migrates them (ADR-0098 §3).
 
 ## 1. Role
 

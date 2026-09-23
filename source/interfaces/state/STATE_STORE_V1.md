@@ -2,21 +2,19 @@
 
 # TOS State Store Interface — `state.store.v1`
 
-Status: **Proposed. Not accepted, and authority for nothing.**
+Status: **Accepted Tier 2 interface contract.**
 
-A draft of a versioned interface contract, filed **outside**
-`source/interfaces/` on purpose: `ADR-0020`'s admission rule grants Tier 2
-authority only to a contract whose status says `Accepted Tier 2 interface
-contract` and which is listed in `docs/SPECIFICATION_SOURCES.txt`, and a
-proposal filed where accepted contracts live would be authority a document
-assigned to itself (`ADR-0048`). On acceptance by **ADR-0099** this file moves to
-`source/interfaces/state/STATE_STORE_V1.md`, its status line becomes the accepted
-one, and it is added to the manifest.
+Accepted by ADR-0099 (Project Architect-approved, 2026-09-24), a Level 3 decision
+which fixes the persistent layout and the protocol this contract states. It
+consumes `BLOCK_DEVICE_V1` (ADR-0098) and nothing else.
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
-contract would be subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and
-it cites `ADR-0099` as the decision that fixes its subject and `ADR-0098` /
-`BLOCK_DEVICE_V1` as the interface it consumes.
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
+docs/09, whose `/state` namespace class it does **not** implement (§1).
+
+**No implementation of this contract exists yet.** It is accepted as the shape the
+Stage 4 store must take; the conformance evidence §12 requires is outstanding, and
+Stage 4 does not close on an accepted contract.
 
 ## 1. Role
 
@@ -143,6 +141,29 @@ identity is a constant of the store service's canonical text; a later version
 serving several owners needs per-owner identity, which is a layout change and
 therefore a `format_version` change.
 
+### 4.2a The scope of `schema_identifier`
+
+**It is not a global namespace**, and this contract creates none:
+
+```text
+schema_identifier
+    a u64 chosen by the owner of this store
+    stable for one schema lineage across compatible source revisions
+    interpreted only together with this STATE_STORE_V1 store extent
+    not globally unique
+    not a content id
+    not a module id
+    not a /state path id
+```
+
+`schema_version` versions that owner's schema **within** that lineage. The pair is
+what §4.3 compares on opening; a mismatch is a refusal, never a conversion.
+
+At Stage 4 there is exactly one owner and one store, so **no registry, no
+allocation mechanism and no uniqueness rule is needed**, and none is defined. A
+later multi-owner or multi-store design may need a stronger identity contract; it is
+not decided here.
+
 ### 4.3 Validation
 
 A store is **open** only when sector 0 satisfies all of:
@@ -176,15 +197,45 @@ store to recover from a transient failure.
 during provisioning by a short-lived **initializer** process:
 
 ```text
-capacity()  >=  STORE_SECTORS
-write one complete valid header:
-    MAGIC, FORMAT_VERSION, the owner's schema identity, occupancy = 0, reserved zero
-terminate
+capacity()
+require capacity >= STORE_SECTORS
+
+READ HEADER_SECTOR
+
+if all 512 bytes are zero:
+    WRITE one complete valid header:
+        MAGIC, FORMAT_VERSION, the owner's schema identity,
+        occupancy = 0, reserved zero
+    terminate success
+else:
+    REFUSE TO FORMAT
 ```
 
 It writes **no payload sector**. A device that cannot contain the whole bounded
 layout is refused before the header is written, rather than discovered later by
 running past the end of it — which is why `ADR-0098` keeps `capacity` in v1.
+
+**Only an all-zero header is permission to format.** An initializer that wrote
+unconditionally would silently reset `occupancy` against an existing store, losing
+every object in it while reporting success — unacceptable for an action that is
+separated from ordinary startup *because* it is destructive.
+
+**This test is deliberately stricter than §4.3.** Opening asks whether a store is
+usable; formatting asks whether there is certainly nothing at all. So none of these
+is permission to initialize:
+
+| Sector 0 holds | Why it is not permission |
+|---|---|
+| an **already valid** header | the store exists |
+| a header **valid but for another schema** | it is another owner's store, and `schema_identifier` is not a claim on this extent (§4.2a) |
+| a **future or unknown `FORMAT_VERSION`** | a v1 initializer cannot know what it would destroy |
+| a **corrupt** header | the likeliest reading is a store whose header failed to read |
+| **merely non-zero garbage** | something wrote it, and this contract gives no meaning to bytes it did not write |
+
+**Sectors 1..64 are not inspected before formatting, and must not be.** The Stage 4
+harness deliberately seeds some of them, so their contents say nothing about whether
+a store exists: `occupancy` is authoritative, and it is only meaningful once a store
+does.
 
 The initializer is canonical TOS text, reaches the device **only** through
 `block.device.v1`, holds **no** PCI, MMIO, IRQ or DMA authority, publishes
@@ -403,17 +454,25 @@ all.
 
 ## 12. Conformance evidence
 
-`ADR-0099` §13 is the obligation list: a store initialized on a fresh device;
-two objects written by a writer that then ends; the store service ending and
-being reclaimed; a successor of the same canonical module re-reading and
-validating the header from the device; and a new reader — holding no
-`block.device.v1` capability — getting the second object and verifying all 512
-bytes in canonical text.
+`ADR-0099` §13 is the obligation list: an initializer formatting a fresh device and
+being collected; a store service opening the header it wrote; two objects written by
+a writer that then ends; the store service ending, being retired and having its
+ending collected by its supervisor; a successor of the same canonical module
+re-reading and validating the header from the device; and a new reader — holding no
+`block.device.v1` capability — getting the second object and verifying all 512 bytes
+in canonical text.
 
-Its six required mutations: omit the **initializer's** header write, so the state
+**One negative is about formatting rather than about persistence:** the initializer
+run against a **valid existing header** must refuse, and the header and `occupancy`
+must be **unchanged** afterwards. A mutation removing §4.4's zero-header check must
+turn that negative red.
+
+Its seven required mutations: omit the **initializer's** header write, so the state
 service cannot open; omit or falsify the payload device write; answer `get(2)` from
 object 1's sector; ignore the occupancy bitmap, which must make an id never created
 become visible and must turn the negative gate red; omit `PUT(2)`'s
 occupancy-header update, so that a successor reading the persisted header finds
-object 2 **absent** however much of its sector was written; and send `GET`'s region
-before replying success, which must turn the ordering assertion red.
+object 2 **absent** however much of its sector was written; send `GET`'s region
+before replying success, which must turn the ordering assertion red; and remove the
+initializer's zero-header check, which must turn the refuse-to-reformat negative
+red.

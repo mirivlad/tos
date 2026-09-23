@@ -23,6 +23,8 @@ source/interfaces/system/CAPABILITY_V1.md
 source/interfaces/system/IPC_V1.md
 source/interfaces/system/PROCESS_IDENTITY_V1.md
 source/interfaces/platform/PLATFORM_INTERFACE_V1.md
+source/interfaces/device/BLOCK_DEVICE_V1.md
+source/interfaces/state/STATE_STORE_V1.md
 docs/21_ARCHITECTURE_PRESERVATION_POLICY.md
 docs/37_STAGE_IDENTITY_GATES.md
 docs/03_ARCHITECTURE_OVERVIEW.md
@@ -163,3 +165,5 @@ docs/adr/0092-reset-authority.md
 docs/adr/0093-block-device-publication-and-lifetime.md
 docs/adr/0095-publication-authority-is-a-dedicated-channel.md
 docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md
+docs/adr/0098-the-block-device-v1-wire-protocol.md
+docs/adr/0099-stage-4-persistent-object-state-storage.md
