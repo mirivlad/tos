@@ -37,11 +37,20 @@ mechanism.
 ## 2. Topology and authority
 
 ```text
-client  --(state.store.v1 endpoint, `call`)-->  state store  --(block.device.v1, `call`+`send`)-->  block service
-client  <--(one immutable Region<u8>)---------  state store  <--(one immutable Region<u8>)-------  block service
+provisioning
+    initializer  --(block.device.v1, `call`+`send`)-->  block service
+    (§4.4; collected before any state service starts)
+
+steady state
+    client  --(state.store.v1 endpoint, `call`)-->  state store  --(block.device.v1, `call`+`send`)-->  block service
+    client  <--(one immutable Region<u8>)---------  state store  <--(one immutable Region<u8>)-------  block service
 ```
 
-- the store is **launcher-wired** from a sealed launch plan and publishes nothing;
+- the store is **launcher-wired** from a sealed launch plan and publishes nothing,
+  and so is the initializer;
+- **the store never formats storage** (§4.4). Only the initializer writes an
+  initial header, and it is collected before the store starts — after which the
+  store is the sole holder of the block-service client capability;
 - the store holds **no** PCI bus, function, MMIO window, interrupt source or DMA
   region;
 - a **client of the store holds no `block.device.v1` capability**. It cannot
@@ -83,8 +92,18 @@ sector 0        the store header
 sector id       the payload of object id, for id in MIN_ID..MAX_ID
 ```
 
-The store owns the device from sector 0. There are no partitions at Stage 4 and
-one device, so a base-offset field would have exactly one possible value.
+**This contract gives meaning to sectors `0..64` and to no others.** It owns —
+reserves — exactly that bounded 65-sector extent in the Stage 4 reference layout,
+and it **never reads or writes a sector at or above `STORE_SECTORS`**.
+
+**It assigns no meaning and no owner to the remaining sectors.** They are not
+free, not reserved and not this store's: they are undecided. The
+capsule-to-repository handoff is a separate decision and must not overlap this
+extent without explicitly revisiting the layout.
+
+There are no partitions at Stage 4 and **no partition abstraction is
+introduced**; a base-offset field would have exactly one possible value, so there
+is none.
 
 ### 4.1 The store header (512 bytes, sector 0)
 
@@ -141,21 +160,49 @@ store and is **not** the same thing as uninitialized storage.
 An all-zero sector 0 fails the first condition. **Uninitialized storage is not a
 store**, and a zero-filled device is exactly what a fresh image presents.
 
-### 4.4 Initialization
+### 4.4 Formatting, which is not something a state service does
 
-Only a service that finds no valid header may initialize one, and only after:
+**No `state.store.v1` service ever formats storage.** A missing or invalid header
+means it **cannot open**, and it then refuses every request with `ST_STORE`. It
+does not repair, reformat or guess — and it could not decide to safely, because a
+child is never told its restart generation: the supervisor asserts it and, as
+`PROCESS_IDENTITY_V1` §3 records, the nucleus *"records it and never computes or
+increments it"*. Both generations run the same canonical module from the same
+shared launch plan, so a service cannot distinguish a fresh first start from a
+restart whose header failed to read, and one that auto-formatted would destroy a
+store to recover from a transient failure.
+
+**Formatting is a separate canonical textual bootstrap action**, performed once
+during provisioning by a short-lived **initializer** process:
 
 ```text
 capacity()  >=  STORE_SECTORS
+write one complete valid header:
+    MAGIC, FORMAT_VERSION, the owner's schema identity, occupancy = 0, reserved zero
+terminate
 ```
 
-through `block.device.v1`. A store that cannot fit refuses to initialize rather
-than writing a header it will later run past the end of. Initialization writes
-**one complete valid header** — `MAGIC`, `FORMAT_VERSION`, its own schema
-identity, `occupancy = 0`, `reserved` zero — and writes no payload sector.
+It writes **no payload sector**. A device that cannot contain the whole bounded
+layout is refused before the header is written, rather than discovered later by
+running past the end of it — which is why `ADR-0098` keeps `capacity` in v1.
 
-A successor **never initializes**. It opens by reading and validating sector 0
-from the device, and nothing is handed to it in memory.
+The initializer is canonical TOS text, reaches the device **only** through
+`block.device.v1`, holds **no** PCI, MMIO, IRQ or DMA authority, publishes
+nothing, and is **collected before the ordinary state service starts** — after
+which the state service is the sole holder of the block-service client capability.
+It is not a host path and not a harness step.
+
+### 4.5 Opening
+
+Both generations open the same way, from the device:
+
+```text
+read sector 0 through block.device.v1
+validate per §4.3
+```
+
+**Nothing is handed to a successor in memory**, which is what lets one canonical
+module serve every generation.
 
 ## 5. Object semantics
 
@@ -188,8 +235,14 @@ word = id * 4 + opcode           opcode = word % 4,  id = word / 4
 which is what an absent or malformed payload looks like — is refused rather than
 meaning something.
 
-There is no protocol-version field in the word: the version is the identity of
-the endpoint object the request is sent to, which is one place rather than two.
+**There is no in-band protocol-version field in the word.** `state.store.v1` is a
+versioned Tier 2 service contract; accepted binding and launch topology supplies a
+client with an endpoint **implementing that contract**; and v1 has **no runtime
+version negotiation**. A per-request tag would be redundant with the service
+contract the topology already configured — **not** with endpoint-object identity,
+which is a different thing and cannot carry a protocol version: one protocol may
+have several endpoint objects, as `block-lifecycle.sh` demonstrates for
+`block.device.v1` across two service generations.
 
 ## 7. The reply
 
@@ -239,14 +292,35 @@ none is claimed (§11).
 
 ```text
 client:  endpoint_call_word_carrying(answer_endpoint, store, id * 4 + OP_GET)
-store:   endpoint_send_region(carried, the object's region)
 store:   endpoint_reply_word(reply, 0)
+store:   endpoint_send_region(carried, the object's region)
 ```
 
-The store checks `occupancy` first and refuses an absent id without reading its
-sector. Otherwise it reads sector `id` through `block.device.v1`'s `READ`,
-**forwards the region it received** to the endpoint the request delegated
-(§10), and replies **after** that send has succeeded.
+The store checks `occupancy` first and refuses an absent id **without reading its
+sector**. Otherwise it reads sector `id` through `block.device.v1`'s `READ`
+**completely**, replies success, and **then** forwards the region it received
+(§10) to the endpoint the request delegated.
+
+**Control before data, and the order is normative**, for `BLOCK_DEVICE_V1` §6a's
+reason: the reverse admits an orphan response. An endpoint object lives for the
+boot, so a region queued on an answer endpoint whose waiter then died stays there,
+and a later holder of receive — including a successor created from the same launch
+plan — could take it as the answer to its own request.
+
+| The client sees | It means |
+|---|---|
+| a **refusal** reply | refused; **no region follows** |
+| a **success** reply | the object was obtained and **exactly one region is owed** |
+| the **region** arriving | the `GET` is complete |
+
+**A client may have at most one outstanding `GET` per answer endpoint**, and may
+not issue another until the owed region has been received.
+
+**If the store dies after the success reply and before the send**, the client
+observes an incomplete operation through the ordinary liveness path — a blocked
+receive cancelled with `E_CANCELLED` (`SYSTEM_ABI_V1` §6) — and no stale region has
+been queued. If the region is sent, it belongs to the one outstanding successful
+operation.
 
 **A reply never carries a region**, which is why the request has to say where to
 answer.
@@ -259,19 +333,27 @@ answer.
 | 2 | `ST_ID` | `id` is outside `MIN_ID..MAX_ID`, including `0` |
 | 3 | `ST_MALFORMED` | the inline length is not `REQUEST_BYTES` |
 | 4 | `ST_NO_REGION` | `OP_PUT` whose call carried no region |
-| 5 | `ST_ABSENT` | `OP_GET` of an id whose occupancy bit is clear |
-| 6 | `ST_STORE` | the store is not open: no valid header, or the device is too small |
-| 7 | `ST_BLOCK` | `block.device.v1` refused, or reported a device failure |
-| 8 | `ST_ANSWER` | `OP_GET` whose region could not be delivered to the delegated endpoint |
+| 5 | `ST_NO_ANSWER` | `OP_GET` whose call carried no answer endpoint |
+| 6 | `ST_ABSENT` | `OP_GET` of an id whose occupancy bit is clear |
+| 7 | `ST_STORE` | the store is not open: no valid header, or the device is too small |
+| 8 | `ST_BLOCK` | `block.device.v1` refused, or reported a device failure |
 
 A refusal is always a **reply**: a store that failed to answer would leave its
 caller blocked until the liveness rule cancelled it (`SYSTEM_ABI_V1` §6), and a
 client could not tell a refusal from a dead store.
 
-`ST_OPCODE`, `ST_ID`, `ST_MALFORMED`, `ST_NO_REGION` and `ST_ABSENT` touch the
-device not at all. `ST_BLOCK` reports what the layer below said. A refusal after
-a payload sector was written but before the occupancy bit was set leaves the
-object absent, which §8a's order is chosen to make true.
+**Every refusal is decided before the reply is sent, and that is why there is no
+code for a failed region delivery.** §8b replies success **before** sending the
+region, so a delivery that fails afterwards cannot become a refusal — the reply is
+already spent. A store in that position records the fault in its journal, and the
+client sees an incomplete operation. `ST_NO_ANSWER` is the part that *is*
+checkable, and it is checked before anything is read, because the receive record
+reports an absent answer endpoint as absence rather than as a handle.
+
+`ST_OPCODE`, `ST_ID`, `ST_MALFORMED`, `ST_NO_REGION`, `ST_NO_ANSWER` and
+`ST_ABSENT` touch the device not at all. `ST_BLOCK` reports what the layer below
+said. A refusal after a payload sector was written but before the occupancy bit
+was set leaves the object **absent**, which §8a's order is chosen to make true.
 
 ## 10. The one-copy rule
 
@@ -289,9 +371,19 @@ handle and its mappings atomically, so after forwarding the store holds nothing
 and a later access through that handle is refused rather than reading memory it
 no longer owns.
 
-**Header construction is metadata, not payload.** The store allocates its own
-512-byte region for sector 0, composes it, freezes it and writes it as **its own
-block request**, accounted separately (`ADR-0099` §11).
+**Header construction is metadata, not payload.** The store allocates **a region
+for the 512-byte header**, composes the header in its first `OBJECT_BYTES`,
+freezes it and writes it as **its own block request**, accounted separately
+(`ADR-0099` §11).
+
+**A region for 512 bytes is not a 512-byte region.** An object and a sector are
+exactly `OBJECT_BYTES`; the region carrying one covers **at least** that —
+currently at least one frame — and every byte at or beyond `OBJECT_BYTES` is
+ignored by this protocol and by `block.device.v1` (§8 there). The rule is
+guaranteed at the origin: the only way to obtain a sendable region is
+`region_allocate` followed by `region_freeze`, and neither can produce one shorter
+than a frame, so a too-short region cannot be originated from canonical text at
+all.
 
 ## 11. What v1 does not claim
 
@@ -318,7 +410,10 @@ validating the header from the device; and a new reader — holding no
 `block.device.v1` capability — getting the second object and verifying all 512
 bytes in canonical text.
 
-Its four required mutations: omit the header write; omit or falsify the payload
-device write; answer `get(2)` from object 1's sector; and ignore the occupancy
-bitmap, which must make an id never created become visible and must turn the
-negative gate red.
+Its six required mutations: omit the **initializer's** header write, so the state
+service cannot open; omit or falsify the payload device write; answer `get(2)` from
+object 1's sector; ignore the occupancy bitmap, which must make an id never created
+become visible and must turn the negative gate red; omit `PUT(2)`'s
+occupancy-header update, so that a successor reading the persisted header finds
+object 2 **absent** however much of its sector was written; and send `GET`'s region
+before replying success, which must turn the ordering assertion red.

@@ -61,6 +61,21 @@ longer offered.
 | §9 `/state` | **A — substrate first.** `docs/09`'s `/state` is unchanged and is not implemented here | ADR-0099 §1 |
 | §12 the handoff budget | **per completed block request**, at the immediate block interface; a store operation's several block requests are each subject to it independently, and end-to-end remains observational | ADR-0099 §11 |
 
+**A second round of rulings, 2026-09-24**, on review of the drafts. Four more
+things this note said or implied are superseded:
+
+| What the note said | The ruling |
+|---|---|
+| §15 classed ADR-β **Level 2** | **Level 3.** `docs/21` places persistent-format changes there, and creating the first normative persistent state format is not less architectural than changing one. ADR-0098 stays Level 2 |
+| §4's identity discussion leaned on the endpoint object as the thing that fixes a protocol | **withdrawn.** `ADR-0095` §3's object fixes a publication class and authority; the endpoint later published as a *service* endpoint is a different object, and `block-lifecycle.sh` already runs two distinct service endpoints for one `block.device.v1`. Requests still carry no in-band version field, but because the service contract is configured by topology and v1 has no runtime negotiation |
+| §7's read shape replied **after** sending the region | **reversed.** Control precedes data: obtain, reply, then send exactly one region. The old order admits an orphan region left queued on an endpoint that outlives the process that was waiting for it, and endpoint objects live for the boot |
+| §5's placement option C initialized the store from its first generation | **split.** A child is never told its restart generation, so a service cannot tell a fresh start from a restart whose header failed to read, and must not auto-format. Formatting is a separate short-lived canonical **initializer** process; the ordinary state service only opens |
+
+The bound sketch in §11 and the evidence sketch in §13 are both superseded by
+`ADR-0099` §13a and §13, which count seven process instances including that
+initializer against `MAX_PROCESSES = 4`, `MAX_PLANS = 4` and `MAX_ENDPOINTS = 6`
+without moving any of them.
+
 **Two things this note got wrong in its corrected revision, found while
 drafting**, and both are recorded here rather than left in the sections above:
 
@@ -649,7 +664,9 @@ built, because otherwise the store's dependency is a fixture (§7).
 7. **the `docs/35` interpretation** — the four-handoff budget's endpoints, and
    metadata writes accounted as separate block requests (§12).
 
-**Level 2**, on the same reading `ADR-0020` used of itself — it accepts a
+**Level 3** as ruled on 2026-09-24 — `docs/21` places persistent-format changes
+there. The first draft of this paragraph proposed Level 2 on the reading
+`ADR-0020` used of itself, namely that it accepts a
 persistent byte layout and a versioned protocol without moving a trust boundary,
 adding an ABI operation, or changing the nucleus. `docs/19` already lists
 *"first persistent object/state filesystem"* as a decision requiring an ADR, so
