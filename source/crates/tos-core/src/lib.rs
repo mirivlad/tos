@@ -2483,6 +2483,84 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
 }
 ";
 
+    /// A module that serves a call carrying a region, at the minor that admits
+    /// one.
+    ///
+    /// **The record is the whole of the test.** Nothing here writes `Region<u8>`:
+    /// the only region in the module is the one `system.ipc.ReceivedCallRegion`
+    /// hands over, which is exactly the shape ADR-0098 §2a says a written-type
+    /// walk cannot see.
+    const RECORD_WITH_A_REGION: &str = "
+module system.test.recordregion version 1.5 profile full;
+
+import capability system.ipc.Endpoint as serve;
+
+resource [fuel: 65536, stack: 16KiB, allocation: 4KiB, tasks: 1, workers: 1,
+          sync: 0, shared: 0B, cleanup: 0, recursion: 8, imports: 4]
+
+extern fn endpoint_receive_call_region(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCallRegion, i64> uses [serve];
+
+pub fn main() -> i64 uses [serve] {
+    match (endpoint_receive_call_region(serve)) {
+        Ok(request) => { return 1i64; }
+        Err(status) => { return status; }
+    }
+}
+";
+
+    #[test]
+    fn a_schema_record_holding_a_region_is_accepted_at_the_minor_that_added_one() {
+        let errors = errors_for(RECORD_WITH_A_REGION);
+        assert!(
+            errors.is_empty(),
+            "a 1.5 module naming ReceivedCallRegion checks clean: {errors:?}"
+        );
+    }
+
+    /// The same module claiming 1.4, which does not have `RegionFamily`.
+    ///
+    /// **This is the negative ADR-0098 §2a requires.** The module writes no region
+    /// type at all — it names a *record* — so without the field-minor propagation
+    /// in [`checker::record_representation_minor`] a 1.4 artifact would be handed a
+    /// 1.5 value with nothing refusing it.
+    #[test]
+    fn a_schema_record_holding_a_region_needs_the_minor_that_added_one() {
+        let text = RECORD_WITH_A_REGION.replace("version 1.5", "version 1.4");
+        let errors = errors_for(&text);
+        let gated: Vec<&Diagnostic> = errors
+            .iter()
+            .filter(|d| d.code() == "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR")
+            .filter(|d| d.field("feature") == Some("capability representation"))
+            .collect();
+        assert!(
+            !gated.is_empty(),
+            "expected E1608 for the record's region field, got: {errors:?}"
+        );
+        assert_eq!(gated[0].field("requires"), Some("5"));
+        assert_eq!(gated[0].field("declared"), Some("4"));
+    }
+
+    /// And the wrapper does not lower the requirement: `carried` is an
+    /// `Option<system.ipc.Endpoint>`, which needs nothing, while `region` is an
+    /// `Option<Region<u8>>`, which needs 1.5. A walk that stopped at `Option`
+    /// would see neither.
+    #[test]
+    fn an_option_does_not_hide_the_representation_inside_it() {
+        use crate::interfaces::{representation_of_schema_field, Representation};
+        assert!(matches!(
+            representation_of_schema_field("Option<Region<u8>>"),
+            Some(Representation::RegionFamily)
+        ));
+        assert!(matches!(
+            representation_of_schema_field("Region<u8>"),
+            Some(Representation::RegionFamily)
+        ));
+        assert!(representation_of_schema_field("Option<system.ipc.Endpoint>").is_none());
+        assert!(representation_of_schema_field("u64").is_none());
+    }
+
     #[test]
     fn a_direct_interface_effect_admits_a_runtime_obtained_capability() {
         let errors = errors_for(RUNTIME_EFFECT);

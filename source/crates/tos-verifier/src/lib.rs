@@ -867,8 +867,87 @@ fn check_table_order(module: &Module) -> Result<(), Finding> {
 
 // ------------------------------------------------------------------ step 5
 
+/// The largest representation minor reachable from one record field's type.
+///
+/// **A bounded reachability walk over the module's own table**, because a field
+/// type is a graph and not a single node: `Option<Region<u8>>` reaches a region
+/// one edge down, and `Result<Region<u8>, i64>` would reach one the same way. The
+/// bound is the table's own length — a cyclic table is refused by the reference
+/// walk in [`check_types_and_imports`], and this must terminate before it gets
+/// there.
+fn field_representation_minor(module: &Module, field: usize) -> Option<u32> {
+    let mut seen = alloc::vec![false; module.types.len()];
+    let mut pending = alloc::vec![field];
+    let mut requires: Option<u32> = None;
+    while let Some(index) = pending.pop() {
+        let Some(slot) = seen.get_mut(index) else {
+            continue;
+        };
+        if *slot {
+            continue;
+        }
+        *slot = true;
+        let Some(definition) = module.types.get(index) else {
+            continue;
+        };
+        if let Some(minor) = representation::minor_of(representation::family_of(definition)) {
+            requires = Some(requires.map_or(minor, |held: u32| held.max(minor)));
+        }
+        pending.extend(referenced_types(definition));
+    }
+    requires
+}
+
 fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Result<(), Finding> {
     for (index, definition) in module.types.iter().enumerate() {
+        // **A record whose field carries a non-default representation requires
+        // that representation's minor of the module naming it** (ADR-0085 §13,
+        // §17.7; ADR-0098 §2a).
+        //
+        // The capability-position rule below catches an operation *filled* by a
+        // representation. It cannot catch a module that merely **holds** one: a
+        // schema record with a `Region<u8>` field hands its reader a region while
+        // no signature in the artifact names a region type, so an artifact
+        // declaring 1.4 and naming `system.ipc.ReceivedCallRegion` would otherwise
+        // pass every rule there is.
+        //
+        // **Keyed on a record's fields and not on the table at large**, which is
+        // the difference between this rule and a wrong one: `Region` and
+        // `DmaRegion` are TOS Core V1 *types* and appear in the tables of modules
+        // far older than any representation minor. What ADR-0085 added was filling
+        // a capability position with one, and what this adds is holding one inside
+        // a record — two ways of coming to have a value, both gated, neither
+        // standing in for the other.
+        if let TypeDef::Nominal {
+            kind: tos_ir::NominalKind::Record,
+            fields,
+            ..
+        } = definition
+        {
+            for field in fields {
+                // **Through the field's own type, not only at it.** The record
+                // that raised this rule declares `Option<Region<u8>>`: the region
+                // is one constructor down, and a check that looked only at the
+                // field's outermost type would see an `Option` and nothing else.
+                // So the field's whole reachable type graph is asked, bounded by
+                // the table it is walked in.
+                let Some(requires) = field_representation_minor(module, *field) else {
+                    continue;
+                };
+                if !declares_minor_at_least(&module.header.language_version, requires) {
+                    return Err(Finding::new(
+                        "V2010_TYPE",
+                        alloc::format!("type {index}"),
+                        alloc::format!(
+                            "a record field holds the capability representation of \
+                             TOS Core 1.{requires}, which the declared language \
+                             version {} does not have",
+                            module.header.language_version
+                        ),
+                    ));
+                }
+            }
+        }
         for referenced in referenced_types(definition) {
             if !module.has_type(referenced) {
                 return Err(Finding::new(
