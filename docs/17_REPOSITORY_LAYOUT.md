@@ -147,6 +147,16 @@ Accepted ADRs are immutable except spelling/link corrections. Superseding decisi
 
 Non-normative research records, including language evaluation, patent landscape and name search.
 
+### `docs/proposed/`
+
+Drafts of versioned interface contracts that a `Proposed` ADR would accept.
+They live here rather than under `source/interfaces/` because `ADR-0020`'s
+admission rule and `scripts/tests/check-interface-contract-authority.sh` require
+every contract in that tree to carry the accepted status and appear in
+`docs/SPECIFICATION_SOURCES.txt` — so a draft filed there would be authority a
+document assigned to itself. A draft states that it is proposed, names the ADR
+that would accept it, and moves to `source/interfaces/` on acceptance.
+
 ### `docs/language/`
 
 Programmer-facing language guides, learning material, canonical proposed or
