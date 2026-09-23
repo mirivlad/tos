@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `b707ff0b53974ff2349742c1a3c6b118ef93139dfcd973382dd0e8024e5dc0a1`\
+Source-manifest SHA-256: `ec848b33304e595306a50f216012ff42dc11d208fd7e4ce5a5399f94bb9ed779`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -11902,6 +11902,16 @@ Accepted ADRs are immutable except spelling/link corrections. Superseding decisi
 ### `docs/research/`
 
 Non-normative research records, including language evaluation, patent landscape and name search.
+
+### `docs/proposed/`
+
+Drafts of versioned interface contracts that a `Proposed` ADR would accept.
+They live here rather than under `source/interfaces/` because `ADR-0020`'s
+admission rule and `scripts/tests/check-interface-contract-authority.sh` require
+every contract in that tree to carry the accepted status and appear in
+`docs/SPECIFICATION_SOURCES.txt` — so a draft filed there would be authority a
+document assigned to itself. A draft states that it is proposed, names the ADR
+that would accept it, and moves to `source/interfaces/` on acceptance.
 
 ### `docs/language/`
 
