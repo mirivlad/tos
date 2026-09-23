@@ -165,6 +165,8 @@ required rather than advisory.
   second interface needs a second object and a way for a client to ask which one
   it wants. At Stage 4's bounds — `MAX_ENDOWMENT = 4`, `MAX_ENDPOINTS = 4` — that
   does not fit, and it is not needed: ADR-0093's scope is one interface.
+  **See §8: one of those two numbers has since moved, and it changes nothing
+  here.**
 - **Whether a nominal interface should survive delegation or endowment in
   general.** That is a real question about Stage 3's capability model and it is
   **ADR-0096**, raised separately and deliberately not answered here. Stage 4
@@ -192,3 +194,36 @@ required rather than advisory.
   exactly this topology; what was missing was the contract saying so and the
   negative evidence. That is the shape of a decision that narrows rather than
   extends.
+
+## 8. Clarification, 2026-09-23: the endpoint bound named in §6 has moved
+
+**§6 is left as it was written, and this says what changed.** When this decision
+was accepted the implementation bound was `MAX_ENDPOINTS = 4`, and §6 cited it as
+one reason a second published interface did not fit at Stage 4.
+
+**The Stage 4 service-lifecycle evidence raised the static endpoint table to six**
+(`block-lifecycle.sh`, `nucleus/src/ipc.rs`). The two additional objects exist for
+reasons that are nothing to do with publishing a second interface:
+
+- **one endpoint per service generation.** The predecessor and the successor must
+  hold *different* endpoint objects, or the old capability would have been
+  repaired into a name for the successor — which ADR-0093 §3a answers 5 and 7
+  forbid, and which case C exists to distinguish;
+- **the supervisor→registry withdrawal authority.** ADR-0093 §3a answer 4 requires
+  the registry to learn of the death, and §4's P3 answer 4 admits learning it as a
+  notification from whoever holds the supervisory relationship. That is a third
+  authority on a third object rather than a second meaning loaded onto the
+  publication or lookup channel.
+
+**What did not change.** `IPC_V1` §3's message bounds — 256 inline bytes, four
+capabilities, two regions — are untouched, and so is the queue depth: §7's rule is
+that a queue is never grown to accept a message, and a larger statically reserved
+table grows no queue. No semantics, no ABI operation and no capability kind
+changed.
+
+**And what this is not.** The additional capacity **does not introduce or imply a
+second publication class.** §2 and §3 are unchanged: an object whose identity fixed
+two publishable interfaces would fix neither, and this decision still defines
+**exactly one** published interface at Stage 4 — `block.device.v1`. A second one
+remains undecided, and the spare endpoints are not an argument for it: they are
+held by two generations of one service and by a withdrawal channel.

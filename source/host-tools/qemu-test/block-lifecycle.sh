@@ -51,12 +51,14 @@ TARGET="$ROOT/target/test-block-lifecycle"
 
 # The supervisor: three children created, A's ending collected, publication A
 # withdrawn, and the successor started.
-EXPECTED_SUPERVISOR="i64:63"
-# The registry: registration, lookup, **withdrawal**, registration, lookup.
-EXPECTED_REGISTRY="i64:31"
-# The client: two lookups, two exchanges, a region, all 512 bytes, and a stale
-# call that was cancelled rather than served.
-EXPECTED_CLIENT="i64:127"
+EXPECTED_SUPERVISOR="i64:126"
+# The registry: registration, lookup, withdrawal, **a lookup answered with
+# nothing while the released entry could not be delivered**, registration, lookup.
+EXPECTED_REGISTRY="i64:63"
+# The client: three lookups — one of them in the interval with no publication —
+# two exchanges, a region, all 512 bytes, and a stale call cancelled rather than
+# served.
+EXPECTED_CLIENT="i64:255"
 SECTOR_BYTES=512
 # Stage 4D-2's twenty device-side facts. The **writer** proves nineteen: a write
 # returns no data to inspect, so `PROVED_SECTOR_READ` is not among them, and that
@@ -129,21 +131,26 @@ done
 [ "$(count '^TOS\.RUN\.REQUEST binding=budget interface=platform\.pci\.Bus ')" = 0 ] ||
     fail "the client's budget binding resolved to a PCI bus"
 
-# --- 1/2: the client obtained endpoint A, and A served a write then ended -------
-[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_region status=0$')" = 3 ] ||
-    fail "the three region sends did not all succeed: two from the client, one from the reader"
-[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_region status=0$')" = 3 ] ||
-    fail "the three region receives did not all succeed"
-
-# --- 3: publication A was withdrawn, and before the successor existed -----------
-# The registry's own release of the capability it held for A. **This is what makes
-# the entry stop existing**: not a flag, not a later entry shadowing it — the name
-# is gone, and the status is in the audit record.
+# --- 3: publication A was withdrawn, and it was A ------------------------------
+# **`capability_release` says a release happened, not which capability it was.** So
+# the registry goes on to attempt the delivery it used to be able to make: on the
+# next lookup it sends `first_registration.carried`, and the nucleus refuses it
+# because the handle resolves to nothing. That refusal is a fact about publication A
+# and about no other capability — a registry that had released something else and
+# kept A would have succeeded — and it happens **before** any second registration,
+# so a later entry cannot satisfy it by shadowing the old one.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=capability_release status=0$')" -ge 1 ] ||
     fail "no capability was released, so the registry never let go of publication A"
-# And the ordering: the registry replied to the withdrawal before the second
-# instance began. A single `python3` pass, because ordering is the evidence.
-python3 - "$LOG" <<'ORDER' || fail "the withdrawal did not complete before the successor started"
+# Exactly one refused delivery, and three that succeed: the registry's two answers
+# and the launcher's two handovers are four sends in all.
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_carrying status=0$')" = 4 ] ||
+    fail "the four capability handovers did not all succeed"
+refused_sends="$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_carrying status=-[0-9]*$')"
+[ "$refused_sends" = 1 ] ||
+    fail "expected exactly one refused delivery of the withdrawn publication, saw $refused_sends"
+
+# And the order, which is the whole of the claim. A single `python3` pass.
+python3 - "$LOG" <<'ORDER' || fail "the withdrawal evidence is missing or out of order"
 import re
 import sys
 
@@ -151,12 +158,18 @@ events = [line.rstrip("\r\n") for line in open(sys.argv[1], encoding="utf-8", er
 steps = [
     ("the first service instance began",
      re.compile(r"^TOS\.RUN\.BEGIN path=system/service/block\.tos")),
-    ("it ended, and its process was reclaimed",
+    ("the registry delivered its endpoint to the client",
+     re.compile(r"^TOS\.RUN\.INTERFACE operation=endpoint_send_carrying status=0$")),
+    ("that instance ended, and its process was reclaimed",
      re.compile(r"^TOS\.RUN\.PROCESS_RECLAIMED ")),
     ("the registry released the name it held for it",
      re.compile(r"^TOS\.RUN\.INTERFACE operation=capability_release status=0$")),
-    ("and only then did the successor begin",
+    ("and could no longer deliver it: the next lookup's delivery was refused",
+     re.compile(r"^TOS\.RUN\.INTERFACE operation=endpoint_send_carrying status=-[0-9]+$")),
+    ("only then did the successor begin",
      re.compile(r"^TOS\.RUN\.BEGIN path=system/service/block\.tos")),
+    ("and only then was a second endpoint delivered",
+     re.compile(r"^TOS\.RUN\.INTERFACE operation=endpoint_send_carrying status=0$")),
 ]
 at = 0
 for label, pattern in steps:
@@ -168,6 +181,12 @@ for label, pattern in steps:
     at += 1
 sys.exit(0)
 ORDER
+
+# --- 1/2: the client obtained endpoint A, and A served a write then ended -------
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_region status=0$')" = 3 ] ||
+    fail "the three region sends did not all succeed: two from the client, one from the reader"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_region status=0$')" = 3 ] ||
+    fail "the three region receives did not all succeed"
 
 # --- 6/7: two claims of the same function, at different generations -------------
 # ADR-0081 §14: the assignment ends when the last handle and the last descendant
@@ -270,6 +289,11 @@ echo "  then ended, still holding the function, window, source and DMA region"
 echo "  the supervisor collected A's ending, **withdrew publication A** — the"
 echo "  registry released the only name it held for A, and replied before any"
 echo "  successor existed — and only then created instance B"
+echo "  that the withdrawn publication was **A's** is not taken from the release's"
+echo "  own status, which names no capability: the registry then answered a lookup"
+echo "  while holding nothing, and its attempt to deliver what it used to hold was"
+echo "  refused by the nucleus — before any second registration, so no later entry"
+echo "  can satisfy it by shadowing the old one"
 echo "  B claimed the same function at a **different assignment generation**,"
 echo "  drove DEVICE_STATUS to 0 and read it back as 0, initialized VirtIO again"
 echo "  in the ordinary §3.1.1 order, and rebuilt its queue,"

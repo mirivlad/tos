@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `e4084b1b0521f1393339a6f8693fa3cb789e27a96fe0dc50bf1c07392f1272e5`\
+Source-manifest SHA-256: `b707ff0b53974ff2349742c1a3c6b118ef93139dfcd973382dd0e8024e5dc0a1`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -458,9 +458,8 @@ registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
 capability that crossed in a message (`qemu_capability_transfer`, ADR-0094). The
 device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
-It does **not** prove queue multiplexing, scheduling, filesystem integration, a
-generic driver subsystem, restart and republication (ADR-0093 case C), or writing
-through the client/service path. None of those is designed.
+It does **not** prove queue multiplexing, scheduling, filesystem integration or a
+generic driver subsystem. None of those is designed.
 
 **And since 2026-09-23 a service can die and be replaced without losing data.** A
 block service serves a write and ends still holding the function, the mapped
@@ -474,6 +473,15 @@ bytes the first instance wrote come back. That is ADR-0092 R1a's T1 recovery and
 ADR-0093's case C, and the stale capability is the experiment: the client still
 holds the name its first lookup gave it, calls it while the successor is waiting
 for a request, and is not served — so the name was never repaired.
+
+**Read that at the width of the fixture, which is narrow.** A write and a read now
+cross the client/service path, so the tree no longer merely reads; but the request
+encoding that carries them is **one fixture's**, and no normative general
+`block.device.v1` wire protocol has been accepted because it exists — ADR-0093 §9
+still leaves the wire shape of `read`, `write` and `capacity` open. One sector per
+request, no multi-sector scheduling, no filesystem, and nothing written is stored
+anywhere but the sector: there is no persistent object or state storage and no
+capsule-to-repository handoff.
 
 **What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
 separately rather than collected under one word:
@@ -34824,6 +34832,8 @@ required rather than advisory.
   second interface needs a second object and a way for a client to ask which one
   it wants. At Stage 4's bounds — `MAX_ENDOWMENT = 4`, `MAX_ENDPOINTS = 4` — that
   does not fit, and it is not needed: ADR-0093's scope is one interface.
+  **See §8: one of those two numbers has since moved, and it changes nothing
+  here.**
 - **Whether a nominal interface should survive delegation or endowment in
   general.** That is a real question about Stage 3's capability model and it is
   **ADR-0096**, raised separately and deliberately not answered here. Stage 4
@@ -34851,6 +34861,39 @@ required rather than advisory.
   exactly this topology; what was missing was the contract saying so and the
   negative evidence. That is the shape of a decision that narrows rather than
   extends.
+
+## 8. Clarification, 2026-09-23: the endpoint bound named in §6 has moved
+
+**§6 is left as it was written, and this says what changed.** When this decision
+was accepted the implementation bound was `MAX_ENDPOINTS = 4`, and §6 cited it as
+one reason a second published interface did not fit at Stage 4.
+
+**The Stage 4 service-lifecycle evidence raised the static endpoint table to six**
+(`block-lifecycle.sh`, `nucleus/src/ipc.rs`). The two additional objects exist for
+reasons that are nothing to do with publishing a second interface:
+
+- **one endpoint per service generation.** The predecessor and the successor must
+  hold *different* endpoint objects, or the old capability would have been
+  repaired into a name for the successor — which ADR-0093 §3a answers 5 and 7
+  forbid, and which case C exists to distinguish;
+- **the supervisor→registry withdrawal authority.** ADR-0093 §3a answer 4 requires
+  the registry to learn of the death, and §4's P3 answer 4 admits learning it as a
+  notification from whoever holds the supervisory relationship. That is a third
+  authority on a third object rather than a second meaning loaded onto the
+  publication or lookup channel.
+
+**What did not change.** `IPC_V1` §3's message bounds — 256 inline bytes, four
+capabilities, two regions — are untouched, and so is the queue depth: §7's rule is
+that a queue is never grown to accept a message, and a larger statically reserved
+table grows no queue. No semantics, no ABI operation and no capability kind
+changed.
+
+**And what this is not.** The additional capacity **does not introduce or imply a
+second publication class.** §2 and §3 are unchanged: an object whose identity fixed
+two publishable interfaces would fix neither, and this decision still defines
+**exactly one** published interface at Stage 4 — `block.device.v1`. A second one
+remains undecided, and the spare endpoints are not an argument for it: they are
+held by two generations of one service and by a withdrawal channel.
 
 <!-- END docs/adr/0095-publication-authority-is-a-dedicated-channel.md -->
 

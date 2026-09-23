@@ -6,7 +6,9 @@
 //   look up            -> endpoint A
 //   compose a pattern in a region of its own, freeze it
 //   send it to A, then call A: write sector 8
-//   look up again      -> blocks until the successor has published -> endpoint B
+//   look up again      -> answered while there is no publication at all, and
+//                         nothing is delivered
+//   look up a third time -> blocks until the successor has published -> endpoint B
 //   send a region to B, then call B: read sector 8
 //   receive a region   -> **all 512 bytes are the pattern A wrote**
 //   call endpoint A    -> must not be served, while B is waiting to serve
@@ -160,16 +162,30 @@ fn look_up() -> Result<system.ipc.Endpoint, i64>
     }
 }
 
-//  1  the first lookup was answered
-//  2  the write through the first instance was acknowledged
-//  4  the second lookup was answered — which could not return until the successor
-//     had published
-//  8  the read through the successor was acknowledged
-// 16  a region arrived on this client's inbox
-// 32  **all 512 bytes are the pattern written before the first instance died**
-// 64  and the name the first lookup gave is still a name for the instance that is
-//     gone: a call on it was cancelled rather than served, while the successor was
-//     waiting for a request
+// Asks, and takes nothing off the inbox.
+//
+// **The lookup that lands in the interval with no publication.** The registry's
+// sequence puts it after the withdrawal and before the successor's registration,
+// so this is where "there is nothing to hand out" is answered — and what makes it
+// answerable at all is that a reply and a delivery are two separate things here
+// (`ADR-0094` §11: an answer cannot carry a capability). A lookup that delivered
+// nothing still gets its reply, and this client does not wait for an inbox message
+// that is not coming.
+fn probe() -> i64 uses [registry, reply_to, system.ipc.Endpoint] {
+    return endpoint_call_carrying(reply_to, registry, 0u64);
+}
+
+//   1  the first lookup was answered
+//   2  the write through the first instance was acknowledged
+//   4  a lookup was answered in the interval with **no publication in existence**
+//   8  the third lookup was answered — which could not return until the successor
+//      had published
+//  16  the read through the successor was acknowledged
+//  32  a region arrived on this client's inbox
+//  64  **all 512 bytes are the pattern written before the first instance died**
+// 128  and the name the first lookup gave is still a name for the instance that is
+//      gone: a call on it was cancelled rather than served, while the successor was
+//      waiting for a request
 pub fn main() -> i64
     uses [registry, inbox, reply_to, budget, system.ipc.Endpoint,
           system.memory.Region]
@@ -182,27 +198,34 @@ pub fn main() -> i64
             if (exchange(first, WRITE_REQUEST) != OK) { return -1001i64; }
             found = found + 2i64;
 
+            // **The interval with no publication.** This lookup is answered after
+            // the withdrawal and before the successor registers, because that is
+            // where the registry's own sequence puts it — and it is answered with
+            // nothing, which is why no inbox message is waited for.
+            if (probe() != OK) { return -1501i64; }
+            found = found + 4i64;
+
             // **This blocks until the successor has published.** The registry
             // answers lookups in order and will not reach this one until it has
             // taken a second registration, so the boot's ordering is the
             // registry's rather than a guess about timing.
             match (look_up()) {
                 Ok(second) => {
-                    found = found + 4i64;
-                    if (exchange(second, READ_REQUEST) != OK) { return -2001i64; }
                     found = found + 8i64;
+                    if (exchange(second, READ_REQUEST) != OK) { return -2001i64; }
+                    found = found + 16i64;
                     match (endpoint_receive_region(inbox)) {
                         Ok(payload) => {
-                            found = found + 16i64;
+                            found = found + 32i64;
                             if (agreeing(borrow payload) == SECTOR_COUNT) {
-                                found = found + 32i64;
+                                found = found + 64i64;
                             }
                         }
                         Err(refused) => { return refused - 3000i64; }
                     }
                     // --- the stale name, with the successor alive and waiting ---
                     let stale: i64 = endpoint_call_word_carrying(reply_to, first, READ_REQUEST);
-                    if (stale == E_CANCELLED) { found = found + 64i64; }
+                    if (stale == E_CANCELLED) { found = found + 128i64; }
                     if (stale == OK) { return -4001i64; }
                 }
                 Err(refused) => { return refused - 2500i64; }

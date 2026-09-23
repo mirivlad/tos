@@ -276,12 +276,17 @@ fn start(plan: system.process.LaunchPlan, entry: string, grant: u64) -> i64
     }
 }
 
-//   1  the registry was created
-//   2  service A was created
-//   4  the client was created
-//   8  A's ending was collected — `wait_child` returned, so A has gone
-//  16  publication A was withdrawn, and the registry replied before B existed
-//  32  service B was created
+//   2  the registry was created
+//   4  service A was created
+//   8  the client was created
+//  16  A's ending was collected — `wait_child` returned, so A has gone
+//  32  publication A was withdrawn, and the registry replied before B existed
+//  64  service B was created
+//
+// **The values start at two rather than one**, which is not decoration: the
+// registry's account has six facts too, and two processes reporting the same
+// number in one journal would let a gate counting one of them be satisfied by the
+// other. Doubling one of the two is the smallest way to keep them apart.
 pub fn main() -> i64
     uses [process, memory, publish_full, publish_call, lookup_both, withdraw_full,
           withdraw_call, serve_a, serve_b, inbox_full, device,
@@ -312,15 +317,15 @@ pub fn main() -> i64
                             if (start(registry, "system/registry/nameservice.tos", CHILD_GRANT) != OK) {
                                 return -8101i64;
                             }
-                            found = found + 1i64;
+                            found = found + 2i64;
                             if (start(first, "system/service/block.tos", SERVICE_GRANT) != OK) {
                                 return -8102i64;
                             }
-                            found = found + 2i64;
+                            found = found + 4i64;
                             if (start(client, "system/client/block.tos", CHILD_GRANT) != OK) {
                                 return -8103i64;
                             }
-                            found = found + 4i64;
+                            found = found + 8i64;
 
                             return found + restart();
                         }
@@ -342,7 +347,7 @@ fn restart() -> i64
     let mut found: i64 = 0i64;
 
     match (process_wait_child(process, BLOCKING)) {
-        Ok(ending) => { found = found + 8i64; }
+        Ok(ending) => { found = found + 16i64; }
         Err(uncollected) => { return uncollected - 8200i64; }
     }
 
@@ -350,7 +355,7 @@ fn restart() -> i64
     // than a send: the registry answers only after it has let go of the name it
     // held for A, so when this returns there is no publication and no successor.
     if (endpoint_call(withdraw_call, 0u64) != OK) { return -8301i64; }
-    found = found + 16i64;
+    found = found + 32i64;
 
     match (second_service_plan()) {
         Ok(second) => {
@@ -361,7 +366,7 @@ fn restart() -> i64
             if (start(second, "system/service/block.tos", SERVICE_GRANT) != OK) {
                 return -8403i64;
             }
-            found = found + 32i64;
+            found = found + 64i64;
             return found;
         }
         Err(refused) => { return refused - 8500i64; }
