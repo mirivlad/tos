@@ -53,6 +53,7 @@ test-name-service = []
 # of the machine. The PCI root goes to exactly one of the four.
 test-block-service = []
 test-region-transfer-text = []
+test-block-lifecycle = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after

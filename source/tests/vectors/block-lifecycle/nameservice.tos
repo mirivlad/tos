@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The interface registry across one service restart (ADR-0093 P3, as ADR-0095
+// amended it).
+//
+// **Three authorities, three endpoints, and that is the whole of its policy.**
+// Reaching `publish` is the right to publish `block.device.v1`; `lookup` is a
+// different authority and so a different object; `withdraw` is the supervisor's
+// alone, which is the notification ADR-0093 §3b admits "from whoever has" the
+// supervisory relationship. A process that can name none of them can do none of
+// it, and this module consults no list.
+//
+// Its sequence is fixed, and the order is what makes the boot's ordering provable
+// rather than hoped for:
+//
+//   1  a registration arrives on `publish`      -> the entry is A's endpoint
+//   2  a lookup arrives                          -> A's endpoint is delivered
+//   3  a withdrawal arrives on `withdraw`        -> **the entry is released**
+//   4  a registration arrives on `publish`       -> the entry is B's endpoint
+//   5  a lookup arrives                          -> B's endpoint is delivered
+//
+// **Step 3 is where publication A stops existing, and it is observable.** The
+// entry is a capability this module holds; withdrawing it is
+// `capability_release`, whose status is in the audit record. After it this
+// registry holds no name for any service endpoint at all — so between steps 3 and
+// 4 there is nothing it could hand out, and it says so in its own account.
+//
+// **Nothing is ever retargeted.** A lookup answers with the capability this
+// module currently holds, and the capabilities it held for A and for B name
+// different endpoint objects. A client that keeps an answer from step 2 keeps a
+// name for A's endpoint — ADR-0093 §3a.5 — and this module could not change that
+// if it wanted to: a capability names an object, and no operation of
+// `CAPABILITY_V1` §2 makes one name a different one.
+//
+// **An answer cannot carry a capability**, so a lookup hands over a channel and
+// this module sends the registered capability to it before replying.
+
+module system.registry.nameservice version 1.5 profile full;
+
+import capability system.ipc.Endpoint as publish;
+import capability system.ipc.Endpoint as lookup;
+import capability system.ipc.Endpoint as withdraw;
+
+resource [
+    fuel: 32768,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [system.ipc.Endpoint];
+
+extern fn endpoint_send_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [system.ipc.Endpoint, system.ipc.Endpoint];
+
+extern fn endpoint_reply(
+    cap: system.ipc.Reply, length: u64
+) -> i64 uses [system.ipc.Reply];
+
+// How the entry stops existing. A status this module reads and the audit record
+// shows, rather than a flag only this module knows about.
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+
+//  1  the first registration arrived, carrying a capability
+//  2  the first lookup was answered with it
+//  4  the withdrawal arrived and the entry was **released** — after this the
+//     registry holds no service endpoint at all
+//  8  the second registration arrived, carrying a different capability
+// 16  the second lookup was answered with that one
+pub fn main() -> i64
+    uses [publish, lookup, withdraw, system.ipc.Endpoint, system.ipc.Reply]
+{
+    let mut found: i64 = 0i64;
+
+    match (endpoint_receive_call(publish)) {
+        Ok(first_registration) => {
+            found = found + 1i64;
+            if (endpoint_reply(first_registration.reply, 0u64) != OK) { return -1001i64; }
+
+            match (endpoint_receive_call(lookup)) {
+                Ok(asker) => {
+                    // `asker.carried` is the client's return channel and is not
+                    // remembered: what this registry holds is one entry, and a
+                    // channel somebody asked on is not it.
+                    if (endpoint_send_carrying(first_registration.carried, asker.carried, 0u64) == OK) {
+                        found = found + 2i64;
+                    }
+                    if (endpoint_reply(asker.reply, 0u64) != OK) { return -1002i64; }
+                }
+                Err(refused) => { return refused - 2000i64; }
+            }
+
+            // --- the withdrawal ----------------------------------------------
+            match (endpoint_receive_call(withdraw)) {
+                Ok(notice) => {
+                    // **The entry stops existing here.** Not marked, not shadowed
+                    // by a later one: released, so this process holds no name for
+                    // A's endpoint and has nothing to hand anybody.
+                    if (capability_release(first_registration.carried) != OK) {
+                        return -3001i64;
+                    }
+                    found = found + 4i64;
+                    // The reply is what tells the supervisor it may start a
+                    // successor: it is sent *after* the release, so a successor
+                    // cannot exist while the old entry does.
+                    if (endpoint_reply(notice.reply, 0u64) != OK) { return -3002i64; }
+                }
+                Err(refused) => { return refused - 3100i64; }
+            }
+
+            // --- and the successor's publication ------------------------------
+            match (endpoint_receive_call(publish)) {
+                Ok(second_registration) => {
+                    found = found + 8i64;
+                    if (endpoint_reply(second_registration.reply, 0u64) != OK) {
+                        return -4001i64;
+                    }
+                    match (endpoint_receive_call(lookup)) {
+                        Ok(second_asker) => {
+                            if (endpoint_send_carrying(
+                                second_registration.carried, second_asker.carried, 0u64
+                            ) == OK) {
+                                found = found + 16i64;
+                            }
+                            if (endpoint_reply(second_asker.reply, 0u64) != OK) {
+                                return -4002i64;
+                            }
+                        }
+                        Err(refused) => { return refused - 5000i64; }
+                    }
+                }
+                Err(refused) => { return refused - 4100i64; }
+            }
+        }
+        Err(refused) => { return refused - 6000i64; }
+    }
+
+    return found;
+}

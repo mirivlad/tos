@@ -497,6 +497,22 @@ region_ipc_payload() {
 qemu_block_data_path() {
     bash "$ROOT/source/host-tools/qemu-test/block-data-path.sh"
 }
+# **The Stage 4 Branch-A persistence criterion, and ADR-0093 case C.** A block
+# service serves a write and ends still holding the function, window, interrupt
+# source and DMA region; the supervisor collects its ending, withdraws its
+# publication from the registry and only then creates a successor; the successor
+# claims the same function at a new assignment generation, drives VirtIO
+# `DEVICE_STATUS` to 0 (ADR-0092 R1a's T1), initializes again and republishes; and
+# a fresh lookup gives the client an endpoint through which all 512 bytes the first
+# instance wrote come back.
+#
+# **The stale capability is the experiment.** The client still holds the name the
+# first lookup gave it, and calls it while the successor is waiting for a request.
+# It is not served — both waits are cancelled — so the name was never repaired
+# (ADR-0093 §3a.5).
+qemu_block_lifecycle() {
+    bash "$ROOT/source/host-tools/qemu-test/block-lifecycle.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -727,6 +743,7 @@ gate qemu       full-only "QEMU a client looks a service up"            qemu_nam
 gate qemu       full-only "QEMU publishing needs the publish endpoint" qemu_publication_authority
 gate qemu       full-only "QEMU a region payload crosses IPC"    region_ipc_payload
 gate qemu       full-only "QEMU a sector crosses IPC as a region"  qemu_block_data_path
+gate qemu       full-only "QEMU a successor restarts the device path" qemu_block_lifecycle
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

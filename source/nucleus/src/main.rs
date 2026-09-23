@@ -37,6 +37,7 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-name-service") as usize
     + cfg!(feature = "test-block-service") as usize
     + cfg!(feature = "test-region-transfer-text") as usize
+    + cfg!(feature = "test-block-lifecycle") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1695,6 +1696,132 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // carries `claim` and names no function, because which device is worth
     // claiming is policy and a launcher that picked one would be the nucleus
     // choosing a device (ADR-0079 §5). The client's plan names none of it.
+    // ADR-0092 R1a and ADR-0093 P3 as ADR-0095 amended it: one boot in which a
+    // block service dies and a successor restarts the device-facing path.
+    //
+    // **Six endpoints, and the three the registry holds are three authorities.**
+    // Reaching `publish` is the right to publish; `lookup` is a different
+    // authority; and `withdraw` is the supervisor's alone — ADR-0093 §3b admits a
+    // notification "from whoever has" the supervisory relationship, and giving it
+    // a channel of its own is what keeps it from being a second meaning on the
+    // publication channel. The two services hold **different** endpoint objects,
+    // because a successor that inherited its predecessor's would be the repaired
+    // capability §3a.5 forbids.
+    //
+    // **This boot process is a supervisor.** It holds `wait_child` as well as
+    // `create` (ADR-0067): it must learn that service A ended before it may
+    // create service B, because a process slot is reused and creating B first
+    // would be a fifth process. Restart policy is canonical supervisor text
+    // (ADR-0077 §8) and this is that text's endowment, nothing more.
+    #[cfg(feature = "test-block-lifecycle")]
+    let first_endowment = {
+        let (
+            Some(publish),
+            Some(lookup),
+            Some(withdraw),
+            Some(serve_a),
+            Some(serve_b),
+            Some(inbox),
+        ) = (
+            ipc::create(),
+            ipc::create(),
+            ipc::create(),
+            ipc::create(),
+            ipc::create(),
+            ipc::create(),
+        )
+        else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let Some(bus) = pci::endow_root(0, 0, 255) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-pci-root\r\n");
+            mem_fail();
+        };
+        tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
+        tos_serial::puts(b" asserted_by=launcher\r\n");
+        pci::qualify_dma(
+            pci::STAGE4_TARGET.0,
+            pci::STAGE4_TARGET.1,
+            pci::STAGE4_TARGET.2,
+            pci::STAGE4_TARGET.3,
+        );
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE
+                    | tos_launch::RIGHT_WAIT_CHILD
+                    | tos_launch::RIGHT_TERMINATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"publish_full"),
+                object: capability::Object::Endpoint(publish),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"publish_call"),
+                object: capability::Object::Endpoint(publish),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            // One name carrying both, because the registry is endowed `receive`
+            // from it and the client `call`, and a plan takes what it is asked for
+            // intersected with what the creator holds.
+            capability::Endowment::Existing {
+                binding: binding(b"lookup_both"),
+                object: capability::Object::Endpoint(lookup),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"withdraw_full"),
+                object: capability::Object::Endpoint(withdraw),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"withdraw_call"),
+                object: capability::Object::Endpoint(withdraw),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            // **Three rights on one name per service.** `receive` is the service's
+            // own role; `send | call` is the name it publishes, so a client may
+            // hand it a region and call it; and the supervisor uses that same
+            // `send` to queue the registry's publication capability on the
+            // endpoint *before* the service exists — ADR-0077 §2 bounds a plan at
+            // four and the service needs five, and a queued message waits.
+            capability::Endowment::Existing {
+                binding: binding(b"serve_a"),
+                object: capability::Object::Endpoint(serve_a),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"serve_b"),
+                object: capability::Object::Endpoint(serve_b),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"inbox_full"),
+                object: capability::Object::Endpoint(inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"device"),
+                object: capability::Object::PciBus(bus),
+                rights: tos_launch::RIGHT_CLAIM,
+                scope: 0,
+            },
+        ]
+    };
     #[cfg(feature = "test-block-service")]
     let first_endowment = {
         let (Some(publish), Some(lookup), Some(service), Some(inbox)) =
@@ -2125,6 +2252,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-capability-transfer",
         feature = "test-name-service",
         feature = "test-block-service",
+        feature = "test-block-lifecycle",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -2160,7 +2288,9 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-capability-transfer",
         feature = "test-name-service",
         feature = "test-block-service",
+        feature = "test-block-lifecycle",
         feature = "test-region-transfer-text",
+        feature = "test-block-lifecycle",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-bundle-launch",

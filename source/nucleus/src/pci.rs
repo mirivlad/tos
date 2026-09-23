@@ -550,7 +550,8 @@ unsafe fn table() -> &'static mut [Assignment; MAX_ASSIGNMENTS] {
     feature = "test-dma-unqualified",
     feature = "test-dma-no-spend",
     feature = "test-dma-driver",
-    feature = "test-block-service"
+    feature = "test-block-service",
+    feature = "test-block-lifecycle"
 ))]
 pub const STAGE4_TARGET: (u16, u8, u8, u8) = (0, 1, 0, 0);
 

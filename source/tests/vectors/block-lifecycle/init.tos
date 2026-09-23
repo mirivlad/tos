@@ -1,0 +1,369 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The supervisor of one service lifecycle: a block service dies and a successor
+// restarts the device-facing path.
+//
+//   registry, service A and the client are created
+//   the client writes a sector through A, and A stops
+//   -> wait_child returns A's ending (ADR-0067)
+//   -> the supervisor **withdraws publication A** from the registry
+//   -> and only then creates service B
+//
+// **The order is the decision, not an implementation detail.** ADR-0093 §3a.4
+// says the entry is invalidated when the service dies and §3b admits a
+// notification "from whoever has" the supervisory relationship. This is that
+// notification, on a channel of its own, and it is a **call**: the registry's
+// reply is how this process knows the entry is gone before it starts a successor
+// that will publish a new one. Nothing here retargets anything — §3a.5 forbids a
+// name minted for one instance becoming a name for another, and the way to obey
+// that is to never touch the client's capability.
+//
+// **Restart policy is canonical supervisor text** (ADR-0077 §8). This is that
+// text: one restart, unconditional, because this boot is about what a restart
+// must preserve rather than about when to attempt one. No health probe, no
+// failure-density window, no orchestration.
+//
+// **Why a slot is reused rather than a fifth process taken.** `MAX_PROCESSES` is
+// four and this boot needs the supervisor, the registry, the client and one
+// service instance at a time. A is created, ends, and is reclaimed; B takes the
+// slot. That is why the supervisor holds `wait_child` — it may not create B until
+// A has actually gone.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as publish_full;
+import capability system.ipc.Endpoint as publish_call;
+import capability system.ipc.Endpoint as lookup_both;
+import capability system.ipc.Endpoint as withdraw_full;
+import capability system.ipc.Endpoint as withdraw_call;
+import capability system.ipc.Endpoint as serve_a;
+import capability system.ipc.Endpoint as serve_b;
+import capability system.ipc.Endpoint as inbox_full;
+import capability platform.pci.Bus as device;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 20
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endow_for_launch(
+    held: platform.pci.Bus,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [device];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+// How this process learns that A has gone (ADR-0067, operation 14). The authority
+// is over **this** process object and what it scopes is its child relation, so no
+// handle for A is needed to wait for A.
+extern fn process_wait_child(
+    cap: system.process.Control, flags: u64
+) -> Result<system.process.ChildEnding, i64> uses [process];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+// How the registry reaches a service: the publication capability, queued on the
+// service's own endpoint before the service exists.
+extern fn endpoint_send_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [publish_call, system.ipc.Endpoint];
+
+// And the withdrawal: a call, so the reply proves the registry has acted before a
+// successor exists to publish anything.
+extern fn endpoint_call(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [withdraw_call];
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_CALL: u64 = 4u64;
+const RIGHT_CLAIM: u64 = 2048u64;
+const RIGHT_SPEND: u64 = 128u64;
+// The one call flag this ABI version has is "ask, do not wait" (ADR-0059);
+// zero is the blocking form, which is what this wants — there is nothing else
+// for this process to do until A has gone.
+const BLOCKING: u64 = 0u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+const CHILD_GRANT: u64 = 8388608u64;
+// The service compiles a large module and drives a device, so it is given more.
+const SERVICE_GRANT: u64 = 25165824u64;
+
+// The registry: `receive` on all three of its authorities and nothing else.
+fn registry_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, publish_full, lookup_both, withdraw_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(publish_full, builder, RIGHT_RECEIVE, "publish") != OK) {
+                return Err(-1001i64);
+            }
+            if (endow_for_launch(lookup_both, builder, RIGHT_RECEIVE, "lookup") != OK) {
+                return Err(-1002i64);
+            }
+            if (endow_for_launch(withdraw_full, builder, RIGHT_RECEIVE, "withdraw") != OK) {
+                return Err(-1003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 1200i64); }
+    }
+}
+
+// A service instance: its own endpoint under two names, the PCI root, and an
+// authority to spend. Four, which is `MAX_ENDOWMENT` — the registry does not
+// travel here and arrives in a message instead.
+// **Two functions for one shape, and the language decides that.** An
+// `import capability` binding is not an ordinary value a TOS Core function takes
+// (`docs/42` §2), so a helper cannot be handed the endpoint to endow — it names
+// its own import through `uses`. The two bodies are identical apart from which
+// endpoint they name, and that is the difference the boot is about.
+fn first_service_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, serve_a, device, memory, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            // **The authority to spend comes first, and the order matters.**
+            // The runtime image exercises a process's *first* endowed capability
+            // after `main` returns, and for an endpoint carrying `receive` that
+            // exercise is a blocking receive. This instance must **end** when its
+            // work is done — the supervisor's `wait_child` is waiting for exactly
+            // that, and a process still blocked in its own epilogue is a process
+            // the liveness census counts, which would stall the boot instead of
+            // restarting it. A memory authority's exercise blocks on nothing.
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-2004i64);
+            }
+            if (endow_for_launch(serve_a, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2001i64);
+            }
+            // `send | call`: what it publishes must let a client hand it a region
+            // and call it. Not `receive` — `IPC_V1` §2 admits one receiver and
+            // this instance is it.
+            if (endow_for_launch(serve_a, builder, RIGHT_SEND | RIGHT_CALL, "advertise") != OK) {
+                return Err(-2002i64);
+            }
+            if (endow_for_launch(device, builder, RIGHT_CLAIM, "device") != OK) {
+                return Err(-2003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2200i64); }
+    }
+}
+
+fn second_service_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, serve_b, device, memory, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            // **The authority to spend comes first, and the order matters.**
+            // The runtime image exercises a process's *first* endowed capability
+            // after `main` returns, and for an endpoint carrying `receive` that
+            // exercise is a blocking receive. This instance must **end** when its
+            // work is done — the supervisor's `wait_child` is waiting for exactly
+            // that, and a process still blocked in its own epilogue is a process
+            // the liveness census counts, which would stall the boot instead of
+            // restarting it. A memory authority's exercise blocks on nothing.
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-2104i64);
+            }
+            if (endow_for_launch(serve_b, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2101i64);
+            }
+            if (endow_for_launch(serve_b, builder, RIGHT_SEND | RIGHT_CALL, "advertise") != OK) {
+                return Err(-2102i64);
+            }
+            if (endow_for_launch(device, builder, RIGHT_CLAIM, "device") != OK) {
+                return Err(-2103i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2300i64); }
+    }
+}
+
+// The client: a way to ask, an inbox of its own, and an authority to compose a
+// payload out of. **No hardware authority of any kind.**
+fn client_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, lookup_both, inbox_full, memory, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(lookup_both, builder, RIGHT_CALL, "registry") != OK) {
+                return Err(-3001i64);
+            }
+            if (endow_for_launch(inbox_full, builder, RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-3002i64);
+            }
+            if (endow_for_launch(inbox_full, builder, RIGHT_SEND, "reply_to") != OK) {
+                return Err(-3003i64);
+            }
+            // `region_allocate` needs it. A memory authority is not hardware
+            // authority: `STAGE4_DATA_PATH_BOUNDARY.md` §1 has the client compose
+            // its payload in a region of its own, and this is what pays for it.
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-3004i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 3200i64); }
+    }
+}
+
+// Creates one child and lets go of the handle. **The handle is not kept**: this
+// process waits on its own child relation rather than on a name for any one
+// child (ADR-0067), and a capability table with sixteen slots has better uses.
+fn start(plan: system.process.LaunchPlan, entry: string, grant: u64) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(process, memory, plan, entry, grant, NO_SELF_RIGHTS)) {
+        Ok(child) => {
+            if (capability_release(child.control) != OK) { return -9001i64; }
+            return OK;
+        }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+//   1  the registry was created
+//   2  service A was created
+//   4  the client was created
+//   8  A's ending was collected — `wait_child` returned, so A has gone
+//  16  publication A was withdrawn, and the registry replied before B existed
+//  32  service B was created
+pub fn main() -> i64
+    uses [process, memory, publish_full, publish_call, lookup_both, withdraw_full,
+          withdraw_call, serve_a, serve_b, inbox_full, device,
+          system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    match (registry_plan()) {
+        Ok(registry) => {
+            match (first_service_plan()) {
+                Ok(first) => {
+                    match (client_plan()) {
+                        Ok(client) => {
+                            // The publication capability, queued on A's endpoint
+                            // before A exists. A message waits; a process does
+                            // not have to.
+                            if (endpoint_send_carrying(publish_call, serve_a, 0u64) != OK) {
+                                return -8001i64;
+                            }
+                            // Every receiving name this process still holds, let
+                            // go before the child that receives on it exists.
+                            if (capability_release(publish_full) != OK) { return -8002i64; }
+                            if (capability_release(lookup_both) != OK) { return -8003i64; }
+                            if (capability_release(withdraw_full) != OK) { return -8004i64; }
+                            if (capability_release(serve_a) != OK) { return -8005i64; }
+                            if (capability_release(inbox_full) != OK) { return -8006i64; }
+
+                            if (start(registry, "system/registry/nameservice.tos", CHILD_GRANT) != OK) {
+                                return -8101i64;
+                            }
+                            found = found + 1i64;
+                            if (start(first, "system/service/block.tos", SERVICE_GRANT) != OK) {
+                                return -8102i64;
+                            }
+                            found = found + 2i64;
+                            if (start(client, "system/client/block.tos", CHILD_GRANT) != OK) {
+                                return -8103i64;
+                            }
+                            found = found + 4i64;
+
+                            return found + restart();
+                        }
+                        Err(refused) => { return refused; }
+                    }
+                }
+                Err(refused) => { return refused; }
+            }
+        }
+        Err(refused) => { return refused; }
+    }
+}
+
+// Waits for A, withdraws its publication, and only then starts B.
+fn restart() -> i64
+    uses [process, memory, withdraw_call, publish_call, serve_b, device,
+          system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(ending) => { found = found + 8i64; }
+        Err(uncollected) => { return uncollected - 8200i64; }
+    }
+
+    // **Before B exists, and the reply is why that is provable.** A call rather
+    // than a send: the registry answers only after it has let go of the name it
+    // held for A, so when this returns there is no publication and no successor.
+    if (endpoint_call(withdraw_call, 0u64) != OK) { return -8301i64; }
+    found = found + 16i64;
+
+    match (second_service_plan()) {
+        Ok(second) => {
+            if (endpoint_send_carrying(publish_call, serve_b, 0u64) != OK) {
+                return -8401i64;
+            }
+            if (capability_release(serve_b) != OK) { return -8402i64; }
+            if (start(second, "system/service/block.tos", SERVICE_GRANT) != OK) {
+                return -8403i64;
+            }
+            found = found + 32i64;
+            return found;
+        }
+        Err(refused) => { return refused - 8500i64; }
+    }
+}
