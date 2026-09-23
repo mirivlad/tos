@@ -38,6 +38,7 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-block-service") as usize
     + cfg!(feature = "test-region-transfer-text") as usize
     + cfg!(feature = "test-block-lifecycle") as usize
+    + cfg!(feature = "test-block-protocol") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1822,6 +1823,73 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             },
         ]
     };
+    // The Stage 4 evidence build for `BLOCK_DEVICE_V1`: a canonical textual block
+    // service speaking the **accepted** wire protocol, and a canonical textual
+    // client exercising every operation and every refusal it states.
+    //
+    // **Two endpoints, and that is the whole topology.** The service is
+    // launcher-wired: `serve` carries `receive` for the service and `send | call`
+    // for the client, so a client may make an atomic call carrying a region and
+    // may also send it a stray one; `inbox` is where a read's region comes back.
+    // Nothing is published — ADR-0093 case C and the publication path are proved
+    // by `block-lifecycle` and are not re-proved here, and ADR-0095 §6 leaves a
+    // second publication class undecided.
+    //
+    // **This boot process holds `wait_child`** because it must collect two
+    // children's endings before it can report what the boot proved.
+    #[cfg(feature = "test-block-protocol")]
+    let first_endowment = {
+        let (Some(serve), Some(inbox)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let Some(bus) = pci::endow_root(0, 0, 255) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-pci-root\r\n");
+            mem_fail();
+        };
+        tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
+        tos_serial::puts(b" asserted_by=launcher\r\n");
+        pci::qualify_dma(
+            pci::STAGE4_TARGET.0,
+            pci::STAGE4_TARGET.1,
+            pci::STAGE4_TARGET.2,
+            pci::STAGE4_TARGET.3,
+        );
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE
+                    | tos_launch::RIGHT_WAIT_CHILD
+                    | tos_launch::RIGHT_TERMINATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            // One name carrying all three rights, because the supervisor endows
+            // `receive` into the service's plan and `send | call` into the
+            // client's, and a plan takes what it asks for intersected with what
+            // the creator holds.
+            capability::Endowment::Existing {
+                binding: binding(b"serve_all"),
+                object: capability::Object::Endpoint(serve),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"inbox_full"),
+                object: capability::Object::Endpoint(inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"device"),
+                object: capability::Object::PciBus(bus),
+                rights: tos_launch::RIGHT_CLAIM,
+                scope: 0,
+            },
+        ]
+    };
     #[cfg(feature = "test-block-service")]
     let first_endowment = {
         let (Some(publish), Some(lookup), Some(service), Some(inbox)) =
@@ -2253,6 +2321,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-name-service",
         feature = "test-block-service",
         feature = "test-block-lifecycle",
+        feature = "test-block-protocol",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -2289,6 +2358,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-name-service",
         feature = "test-block-service",
         feature = "test-block-lifecycle",
+        feature = "test-block-protocol",
         feature = "test-region-transfer-text",
         feature = "test-block-lifecycle",
         feature = "test-build-topology",

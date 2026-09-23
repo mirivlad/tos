@@ -12,10 +12,13 @@ Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
 ADR-0093 and ADR-0095 where those decisions fix its subject matter.
 
-**No implementation of this contract exists yet.** It is accepted as the shape the
-Stage 4 block service and its clients must take; the conformance evidence §11
-requires is outstanding, and `block-data-path` and `block-lifecycle` still carry
-their own fixture encoding until a later slice migrates them (ADR-0098 §3).
+**Implemented and gated since 2026-09-24.** A canonical textual service and a
+canonical textual client speak this protocol in
+`host-tools/qemu-test/block-protocol.sh`, which is §11's evidence. What is *not*
+migrated is stated rather than left to be assumed: `block-data-path` and
+`block-lifecycle` still carry their own fixture encoding until a later slice moves
+them (ADR-0098 §3), and their accepted evidence remains evidence about what it was
+taken on.
 
 ## 1. Role
 
@@ -289,13 +292,20 @@ removing case D. A client that needs to know re-reads the sector.
 
 ## 11. Conformance evidence
 
-`ADR-0098` §4 is the obligation list: normative read; normative atomic write;
-capacity against the device's own report; invalid-opcode, out-of-range,
-absent-region, absent-answer-endpoint and malformed-length negatives; an assertion
-that a successful `READ`'s reply is journalled **before** its region send; the
-decoy-region mutation that proves a `WRITE` uses the region its own call carried;
-and the ordering mutation that proves §6a's control-before-data rule is
-implemented rather than only written down.
+`ADR-0098` §4 is the obligation list, and
+`host-tools/qemu-test/block-protocol.sh` is where it is met: normative read;
+normative atomic write; capacity against the device's own report, proved by a
+second boot against a deliberately smaller device from the same compiled module;
+invalid-opcode, out-of-range, absent-region, absent-answer-endpoint and
+malformed-length negatives; an assertion that a successful `READ`'s reply is
+journalled **before** its region send; the decoy-region mutation that proves a
+`WRITE` uses the region its own call carried; and the ordering mutation that proves
+§6a is implemented rather than only written down.
+
+**Both mutations were run and both turn the gate red**, which is what makes the
+two positives mean anything: a service that took its payload from a region that had
+arrived earlier fails the 512-byte read-back, and a service that sends before it
+replies fails the journal's ordering pass.
 
 **One negative class is static, and is recorded as static.** A region shorter
 than `SECTOR_BYTES` cannot be constructed from canonical text (§8), so no boot

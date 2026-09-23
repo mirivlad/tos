@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `291edae3e41ceec0dd8c7464f4296ef56c9057a7d35569cfbee2c539da72c004`\
+Source-manifest SHA-256: `7a410ff63abfb88c3e5b15f2aab95285e376f00f12ae078a554c31457c495550`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -474,13 +474,24 @@ ADR-0093's case C, and the stale capability is the experiment: the client still
 holds the name its first lookup gave it, calls it while the successor is waiting
 for a request, and is not served — so the name was never repaired.
 
-**Read that at the width of the fixture, which is narrow.** A write and a read now
-cross the client/service path, so the tree no longer merely reads; but the request
-encoding that carries them is **one fixture's**, and no normative general
-`block.device.v1` wire protocol has been accepted because it exists — ADR-0093 §9
-still leaves the wire shape of `read`, `write` and `capacity` open. One sector per
-request, no multi-sector scheduling, no filesystem, and nothing written is stored
-anywhere but the sector: there is no persistent object or state storage and no
+**And since 2026-09-24 there is a normative protocol under it.** `block.device.v1`
+has a wire shape: ADR-0098 answers ADR-0093 §9 and
+`source/interfaces/device/BLOCK_DEVICE_V1.md` states it — `word = sector * 4 +
+opcode`, all three of `read`, `write` and `capacity`, every refusal a reply, and a
+**write that arrives as one atomic call carrying its own region** rather than as a
+region followed by a call, which was correct only where one client was serialized
+against itself. A canonical textual service and a canonical textual client speak it
+in `block-protocol.sh`, where a decoy region sent just before a write proves the
+bytes written are the ones that call carried, and the journal proves a read replies
+before it sends. `capacity` is the device's own number, proved by a second boot
+against a smaller device from the same compiled module.
+
+**Read the rest at the width of the fixtures, which is narrow.** The older
+`block-data-path` and `block-lifecycle` boots still carry their own encoding until
+a later slice migrates them. One sector per request, no batching, no multi-sector
+scheduling, no filesystem, and nothing written is stored anywhere but the sector:
+**persistent object/state storage is decided and not built** — ADR-0099 and
+`STATE_STORE_V1` are accepted, and no line of it is implemented — and there is no
 capsule-to-repository handoff.
 
 **What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
@@ -5687,10 +5698,13 @@ Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
 ADR-0093 and ADR-0095 where those decisions fix its subject matter.
 
-**No implementation of this contract exists yet.** It is accepted as the shape the
-Stage 4 block service and its clients must take; the conformance evidence §11
-requires is outstanding, and `block-data-path` and `block-lifecycle` still carry
-their own fixture encoding until a later slice migrates them (ADR-0098 §3).
+**Implemented and gated since 2026-09-24.** A canonical textual service and a
+canonical textual client speak this protocol in
+`host-tools/qemu-test/block-protocol.sh`, which is §11's evidence. What is *not*
+migrated is stated rather than left to be assumed: `block-data-path` and
+`block-lifecycle` still carry their own fixture encoding until a later slice moves
+them (ADR-0098 §3), and their accepted evidence remains evidence about what it was
+taken on.
 
 ## 1. Role
 
@@ -5964,13 +5978,20 @@ removing case D. A client that needs to know re-reads the sector.
 
 ## 11. Conformance evidence
 
-`ADR-0098` §4 is the obligation list: normative read; normative atomic write;
-capacity against the device's own report; invalid-opcode, out-of-range,
-absent-region, absent-answer-endpoint and malformed-length negatives; an assertion
-that a successful `READ`'s reply is journalled **before** its region send; the
-decoy-region mutation that proves a `WRITE` uses the region its own call carried;
-and the ordering mutation that proves §6a's control-before-data rule is
-implemented rather than only written down.
+`ADR-0098` §4 is the obligation list, and
+`host-tools/qemu-test/block-protocol.sh` is where it is met: normative read;
+normative atomic write; capacity against the device's own report, proved by a
+second boot against a deliberately smaller device from the same compiled module;
+invalid-opcode, out-of-range, absent-region, absent-answer-endpoint and
+malformed-length negatives; an assertion that a successful `READ`'s reply is
+journalled **before** its region send; the decoy-region mutation that proves a
+`WRITE` uses the region its own call carried; and the ordering mutation that proves
+§6a is implemented rather than only written down.
+
+**Both mutations were run and both turn the gate red**, which is what makes the
+two positives mean anything: a service that took its payload from a region that had
+arrived earlier fails the 512-byte read-back, and a service that sends before it
+replies fails the journal's ordering pass.
 
 **One negative class is static, and is recorded as static.** A region shorter
 than `SECTOR_BYTES` cannot be constructed from canonical text (§8), so no boot
@@ -36118,9 +36139,13 @@ stays reserved and empty.
 
 # ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region
 
-- Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
-  tree implements it yet**: acceptance fixes the contract and carries §4's
-  evidence obligations, which are outstanding
+- Status: **Accepted** (Project Architect-approved, 2026-09-24), and
+  **implemented 2026-09-24**. The additive schema surface, the two frontend and
+  verifier gaps §2a recorded, and a canonical textual service and client speaking
+  this protocol all exist; §4's obligations are met by
+  `host-tools/qemu-test/block-protocol.sh`, with the one exception §4 already
+  records as a static class. `block-data-path` and `block-lifecycle` keep their own
+  encoding until a later slice migrates them, as §3 says
 - Date: 2026-09-23, accepted 2026-09-24
 - Decision level: **2** — a contract extension. It accepts a versioned service
   protocol and adds two rows and one record to `SYSTEM_INTERFACE_V1` over ABI

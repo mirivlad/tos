@@ -1,0 +1,365 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The `BLOCK_DEVICE_V1` client: nine exchanges that exercise the accepted
+// protocol, its refusals and its ordering, holding **no** part of the machine.
+//
+//   CAPACITY                    -> the device's own sector count
+//   a call whose length is not 8 -> refused as malformed
+//   opcode 3                    -> refused as a reserved opcode
+//   WRITE with no region        -> refused
+//   READ with no answer channel -> refused
+//   WRITE past the capacity     -> refused as out of range
+//   a **decoy** region, sent     -> dropped: a send is not a call
+//   WRITE sector 9, atomically   -> one call carrying the word and the region
+//   READ sector 9                -> all 512 bytes are what the write put there
+//
+// **The decoy is the load-bearing part** (ADR-0098 §1, §4 obligation 10). It is a
+// region of *different* bytes, sent on its own to the service's endpoint just
+// before the atomic write. A service that took its payload from a preceding
+// `endpoint_receive_region` — the two-message shape this protocol replaced — would
+// write the decoy's bytes, and the read-back below would not match. So the gate
+// distinguishes "the region physically attached to this call" from "some region
+// that happened to arrive earlier", which is what the two-message form could not.
+//
+// **Sector 9, and a pattern that is non-zero everywhere.** Sectors 1 to 4 of the
+// reference image are seeded with constant fills and sector 0 is zero-filled, so a
+// witness in any of them could be satisfied by the image. Sector 9 is untouched
+// zeros, and neither the image nor unwritten memory can pass for a per-byte
+// varying pattern.
+//
+// **Every refusal is read out of the reply, not inferred.** `BLOCK_DEVICE_V1` §5
+// puts a refusal above `REFUSED` with its code in the low bits, so this module
+// checks the exact code each request should get. A client that only checked "not
+// zero" would pass against a service that refused everything for one reason.
+//
+// **The malformed case is the one exception, and it is honest about it.** A call
+// whose inline length is not eight cannot be made through a row that produces an
+// `Answer`, because every such row fills the length register itself — so this
+// module makes it with `endpoint_call`, learns only that it was answered, and the
+// refusal code is proved on the service's side of the same exchange.
+
+module system.client.block version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as service;
+import capability system.ipc.Endpoint as inbox;
+// **A send-only name for the same object**, which is what a request delegates: a
+// delegation carries the rights the sender holds (`IPC_V1` §6), and a name carrying
+// `receive` would ask the service to become a second receiver — which §2 forbids and
+// the accepting receive refuses, leaving the request undeliverable.
+import capability system.ipc.Endpoint as reply_to;
+
+resource [
+    fuel: 1048576,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+// --- the accepted protocol (`BLOCK_DEVICE_V1` §3, §4, §5, §7) -----------------
+const OP_READ: u64 = 0u64;
+const OP_WRITE: u64 = 1u64;
+const OP_CAPACITY: u64 = 2u64;
+const OP_RESERVED: u64 = 3u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const REFUSED: u64 = 9223372036854775808u64;
+const BLK_OPCODE: u64 = 1u64;
+const BLK_RANGE: u64 = 2u64;
+const BLK_NO_REGION: u64 = 4u64;
+const BLK_NO_ANSWER: u64 = 5u64;
+
+const SECTOR_BYTES: size = 512B;
+const TARGET_SECTOR: u64 = 9u64;
+const OK: i64 = 0i64;
+
+// --- what this module proves, one bit each ------------------------------------
+const PROVED_CAPACITY: i64 = 1i64;
+const PROVED_MALFORMED_ANSWERED: i64 = 2i64;
+const PROVED_OPCODE_REFUSED: i64 = 4i64;
+const PROVED_NO_REGION_REFUSED: i64 = 8i64;
+const PROVED_NO_ANSWER_REFUSED: i64 = 16i64;
+const PROVED_RANGE_REFUSED: i64 = 32i64;
+const PROVED_DECOY_SENT: i64 = 64i64;
+const PROVED_WRITE_ACKNOWLEDGED: i64 = 128i64;
+const PROVED_READ_ACKNOWLEDGED: i64 = 256i64;
+const PROVED_REGION_ARRIVED: i64 = 512i64;
+const PROVED_EVERY_BYTE: i64 = 1024i64;
+
+// **The capacity rides above the account**, so the gate reads the number the
+// device reported rather than trusting that this module compared it with
+// something. `2^12` is one place above the highest bit used, so no sum of the bits
+// can reach into it.
+const CAPACITY_SHIFT: i64 = 4096i64;
+
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [service];
+
+// One atomic call carrying the request word **and** the payload region
+// (ADR-0098 §2a). The region is transferred linearly: after a successful call
+// this process holds neither the handle nor the mapping (ADR-0075 §5a).
+extern fn endpoint_call_word_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region, word: u64
+) -> Result<system.ipc.Answer, i64> uses [service, system.memory.Region];
+
+// A read says where to answer, because a reply cannot carry a region.
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> i64 uses [reply_to, service];
+
+// The malformed case: a payload length this module chooses, which is the only
+// row that lets it choose one at all.
+extern fn endpoint_call(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [service];
+
+// The decoy: a region on its own, with no call behind it.
+extern fn endpoint_send_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region
+) -> i64 uses [service, system.memory.Region];
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [budget];
+
+extern fn region_freeze(
+    cap: system.memory.Region
+) -> Result<Region<u8>, i64> uses [system.memory.Region];
+
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+// The byte this module writes at `at`, and the one it requires back.
+//
+// **Computed both times from the same expression**, so the read-back is checked
+// against the rule rather than against a copy of the bytes that were sent — a
+// table would be satisfied by a buffer that still held the table.
+fn pattern(at: u64) -> u64 {
+    return (at * 37u64 + 91u64) % 251u64 + 1u64;
+}
+
+// And the decoy's, which must agree with the pattern nowhere: `37a + 91` and
+// `53a + 17` are equal only where `16a = -74` modulo 251, and that has no solution
+// in `0..511` — so a service that wrote the decoy differs from this in every byte
+// a read could look at, not merely in most.
+fn decoy(at: u64) -> u64 {
+    return (at * 53u64 + 17u64) % 251u64 + 1u64;
+}
+
+// **`size` does not convert**, so the index a pattern is computed from is carried
+// beside the offset rather than derived from it: `docs/40` §3 fixes the checked
+// conversions at `to_i8`..`to_u64` and none of them accepts or produces a `size`.
+//
+// **Counted once per byte and not once per prefix.** An earlier draft of this
+// module recovered the index by walking from zero at every byte, which is 512
+// times the work and spent the declared fuel before the first region was composed.
+// One counter, advanced with the offset, is the whole fix.
+//
+// Both patterns are in `1..251`, so the conversion cannot fail; it is still
+// matched, because an unchecked one does not exist in this language.
+fn fill(borrow mut payload: Region<mut u8>, decoying: bool) -> unit {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    while (at < SECTOR_BYTES) {
+        let mut value: u64 = pattern(index);
+        if (decoying) {
+            value = decoy(index);
+        }
+        match (to_u8(value)) {
+            Ok(byte) => { payload[at] = byte; }
+            Err(impossible) => { payload[at] = 0u8; }
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+}
+
+// How many of the 512 bytes are what the write put there.
+//
+// **Counted rather than stopped at the first mismatch**, so the account carries how
+// wrong a wrong answer was. This module requires all 512.
+fn agreeing(borrow payload: Region<u8>) -> u64 {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    let mut agreed: u64 = 0u64;
+    while (at < SECTOR_BYTES) {
+        if ((payload[at] as u64) == pattern(index)) {
+            agreed = agreed + 1u64;
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+    return agreed;
+}
+
+// One region of this module's own, composed and frozen, ready to travel.
+//
+// Returns the immutable region, or the status that stopped it.
+fn composed(decoying: bool) -> Result<Region<u8>, i64>
+    uses [budget, system.memory.Region]
+{
+    match (region_allocate(budget, SECTOR_BYTES)) {
+        Ok(payload) => {
+            fill(borrow mut payload, decoying);
+            match (region_freeze(payload)) {
+                Ok(frozen) => { return Ok(frozen); }
+                Err(unfrozen) => { return Err(unfrozen - 200i64); }
+            }
+        }
+        Err(unallocated) => { return Err(unallocated - 300i64); }
+    }
+}
+
+// Whether one refusal is the one it should be.
+//
+// **Both halves, and the length first.** `BLOCK_DEVICE_V1` §5 makes the reply's
+// inline length the check that an answer of the right shape arrived at all, and
+// the word meaningless without it.
+fn refused_as(answer: system.ipc.Answer, code: u64) -> bool {
+    if (answer.length != REQUEST_BYTES) { return false; }
+    return answer.word == REFUSED + code;
+}
+
+pub fn main() -> i64
+    uses [budget, service, inbox, reply_to, system.ipc.Endpoint,
+          system.memory.Region]
+{
+    let mut proved: i64 = 0i64;
+
+    // --- 1. CAPACITY ---------------------------------------------------------
+    // The device's own number. Nothing here checks it against a constant: what
+    // the gate proves is that two boots against two differently sized devices
+    // report two different numbers, which no compiled-in value could do.
+    let mut capacity: u64 = 0u64;
+    match (endpoint_call_word(service, OP_CAPACITY)) {
+        Ok(answer) => {
+            if (answer.length != REQUEST_BYTES) { return -1i64; }
+            if (answer.word >= REFUSED) { return -2i64; }
+            if (answer.word == 0u64) { return -3i64; }
+            capacity = answer.word;
+            proved = proved + PROVED_CAPACITY;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+
+    // --- 2. a call that is not eight bytes long ------------------------------
+    // Answered, which is the whole of what this row can observe. That it was
+    // answered **as malformed** is the service's bit in the same exchange.
+    if (endpoint_call(service, 0u64) != OK) { return -4i64; }
+    proved = proved + PROVED_MALFORMED_ANSWERED;
+
+    // --- 3. a reserved opcode ------------------------------------------------
+    match (endpoint_call_word(service, OP_RESERVED)) {
+        Ok(answer) => {
+            if (!refused_as(answer, BLK_OPCODE)) { return -5i64; }
+            proved = proved + PROVED_OPCODE_REFUSED;
+        }
+        Err(status) => { return status - 110i64; }
+    }
+
+    // --- 4. a write with nothing to write -----------------------------------
+    match (endpoint_call_word(service, TARGET_SECTOR * OPCODE_SPAN + OP_WRITE)) {
+        Ok(answer) => {
+            if (!refused_as(answer, BLK_NO_REGION)) { return -6i64; }
+            proved = proved + PROVED_NO_REGION_REFUSED;
+        }
+        Err(status) => { return status - 120i64; }
+    }
+
+    // --- 5. a read with nowhere to answer ------------------------------------
+    match (endpoint_call_word(service, TARGET_SECTOR * OPCODE_SPAN + OP_READ)) {
+        Ok(answer) => {
+            if (!refused_as(answer, BLK_NO_ANSWER)) { return -7i64; }
+            proved = proved + PROVED_NO_ANSWER_REFUSED;
+        }
+        Err(status) => { return status - 130i64; }
+    }
+
+    // --- 6. a sector the device does not have -------------------------------
+    // **Carrying a region on purpose.** A write with neither a region nor a
+    // reachable sector could be refused for either reason, and a negative that
+    // two rules could satisfy proves neither; this one can only be the range.
+    match (composed(false)) {
+        Ok(spare) => {
+            match (endpoint_call_word_region(service, spare,
+                capacity * OPCODE_SPAN + OP_WRITE)) {
+                Ok(answer) => {
+                    if (!refused_as(answer, BLK_RANGE)) { return -8i64; }
+                    proved = proved + PROVED_RANGE_REFUSED;
+                }
+                Err(status) => { return status - 140i64; }
+            }
+        }
+        Err(status) => { return status - 400i64; }
+    }
+
+    // --- 7. the decoy --------------------------------------------------------
+    // A region and no call. The service has nothing to answer and must drop it;
+    // a service that kept it for the next request's payload writes the wrong
+    // bytes at step 9.
+    match (composed(true)) {
+        Ok(bait) => {
+            if (endpoint_send_region(service, bait) != OK) { return -9i64; }
+            proved = proved + PROVED_DECOY_SENT;
+        }
+        Err(status) => { return status - 410i64; }
+    }
+
+    // --- 8. the write, atomically -------------------------------------------
+    match (composed(false)) {
+        Ok(payload) => {
+            match (endpoint_call_word_region(service, payload,
+                TARGET_SECTOR * OPCODE_SPAN + OP_WRITE)) {
+                Ok(answer) => {
+                    if (answer.length != REQUEST_BYTES) { return -10i64; }
+                    if (answer.word != 0u64) { return -11i64; }
+                    proved = proved + PROVED_WRITE_ACKNOWLEDGED;
+                }
+                Err(status) => { return status - 150i64; }
+            }
+        }
+        Err(status) => { return status - 420i64; }
+    }
+
+    // --- 9. the read, and the bytes -----------------------------------------
+    // The call is answered **before** the region is sent (`BLOCK_DEVICE_V1` §6a),
+    // so success here means exactly one region is owed and this module takes it
+    // next. It holds one outstanding read on this endpoint and no more.
+    if (endpoint_call_word_carrying(reply_to, service,
+        TARGET_SECTOR * OPCODE_SPAN + OP_READ) != OK) {
+        return -12i64;
+    }
+    proved = proved + PROVED_READ_ACKNOWLEDGED;
+
+    match (endpoint_receive_region(inbox)) {
+        Ok(arrived) => {
+            proved = proved + PROVED_REGION_ARRIVED;
+            let agreed: u64 = agreeing(borrow arrived);
+            if (capability_release(arrived) != OK) { return -13i64; }
+            if (agreed != 512u64) { return -14i64; }
+            proved = proved + PROVED_EVERY_BYTE;
+        }
+        Err(status) => { return status - 160i64; }
+    }
+
+    // **The capacity travels with the account**, so the gate can compare two
+    // boots against two devices.
+    match (to_i64(capacity)) {
+        Ok(reported) => { return proved + reported * CAPACITY_SHIFT; }
+        Err(bad) => { return -15i64; }
+    }
+}
