@@ -43,7 +43,29 @@ pub const MAX_INLINE_BYTES: u64 = 256;
 /// Both are fixed nucleus bounds over statically reserved storage: `IPC_V1` §7
 /// requires that a queue never be grown to accept a message, and the way to
 /// never grow one is to never have allocated it.
-pub const MAX_ENDPOINTS: usize = 4;
+///
+/// **Six since the Stage 4 service-lifecycle boot, and it was four.** That boot
+/// needs six endpoint objects at once and every one is load-bearing:
+///
+/// - the registry's **publication** endpoint, reaching which *is* the authority
+///   to publish `block.device.v1` (`CAPABILITY_V1` §6 as ADR-0095 amended it);
+/// - its **lookup** endpoint, which is a different authority and so a different
+///   object;
+/// - its **withdrawal** endpoint, which the supervisor alone can reach — the
+///   notification ADR-0093 §3b admits "from whoever has" the supervisory
+///   relationship, and a third authority rather than a second meaning on one of
+///   the first two;
+/// - **one endpoint per service instance**, which must be different objects or
+///   the successor would be the predecessor's endpoint repaired, and ADR-0093
+///   §3a.5 forbids exactly that;
+/// - and the client's own **inbox**, where a region arrives.
+///
+/// **It is a table size and not a contract number.** `IPC_V1` §3's three numbers
+/// — 256 inline bytes, 4 capabilities, 2 regions — bound a *message* and are
+/// untouched; §7's rule is that a queue never grows to accept one, and a larger
+/// statically reserved table grows no queue. No semantics change and no ABI
+/// changes; a boot that used four before still uses four.
+pub const MAX_ENDPOINTS: usize = 6;
 const QUEUE_DEPTH: usize = 4;
 
 /// One message in flight: bytes, how many of them mean anything, and the

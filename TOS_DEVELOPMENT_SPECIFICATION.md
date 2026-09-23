@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `4fbc8d6ac8245771dffe2f34291dc73975bf734578c8e44ee5230d390cbeb378`\
+Source-manifest SHA-256: `e4084b1b0521f1393339a6f8693fa3cb789e27a96fe0dc50bf1c07392f1272e5`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -462,6 +462,19 @@ It does **not** prove queue multiplexing, scheduling, filesystem integration, a
 generic driver subsystem, restart and republication (ADR-0093 case C), or writing
 through the client/service path. None of those is designed.
 
+**And since 2026-09-23 a service can die and be replaced without losing data.** A
+block service serves a write and ends still holding the function, the mapped
+window, the interrupt source and the DMA region; a supervisor collects its ending,
+withdraws its publication from the registry and only then starts a successor; the
+successor claims the same function at a **new assignment generation**, drives
+VirtIO `DEVICE_STATUS` to 0 and reads it back as 0, initializes the device again in
+the ordinary order, rebuilds queue, DMA region, window and interrupt source, and
+republishes. A fresh lookup then gives the client an endpoint through which all 512
+bytes the first instance wrote come back. That is ADR-0092 R1a's T1 recovery and
+ADR-0093's case C, and the stale capability is the experiment: the client still
+holds the name its first lookup gave it, calls it while the successor is waiting
+for a request, and is not served — so the name was never repaired.
+
 **What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
 separately rather than collected under one word:
 
@@ -470,9 +483,10 @@ separately rather than collected under one word:
   exists. `docs/16`'s engineering exit for this stage is "persistent storage works
   through a textual user-space driver", and a driver that reads and writes sectors
   is not yet that;
-- **crash/reset and adversarial-device tests**;
-- ADR-0093 **case C**: restart and republication, with a stale client capability
-  that must not silently retarget;
+- **a crash in flight**: the lifecycle boot's first instance ends after
+  acknowledging its write, so it asks nothing about a request accepted and never
+  answered — ADR-0093's case D, which stays deliberately ambiguous — and an
+  adversarial-device suite is separate again;
 - the **Stage 4 performance contract report**;
 - current-state documentation, and a closure review.
 
