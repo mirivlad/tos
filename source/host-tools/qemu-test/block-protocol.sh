@@ -30,6 +30,14 @@
 # the service take its payload from the previously dropped region turns this red with
 # the client reporting `i64:-14`, its byte-count failure.
 #
+# *The five pre-device refusals do not touch the device.* §7 requires it, and the
+# journal is where it is read: each of the service's receives opens the window in
+# which one exchange is served, and only the two windows allowed to reach the device
+# contain a `dma_device_address` — the nucleus's own line, three per request, emitted
+# only from the submission path. A service that performed a harmless real request and
+# then replied with the right refusal code would keep every account bit it reports and
+# the later valid requests would still succeed, so the account could not have caught it.
+#
 # *A read replies before it sends.* `BLOCK_DEVICE_V1` §6a fixes control before data,
 # because the reverse leaves an orphan region queued on an endpoint that outlives
 # the caller waiting for it. The journal is read for that order.
@@ -146,7 +154,7 @@ done
     fail "the client's service binding resolved to a PCI bus"
 
 # --- the accepted call-with-region row was actually used ------------------------
-# Three of them: the out-of-range write, the atomic write, and nothing else. The
+# Two of them: the out-of-range write and the atomic write, and nothing else. The
 # decoy is a plain `endpoint_send_region` and the read carries an endpoint instead.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_call_word_region status=0$')" = 2 ] ||
     fail "the atomic call-with-region row was not used exactly twice"
@@ -162,7 +170,100 @@ done
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply_word status=-[0-9]*$')" = 1 ] ||
     fail "expected exactly one refused reply, the one to the message that was not a call"
 
-# --- 1: a read replies before it sends -----------------------------------------
+# --- 1: exactly the requests allowed to reach the device reached it -------------
+#
+# **`BLOCK_DEVICE_V1` §7 requires the five pre-device refusals to leave the device
+# untouched**, and until now this gate took that from the shape of the source and
+# from the service's own account. Neither is evidence: a service that performed a
+# harmless real request and *then* replied with the right refusal code would keep
+# every bit it reports, and the later valid write and read would still succeed.
+#
+# **So the journal is sliced by the service's own receives.** Each
+# `endpoint_receive_call_region` opens the window in which that one exchange is
+# served, and the window closes at the next receive. Nine windows, in the order the
+# client makes its requests:
+#
+#   0 CAPACITY   1 malformed   2 opcode   3 no region   4 no answer
+#   5 out of range   6 the decoy   7 the atomic WRITE   8 the READ
+#
+# Windows 7 and 8 are the only two allowed to contain device work; the other seven
+# must contain none.
+#
+# **What counts as device work is `dma_device_address`, and the choice matters.** It
+# is emitted by the **nucleus**, once per address the driver resolves against its
+# own DMA region — three per request, for the header, the data buffer and the status
+# byte — and it is reached only from `perform`, the function that submits. So it
+# binds to the submission path rather than to the request decoder, and it is not the
+# service's self-report: the service cannot write a journal line, and neither the
+# client nor the supervisor declares the operation at all (the capability check above
+# is why no other process could).
+#
+# **Interrupts are deliberately not counted for this.** A driver must tolerate a
+# spurious notification (VIRTIO §2.7.7.1) and this one does — it waits past a wake
+# that did not complete its request — so "one request, one `irq_wait`" is not a
+# contract and asserting it would invent one. What *is* asserted about `irq_wait` is
+# only that the two windows which reached the device also completed there.
+python3 - "$LOG" <<'UNTOUCHED' || fail "a refusal that must precede device work touched the device"
+import sys
+
+events = [line.rstrip("\r\n") for line in open(sys.argv[1], encoding="utf-8", errors="replace")]
+RECEIVE = "TOS.RUN.INTERFACE operation=endpoint_receive_call_region status="
+ADDRESS = "TOS.RUN.INTERFACE operation=dma_device_address status=0"
+WAIT = "TOS.RUN.INTERFACE operation=irq_wait status=0"
+ADDRESSES_PER_REQUEST = 3
+
+opened = [i for i, line in enumerate(events) if line.startswith(RECEIVE)]
+names = [
+    "CAPACITY", "a malformed length", "a reserved opcode", "a write with no region",
+    "a read with no answer endpoint", "an out-of-range write", "the decoy region",
+    "the atomic write", "the read",
+]
+if len(opened) != len(names):
+    print(f"expected {len(names)} served exchanges, saw {len(opened)}", file=sys.stderr)
+    raise SystemExit(1)
+
+bounds = opened + [len(events)]
+touched = []
+for index, name in enumerate(names):
+    window = events[bounds[index] + 1:bounds[index + 1]]
+    addresses = window.count(ADDRESS)
+    waits = window.count(WAIT)
+    allowed = index in (7, 8)
+    if allowed:
+        if addresses != ADDRESSES_PER_REQUEST:
+            print(f"{name} resolved {addresses} device addresses, not "
+                  f"{ADDRESSES_PER_REQUEST}", file=sys.stderr)
+            raise SystemExit(1)
+        if waits < 1:
+            print(f"{name} reached the device and never completed there",
+                  file=sys.stderr)
+            raise SystemExit(1)
+        touched.append(name)
+    else:
+        if addresses != 0 or waits != 0:
+            print(f"{name} must be refused before the device is touched, and it "
+                  f"resolved {addresses} device address(es) and waited {waits} "
+                  f"time(s)", file=sys.stderr)
+            raise SystemExit(1)
+if len(touched) != 2:
+    print(f"expected exactly two requests to reach the device, saw {touched}",
+          file=sys.stderr)
+    raise SystemExit(1)
+UNTOUCHED
+# And the same fact stated once over the whole journal, so a window boundary that
+# moved could not hide a request. **Nine, and the three are as load-bearing as the
+# six:** building the ring resolves one address each for the descriptor table, the
+# available ring and the used ring — before any request and before the first receive,
+# which is why the windowed pass above does not see them — and each request resolves
+# three more, for its header, its data buffer and its status byte.
+RING_ADDRESSES=3
+REQUEST_ADDRESSES=$((3 * 2))
+resolved="$(count '^TOS\.RUN\.INTERFACE operation=dma_device_address status=0$')"
+[ "$resolved" = "$((RING_ADDRESSES + REQUEST_ADDRESSES))" ] ||
+    fail "the boot resolved $resolved device addresses; one ring and two requests
+       resolve $((RING_ADDRESSES + REQUEST_ADDRESSES))"
+
+# --- 2: a read replies before it sends -----------------------------------------
 # **The tail after the last completion wait is the read's.** The write's own
 # `irq_wait` comes earlier, and every client-side allocation is earlier still
 # because the client makes its read last. So what follows the final
@@ -201,7 +302,7 @@ for step in wanted:
     at += 1
 ORDER
 
-# --- 2: the accounts ------------------------------------------------------------
+# --- 3: the accounts ------------------------------------------------------------
 completed=$(grep '^TOS\.RUN\.COMPLETED value=' "$LOG" | sed 's/^TOS\.RUN\.COMPLETED value=//')
 for want in "$EXPECTED_SUPERVISOR" "$EXPECTED_SERVICE" "$EXPECTED_CLIENT"; do
     [ "$(printf '%s\n' "$completed" | grep -c "^$want$")" = 1 ] ||
@@ -220,7 +321,7 @@ for value in $completed; do
        reference device is not supposed to refuse a well-formed request"
 done
 
-# --- 3: capacity is the device's, not the service's -----------------------------
+# --- 4: capacity is the device's, not the service's -----------------------------
 # The same two modules against a deliberately small device. If the answer were
 # compiled in, this number could not move.
 bash "$HERE/run.sh" \
@@ -254,6 +355,11 @@ echo "  region queued on an endpoint that outlives its caller"
 echo "  five refusals, each with its own code and its own bit: reserved opcode,"
 echo "  out of range, malformed length, a write with no region, a read with"
 echo "  nowhere to answer — and every one of them a reply, not a dropped call"
+echo "  and each of those five left the device **untouched**: the journal is"
+echo "  sliced by the service's own receives, and only the two windows that"
+echo "  are allowed to reach the device resolved a device address in them —"
+echo "  three each, and nine in the boot with the ring's own three, none"
+echo "  anywhere else"
 echo "  BLK_DEVICE is implemented and **not** exercised: the reference endpoint"
 echo "  answers every well-formed in-range request with VIRTIO_BLK_S_OK and no"
 echo "  fake device is built to manufacture a failure, so that bit is required"
