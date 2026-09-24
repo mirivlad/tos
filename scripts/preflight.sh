@@ -526,6 +526,18 @@ qemu_block_lifecycle() {
 qemu_block_protocol() {
     bash "$ROOT/source/host-tools/qemu-test/block-protocol.sh"
 }
+# A process makes a **send-only** name for an endpoint it receives on (ADR-0100).
+#
+# `IPC_V1` §6 delegates at the rights the sender holds and §2 admits one
+# receive-rights holder, so a channel handed over in a request has to be attenuated —
+# and a delivery that would make a second receiver is refused *whole*, which from the
+# waiter's side is a cancelled receive. The boot proves the original is neither
+# consumed nor displaced, that the alias crosses and carries `send`, that it cannot
+# receive, and that attenuation is an intersection rather than a validation: a
+# send-only name asked for `send | receive` yields `send`.
+qemu_endpoint_attenuation() {
+    bash "$ROOT/source/host-tools/qemu-test/endpoint-attenuation.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -758,6 +770,7 @@ gate qemu       full-only "QEMU a region payload crosses IPC"    region_ipc_payl
 gate qemu       full-only "QEMU a sector crosses IPC as a region"  qemu_block_data_path
 gate qemu       full-only "QEMU a successor restarts the device path" qemu_block_lifecycle
 gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_block_protocol
+gate qemu       full-only "QEMU a send-only name for an endpoint"    qemu_endpoint_attenuation
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

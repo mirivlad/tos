@@ -2,14 +2,15 @@
 
 # ADR-0100: Attenuating an endpoint from canonical text
 
-- Status: **Proposed** (raised 2026-09-24 on Project Architect direction; **not
-  accepted, and nothing in the tree implements it**)
-- Date: 2026-09-24
+- Status: **Accepted** (Project Architect-approved, 2026-09-24), and implemented on
+  the same date. §5's evidence obligations are met by
+  `host-tools/qemu-test/endpoint-attenuation.sh`
+- Date: 2026-09-24, accepted 2026-09-24
 - Decision level: **2** — a contract extension. It declares an operation that
   already exists, on an interface that does not yet declare it. No ABI operation,
   no nucleus mechanism, no capability or object kind, no bound, no
   representation-family member, no `LANGUAGE_VERSION` move
-- Project Architect approval: **not granted; this is a draft for review**
+- Project Architect approval: 2026-09-24, as drafted
 - Related: `CAPABILITY_V1` §4 (attenuation); `IPC_V1` §2 (one receive-rights
   holder) and §6 (a delegation carries the rights the sender holds);
   `SYSTEM_ABI_V1` operation 5; `SYSTEM_INTERFACE_V1` §4; **ADR-0078** §1, which
@@ -134,8 +135,9 @@ for each block READ:
 
 and a client's `GET` is the same pattern on `client-inbox`. So: startup endowments
 unchanged, `MAX_ENDOWMENT` unmoved, one transient table entry per request, and the
-receiver identity stays one process. **That text is not written until this decision
-is accepted**, and this ADR is not authority for it in the meantime.
+receiver identity stays one process. **Applied to `ADR-0099` §2 and
+`STATE_STORE_V1` §2 on acceptance**; the persistent layout and the wire encoding are
+untouched by it.
 
 ## 5. Conformance evidence this decision requires
 

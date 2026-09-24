@@ -60,6 +60,36 @@ memory authority, `receive` on its request endpoint, `send | call` on the block
 service's endpoint, and `send | receive` on its own answer endpoint for the block
 service's replies.
 
+### 2a. The answer channel is a transient alias, not a fifth grant
+
+**A delegation carries the rights the sender holds** (`IPC_V1` §6) and **one endpoint
+has one receive-rights holder at a time** (§2). So neither this store nor its clients
+may hand over the name they receive on: the accepting receive would refuse the whole
+message and both processes would wait for each other. The channel handed over is a
+**send-only alias**, made per request by `capability_attenuate` (ADR-0100):
+
+```text
+reply_to = capability_attenuate(state_inbox, RIGHT_SEND)
+result   = endpoint_call_word_carrying(reply_to, block_service, request)
+capability_release(reply_to)
+then interpret result
+if success: receive the region on state_inbox
+```
+
+**Released whether the call succeeded or not**, and before the result is read: the
+callee has its own name, and a store that tidied up only on the happy path would leak
+under stress. A client's `GET` is the same pattern on `client-inbox`.
+
+**What it costs**: startup endowments stay **four** for the store and **three** for a
+client, `MAX_ENDOWMENT` stays 4, and each outstanding request occupies exactly one
+additional capability-table entry. It cannot accumulate, because §8b permits at most
+one outstanding `GET` per answer endpoint. The alias is local temporary authority,
+never a startup grant, and the receiver identity stays one process — attenuation
+grants to the holder that already held it.
+
+**The persistent layout and the wire encoding are untouched by this.** It is how a
+channel is obtained, not what travels on it.
+
 ## 3. Constants
 
 | Name | Value | Meaning |

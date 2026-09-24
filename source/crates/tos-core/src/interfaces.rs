@@ -674,6 +674,22 @@ pub const ACCEPTED: &[Interface] = &[
             // the row that serves a protocol of three operations has to produce
             // all of it. `system.ipc.ReceivedCall` is unchanged, for ADR-0097
             // §8c's reason.
+            // `CAPABILITY_V1` §4's attenuation, on the interface whose `IPC_V1`
+            // §2 rule makes it necessary (ADR-0100). A delegation carries the
+            // rights the sender holds, and one endpoint has one receive-rights
+            // holder — so a channel handed over in a request has to be a
+            // **send-only** name, and this is how canonical text makes one without
+            // spending a second startup grant on it.
+            //
+            // **The holder does not change and the original is not consumed**, so
+            // §2 is not strained: the nucleus reads a holder as a process, and both
+            // names are this process's.
+            Operation {
+                name: "capability_attenuate",
+                capabilities: &[Requirement::held("system.ipc.Endpoint")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<system.ipc.Endpoint, i64>",
+            },
             Operation {
                 name: "endpoint_receive_call_region",
                 capabilities: &[Requirement::of("system.ipc.Endpoint", "receive")],

@@ -39,6 +39,7 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-region-transfer-text") as usize
     + cfg!(feature = "test-block-lifecycle") as usize
     + cfg!(feature = "test-block-protocol") as usize
+    + cfg!(feature = "test-endpoint-attenuation") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1837,6 +1838,46 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     //
     // **This boot process holds `wait_child`** because it must collect two
     // children's endings before it can report what the boot proved.
+    // ADR-0100's evidence build: a process makes a **send-only** name for an
+    // endpoint it receives on, and hands it to a peer.
+    //
+    // **Two endpoints and no hardware.** `link` is the one the holder owns — it is
+    // given `send | receive` on it and attenuates that to `send` — and `channel` is
+    // how the alias reaches the peer, which holds `receive` on it and nothing else.
+    // Nothing here claims a device, allocates a region or publishes anything.
+    #[cfg(feature = "test-endpoint-attenuation")]
+    let first_endowment = {
+        let (Some(link), Some(channel)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE
+                    | tos_launch::RIGHT_WAIT_CHILD
+                    | tos_launch::RIGHT_TERMINATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            // One name each carrying every right the two plans draw from, because a
+            // plan takes what it asks for intersected with what the creator holds.
+            capability::Endowment::Existing {
+                binding: binding(b"link_full"),
+                object: capability::Object::Endpoint(link),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"channel_full"),
+                object: capability::Object::Endpoint(channel),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+        ]
+    };
     #[cfg(feature = "test-block-protocol")]
     let first_endowment = {
         let (Some(serve), Some(inbox)) = (ipc::create(), ipc::create()) else {
@@ -2322,6 +2363,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-block-service",
         feature = "test-block-lifecycle",
         feature = "test-block-protocol",
+        feature = "test-endpoint-attenuation",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -2359,6 +2401,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-block-service",
         feature = "test-block-lifecycle",
         feature = "test-block-protocol",
+        feature = "test-endpoint-attenuation",
         feature = "test-region-transfer-text",
         feature = "test-block-lifecycle",
         feature = "test-build-topology",

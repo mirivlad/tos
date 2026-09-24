@@ -167,3 +167,4 @@ docs/adr/0095-publication-authority-is-a-dedicated-channel.md
 docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md
 docs/adr/0098-the-block-device-v1-wire-protocol.md
 docs/adr/0099-stage-4-persistent-object-state-storage.md
+docs/adr/0100-attenuating-an-endpoint-from-canonical-text.md

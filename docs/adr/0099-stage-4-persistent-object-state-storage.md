@@ -92,6 +92,55 @@ steady state:   client  --(state.store.v1)-->  state store  --(block.device.v1)-
   isolation boundary **is** capability topology, and the boot journal is where it
   is read.
 
+### 2a. How an answer channel is handed over, and what it costs
+
+**A delegation carries the rights the sender holds** (`IPC_V1` §6) and **one
+endpoint has one receive-rights holder at a time** (§2), so a `GET` cannot hand over
+the name its caller receives on: the accepting receive would refuse the whole
+message, and both processes would wait for each other. That is not a hypothesis —
+`block-protocol` deadlocked exactly there.
+
+**So the channel handed over is a transient send-only alias**, made by ADR-0100's
+`capability_attenuate` row on `system.ipc.Endpoint`:
+
+```text
+state-inbox = send | receive          one startup grant, and it stays one
+
+for every block READ:
+    reply_to = capability_attenuate(state_inbox, RIGHT_SEND)
+    result   = endpoint_call_word_carrying(reply_to, block_service, request)
+    capability_release(reply_to)
+    then interpret result
+    if success: receive the region on state-inbox
+```
+
+**The alias is released whether the call succeeded or not**, and before the result is
+interpreted. It has done its one job either way — the callee holds its own name now,
+because a delegation of a non-affine object copies rather than moves — and a store
+that only tidied up on the happy path would leak exactly when it was under stress.
+
+A client's `GET` is the same pattern on `client-inbox`.
+
+**The accounting, stated so that a later reader does not have to derive it:**
+
+- **startup endowments do not move.** The state service keeps **four**
+  (`budget`, `state-serve` receive, `block-serve` send|call, `state-inbox`
+  send|receive) and the client keeps **three** (`budget`, `state-serve` send|call,
+  `client-inbox` send|receive);
+- **`MAX_ENDOWMENT` remains 4.** The alias is not a startup grant and never appears
+  in a launch plan;
+- **each outstanding request temporarily occupies one additional capability-table
+  entry**, and exactly one;
+- **it does not accumulate**, because v1 permits at most one outstanding `READ` or
+  `GET` per answer endpoint (`BLOCK_DEVICE_V1` §6a, `STATE_STORE_V1` §8b). One
+  outstanding request, one alias, released before the next;
+- **the receiver identity stays one process.** Attenuation grants to the holder that
+  already held it, so `IPC_V1` §2 is not strained — the nucleus reads a *holder* as a
+  process, and both names are the same process's.
+
+**Nothing about the persistent layout or the wire encoding changes.** This is how a
+channel is obtained, not what travels on it.
+
 ## 3. Object identity: a store-local `u64`, bounded to 1..64
 
 An object is named by a `u64` **object id**, and the valid domain at v1 is
@@ -534,7 +583,7 @@ sequential processes:
 | `MAX_PROCESSES` | 4 | peak **4**: `init + block + state + client`. The initializer is collected before state A is created, and the writer and state A are collected before state B and the reader exist |
 | `MAX_PLANS` | 4 | exactly **4**: block; initializer; **state**, shared by A and B; **client**, shared by writer and reader |
 | `MAX_ENDPOINTS` | 6 | **4**: `block-serve`, `state-serve`, `state-inbox`, `client-inbox`. Two spare |
-| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **2** (`budget`, `block-serve` send\|call); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive) |
+| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **2** (`budget`, `block-serve` send\|call); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive). **Startup grants only**: the send-only alias a `GET` hands over is transient and is not one of these (§2a) |
 | `MAX_CAPABILITIES` | 16 per process | the supervisor is the only one near it, as in `block-lifecycle`; its peak must be counted during implementation and child controls released after each collection |
 
 **One client plan for the writer and the reader**, as directed: they are
