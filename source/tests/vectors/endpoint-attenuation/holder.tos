@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The process that owns an endpoint and hands out a **send-only** name for it.
+//
+// ADR-0100 and `CAPABILITY_V1` §4. `IPC_V1` §6 delegates a capability at exactly
+// the rights the sender holds and §2 admits one receive-rights holder at a time, so
+// a process that handed over the name it receives on would be asking the receiver to
+// become a second receiver — and the accepting receive refuses the **whole
+// message**. The answer is an attenuated alias, and this module is the proof that it
+// works:
+//
+//   alias = capability_attenuate(link, RIGHT_SEND)   send only
+//   send the alias to the peer over `channel`
+//   release the alias: transient authority, not a second grant
+//   send to `link` and receive it back                the original still receives
+//   receive again                                      the peer's message, through
+//                                                      the alias
+//
+// **Four facts in one sequence.** That attenuation did not consume the original,
+// that the original is still the receiver, that the alias crosses a message, and
+// that it carries `send`. None of them is asserted separately from the others
+// because none of them is separable: an alias that crossed but could not send, or a
+// send that arrived somewhere other than the original's queue, would fail here.
+//
+// **And then the non-widening test**, which is a different claim. `CAPABILITY_V1`
+// §4 makes attenuation an **intersection**, not a validation — asking for a right
+// the capability does not carry is not an error, it simply does not appear. So a
+// send-only name asked for `send | receive` yields `send`: it sends, and a receive
+// through it is refused. It never acquires `receive`.
+//
+// **What this module does not need.** No memory, no device, no region. The budget is
+// endowed **first** and used for nothing, and that is deliberate: the runtime image
+// exercises a process's first endowed capability after `main` returns, and for an
+// endpoint carrying `receive` that exercise is a blocking receive — which would make
+// this process one the liveness census counts instead of one that ends. A memory
+// authority's exercise blocks on nothing.
+
+module system.test.holder version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as link;
+import capability system.ipc.Endpoint as channel;
+
+resource [
+    fuel: 65536,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+const E_NO_CAPABILITY: i64 = -1i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const NO_PAYLOAD: u64 = 0u64;
+
+// --- what this module proves, one bit each ------------------------------------
+const PROVED_ATTENUATED: i64 = 1i64;
+const PROVED_ALIAS_DELEGATED: i64 = 2i64;
+const PROVED_ALIAS_RELEASED: i64 = 4i64;
+const PROVED_ORIGINAL_STILL_RECEIVES: i64 = 8i64;
+const PROVED_ALIAS_MESSAGE_ARRIVED: i64 = 16i64;
+const PROVED_NARROWED_STILL_SENDS: i64 = 32i64;
+const PROVED_NARROWED_CANNOT_RECEIVE: i64 = 64i64;
+
+// `CAPABILITY_V1` §4's attenuation, over `SYSTEM_ABI_V1` operation 5 (ADR-0100).
+// It does not consume what it narrows.
+extern fn capability_attenuate(
+    cap: system.ipc.Endpoint, rights: u64
+) -> Result<system.ipc.Endpoint, i64> uses [system.ipc.Endpoint];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+// How the alias reaches the peer: an ordinary carrying send, at the rights this
+// process holds over what it delegates (`IPC_V1` §6) — which is the whole reason
+// the thing delegated has to be the alias.
+extern fn endpoint_send_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [channel, system.ipc.Endpoint];
+
+extern fn endpoint_send(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endpoint_receive(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+pub fn main() -> i64
+    uses [budget, link, channel, system.ipc.Endpoint]
+{
+    let mut proved: i64 = 0i64;
+
+    // --- 1. the alias --------------------------------------------------------
+    match (capability_attenuate(link, RIGHT_SEND)) {
+        Ok(alias) => {
+            proved = proved + PROVED_ATTENUATED;
+
+            // --- 2. it crosses ----------------------------------------------
+            // **This is the send that would be refused if the alias carried
+            // `receive`.** The nucleus delegates at the rights this process holds
+            // over the capability named, and the receiving side refuses a whole
+            // message that would make it a second receiver — so a green here is a
+            // statement about the alias's rights and not only about the send.
+            if (endpoint_send_carrying(alias, channel, NO_PAYLOAD) != OK) {
+                return -1i64;
+            }
+            proved = proved + PROVED_ALIAS_DELEGATED;
+
+            // --- 3. and it is transient -------------------------------------
+            // The peer has its own name now; this process's copy has done its one
+            // job. Releasing it is what makes an alias cost a table entry rather
+            // than a grant — which is the accounting ADR-0099 §2 depends on.
+            if (capability_release(alias) != OK) { return -2i64; }
+            proved = proved + PROVED_ALIAS_RELEASED;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+
+    // --- 4. the original was not consumed, and still receives ----------------
+    // Sent and taken by this process through the same name it attenuated. If
+    // attenuation had consumed its input, or moved the receiving role to the
+    // alias, neither half of this would work.
+    if (endpoint_send(link, NO_PAYLOAD) != OK) { return -3i64; }
+    if (endpoint_receive(link) != OK) { return -4i64; }
+    proved = proved + PROVED_ORIGINAL_STILL_RECEIVES;
+
+    // --- 5. the alias carries `send`, and it arrives here --------------------
+    // **A blocking receive, and the block is the point.** This returns when the
+    // peer sends through the alias it was handed. A message arriving on this
+    // process's own queue from a capability another process holds is the whole
+    // claim: the alias sends, and the original is still where its messages go.
+    if (endpoint_receive(link) != OK) { return -5i64; }
+    proved = proved + PROVED_ALIAS_MESSAGE_ARRIVED;
+
+    // --- 6. attenuation is an intersection, not a validation -----------------
+    // **The narrowing that asks for more than it holds.** `send_only` carries
+    // `send`; asking it for `send | receive` is not an error and does not widen it
+    // — `CAPABILITY_V1` §4 intersects, so the result carries `send` and nothing
+    // else. Proved both ways: it sends, and a receive through it is refused.
+    match (capability_attenuate(link, RIGHT_SEND)) {
+        Ok(send_only) => {
+            match (capability_attenuate(send_only, RIGHT_SEND | RIGHT_RECEIVE)) {
+                Ok(widened) => {
+                    // It still sends.
+                    if (endpoint_send(widened, NO_PAYLOAD) != OK) { return -6i64; }
+                    proved = proved + PROVED_NARROWED_STILL_SENDS;
+
+                    // **And it never acquired `receive`.** The refusal is the
+                    // rights check at the handle: `E_NO_CAPABILITY` is what a
+                    // resolve answers when the capability does not carry the right
+                    // the operation requires, and it is not what an empty queue
+                    // answers — that is `E_WOULD_BLOCK`, and a blocking receive
+                    // would not return at all. There *is* a message waiting here,
+                    // the one just sent, which is what makes the refusal
+                    // unambiguous.
+                    if (endpoint_receive(widened) != E_NO_CAPABILITY) { return -7i64; }
+                    proved = proved + PROVED_NARROWED_CANNOT_RECEIVE;
+
+                    // Take the message through a name that may, and let both
+                    // transient names go.
+                    if (endpoint_receive(link) != OK) { return -8i64; }
+                    if (capability_release(widened) != OK) { return -9i64; }
+                    if (capability_release(send_only) != OK) { return -10i64; }
+                }
+                Err(status) => { return status - 200i64; }
+            }
+        }
+        Err(status) => { return status - 300i64; }
+    }
+
+    return proved;
+}

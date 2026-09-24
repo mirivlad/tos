@@ -1432,6 +1432,18 @@ const PERFORMED: &[Performed] = &[
     },
     // The receive that serves such a call: the same selector as
     // `endpoint_receive`, producing everything one message carried.
+    // `CAPABILITY_V1` §4's attenuation over the selector it already performs for
+    // four other interfaces (ADR-0100). **Generic endpoint attenuation**: nothing
+    // here knows about inboxes, answers or storage, and the result is an endpoint
+    // capability of the same interface because that is what a refinement of one is.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "capability_attenuate",
+        operation: CAPABILITY_ATTENUATE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
     Performed {
         interface: "system.ipc.Endpoint",
         name: "endpoint_receive_call_region",

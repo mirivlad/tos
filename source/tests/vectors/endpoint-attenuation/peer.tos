@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The process that is handed a **send-only** name and proves it is send-only.
+//
+// ADR-0100 §5 obligations 2 and 3. This module receives an endpoint capability it
+// never held before, attempts to receive through it, and must be refused — then
+// sends through it, which must work.
+//
+//   receive the alias from the holder
+//   receive **through the alias**   -> E_NO_CAPABILITY, because it carries no
+//                                      `receive` right
+//   send through the alias          -> arrives on the holder's own queue
+//
+// **Why the refusal is about rights and not about an empty queue.** A resolve that
+// finds the capability but not the right the operation requires answers
+// `E_NO_CAPABILITY`; a receive whose rights are fine and whose queue is empty
+// answers `E_WOULD_BLOCK` when asked not to wait, and blocks when not. So the exact
+// status is what distinguishes "this name may not receive" from "nothing has
+// arrived", and this module asserts the exact status.
+//
+// **That the message crossed at all is the other half.** `IPC_V1` §2 admits one
+// receive-rights holder per endpoint and the accepting receive refuses a whole
+// message that would make a second one — so a delegation of the holder's
+// *unattenuated* name would never have reached this process. The gate mutates the
+// holder to do exactly that, and this module is what would then never run.
+
+module system.test.peer version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as channel;
+
+resource [
+    fuel: 65536,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+const E_NO_CAPABILITY: i64 = -1i64;
+const NO_PAYLOAD: u64 = 0u64;
+
+const PROVED_ALIAS_ARRIVED: i64 = 1i64;
+const PROVED_CANNOT_RECEIVE: i64 = 2i64;
+const PROVED_CAN_SEND: i64 = 4i64;
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [channel];
+
+extern fn endpoint_send(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endpoint_receive(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+pub fn main() -> i64
+    uses [budget, channel, system.ipc.Endpoint]
+{
+    let mut proved: i64 = 0i64;
+
+    match (endpoint_receive_call(channel)) {
+        Ok(handover) => {
+            proved = proved + PROVED_ALIAS_ARRIVED;
+
+            // --- it does not carry `receive` ---------------------------------
+            // The exact status, not merely "not OK": `E_NO_CAPABILITY` is the
+            // resolve refusing a right this capability does not have, and it is a
+            // different number from the one an empty queue produces.
+            if (endpoint_receive(handover.carried) != E_NO_CAPABILITY) {
+                return -1i64;
+            }
+            proved = proved + PROVED_CANNOT_RECEIVE;
+
+            // --- and it does carry `send` ------------------------------------
+            // This is what the holder is blocked waiting for.
+            if (endpoint_send(handover.carried, NO_PAYLOAD) != OK) { return -2i64; }
+            proved = proved + PROVED_CAN_SEND;
+
+            if (capability_release(handover.carried) != OK) { return -3i64; }
+        }
+        Err(status) => { return status - 100i64; }
+    }
+
+    return proved;
+}

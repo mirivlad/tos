@@ -306,6 +306,7 @@ such a module whole by its header.
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `endpoint_call_word_region` | `system.ipc.Endpoint` with `call`, then `system.memory.Region` with `none` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
 | `endpoint_receive_call_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCallRegion, i64>` | 2 |
+| `capability_attenuate` | `system.ipc.Endpoint` with `none` | `rights: u64` | `Result<system.ipc.Endpoint, i64>` | 5 |
 | `capability_release` | `system.ipc.Endpoint` with `none` | *(none)* | `i64` | 6 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
@@ -324,6 +325,34 @@ nothing with the transfer table. A service whose answer must deliver a
 capability therefore delivers it as a message, to a channel the asker handed
 over in its own request — ordinary capability discipline, and no change to what
 a reply is.
+
+`capability_attenuate` is `CAPABILITY_V1` §4's attenuation, declared on this
+interface as it already is on `system.process.Control` and, in the platform schema,
+on `platform.pci.Bus`, `platform.irq.Source` and `platform.pci.FunctionConfig`
+(ADR-0100). **`none`**, for the reason every one of those gives: attenuation names
+no right of its own — what it requires is that the caller *hold* the capability, and
+what it produces is bounded by that capability's rights whatever the caller asked
+for.
+
+**Why an endpoint needs it.** §6 delegates a capability at exactly the rights the
+sender holds, and `IPC_V1` §2 admits one receive-rights holder at a time — so a
+process that delegated the name it receives on would be asking the receiver to
+become a second receiver, and the accepting receive refuses the **whole message**. A
+protocol whose answer is a region has to hand over a channel, so it has to hand over
+a **send-only** name, and until this row existed the only way to have one was a
+second startup grant.
+
+**It does not consume its input and the receiver does not move.** The original
+remains held and remains the receiving name; the alias is a second entry in the
+*same* process's table, which `IPC_V1` §2 admits because the holder is one process —
+the nucleus reads a *holder* as a process rather than as a capability for exactly
+this reason. So an alias costs one transient table entry, released once it has been
+delegated.
+
+**Intersection, not validation.** Asking for a right the capability does not carry
+does not fail: the result carries what both have, which for `send | receive` asked of
+a send-only name is `send`. An empty intersection is a refusal, because a capability
+with no rights is a slot rather than an attenuation.
 
 `capability_release` is `CAPABILITY_V1` §4's release, declared on this
 interface as it is on four others. **`IPC_V1` §2 is why an endpoint needs it**:
