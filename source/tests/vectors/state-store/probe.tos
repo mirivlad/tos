@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The client of a store that is **not open**, and the only thing it proves is that every
+// answer is `ST_STORE`.
+//
+// `STATE_STORE_V1` §9 makes `ST_STORE` *"the store is not open: no valid header, or the
+// device is too small"*, and §4.4 makes that a state a state service **serves** rather
+// than repairs — it does not format, reformat or guess, because a child is never told its
+// restart generation and could not tell a fresh first start from a restart whose header
+// failed to read.
+//
+// **This module runs against a device of 64 sectors**, one short of the 65 the bounded
+// layout needs. So the store asks the layer below for the capacity, is told a number
+// smaller than the extent it would use, and is closed — with a sector 0 it never even
+// reads, because a header is meaningless on a device that cannot hold the layout the
+// header describes.
+//
+//   a reserved opcode             -> REFUSED + ST_STORE
+//   an id that is never valid     -> REFUSED + ST_STORE
+//   a PUT with no region          -> REFUSED + ST_STORE
+//   a GET with no answer endpoint -> REFUSED + ST_STORE
+//   a GET of a present-looking id -> REFUSED + ST_STORE
+//
+// **Five differently-shaped requests and one answer**, which is the claim. Each of these
+// would have its own code against an open store — `ST_OPCODE`, `ST_ID`, `ST_NO_REGION`,
+// `ST_NO_ANSWER`, `ST_ABSENT` — and the main boot proves exactly that. Here they are all
+// `ST_STORE`, because a store that is not open has no object to have an opinion about. A
+// client told `ST_ID` by a closed store would have been told its id was the problem.
+//
+// **It holds no `block.device.v1` capability**, like every client of this store: it cannot
+// address a sector and cannot see the device's size for itself.
+
+module system.state.probe version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as store;
+import capability system.ipc.Endpoint as inbox;
+
+resource [
+    fuel: 1048576,
+    stack: 8KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+
+// --- `STATE_STORE_V1` §3, §6, §7, §9 -------------------------------------------
+const OP_GET: u64 = 0u64;
+const OP_PUT: u64 = 1u64;
+const OP_RESERVED: u64 = 2u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const REFUSED: u64 = 9223372036854775808u64;
+const ST_STORE: u64 = 7u64;
+const ID_ZERO: u64 = 0u64;
+const ID_ONE: u64 = 1u64;
+const ID_TWO: u64 = 2u64;
+
+// --- what this module proves, one bit each ------------------------------------
+// **Its own range**, above every other module in this fixture.
+const PROVED_OPCODE_CLOSED: i64 = 16777216i64;
+const PROVED_ID_CLOSED: i64 = 33554432i64;
+const PROVED_NO_REGION_CLOSED: i64 = 67108864i64;
+const PROVED_NO_ANSWER_CLOSED: i64 = 134217728i64;
+const PROVED_GET_CLOSED: i64 = 268435456i64;
+
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [store];
+
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [system.ipc.Endpoint, store];
+
+extern fn capability_attenuate(
+    cap: system.ipc.Endpoint, rights: u64
+) -> Result<system.ipc.Endpoint, i64> uses [inbox];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+// Whether one refusal is exactly `ST_STORE` — both halves, and the length first (§7).
+fn closed(answer: system.ipc.Answer) -> bool {
+    if (answer.length != REQUEST_BYTES) { return false; }
+    return answer.word == REFUSED + ST_STORE;
+}
+
+// One request with no answer channel, which must be answered `ST_STORE`.
+fn asking(word: u64) -> i64
+    uses [store]
+{
+    match (endpoint_call_word(store, word)) {
+        Ok(answer) => {
+            if (!closed(answer)) { return -1i64; }
+            return OK;
+        }
+        Err(status) => { return status; }
+    }
+}
+
+// And one that carries one, which must be answered the same way — and after which **no
+// region is waited for**, because a refusal owes none (§8b).
+fn asking_carrying(word: u64) -> i64
+    uses [store, inbox, system.ipc.Endpoint]
+{
+    match (capability_attenuate(inbox, RIGHT_SEND)) {
+        Ok(reply_to) => {
+            let asked: Result<system.ipc.Answer, i64> =
+                endpoint_call_word_carrying(reply_to, store, word);
+            if (capability_release(reply_to) != OK) { return -2i64; }
+            match (asked) {
+                Ok(answer) => {
+                    if (!closed(answer)) { return -3i64; }
+                    return OK;
+                }
+                Err(status) => { return status; }
+            }
+        }
+        Err(status) => { return status; }
+    }
+}
+
+pub fn main() -> i64
+    uses [budget, store, inbox, system.ipc.Endpoint]
+{
+    let mut proved: i64 = 0i64;
+
+    let reserved: i64 = asking(ID_ONE * OPCODE_SPAN + OP_RESERVED);
+    if (reserved != OK) { return reserved - 100i64; }
+    proved = proved + PROVED_OPCODE_CLOSED;
+
+    let zero: i64 = asking(ID_ZERO * OPCODE_SPAN + OP_PUT);
+    if (zero != OK) { return zero - 200i64; }
+    proved = proved + PROVED_ID_CLOSED;
+
+    let empty: i64 = asking(ID_ONE * OPCODE_SPAN + OP_PUT);
+    if (empty != OK) { return empty - 300i64; }
+    proved = proved + PROVED_NO_REGION_CLOSED;
+
+    let unanswerable: i64 = asking(ID_TWO * OPCODE_SPAN + OP_GET);
+    if (unanswerable != OK) { return unanswerable - 400i64; }
+    proved = proved + PROVED_NO_ANSWER_CLOSED;
+
+    let get_two: i64 = asking_carrying(ID_TWO * OPCODE_SPAN + OP_GET);
+    if (get_two != OK) { return get_two - 500i64; }
+    proved = proved + PROVED_GET_CLOSED;
+
+    return proved;
+}

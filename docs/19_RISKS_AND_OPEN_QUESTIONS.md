@@ -135,7 +135,9 @@ Mitigation:
 - TOS Core language foundation selection under ADR-0015;
 - selected language grammar, semantics and memory model;
 - IPC schema language;
-- first persistent object/state filesystem;
+- first persistent object/state **filesystem**, which is still undecided and is not
+  what `ADR-0099`'s store is: that store is a substrate and not a namespace, with no
+  paths, no directories, no VFS and no `/state` mapping (`ADR-0099` §1, §14);
 - cryptographic algorithms and key-management policy;
 - SMP activation stage;
 - state snapshot mechanism;

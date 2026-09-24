@@ -8,16 +8,33 @@
 //   block service                  created first, ends last: everything above it
 //                                  reaches the device only by asking
 //   initializer, first run         formats a zeroed device; its ending is collected
-//   initializer, second run        the same text against the header the first wrote:
-//                                  it must **refuse to format**
-//   state store A                  opens the header from the device
-//   writer                         put(1, pattern A); put(2, pattern B); ends
-//   A ends, is retired, and **both** endings are collected before B exists
+//   state store A                  asks the capacity, then opens the header — both,
+//                                  because §9 makes a device too small a closed store
+//   writer                         three refusals; put(1, pattern A); put(2, pattern B)
+//   A ends, is retired, and **both** endings are collected before anything else runs
+//   initializer, second run        the **adversarial re-provisioning probe**: the same
+//                                  text, the same sealed plan, against a header whose
+//                                  occupancy now has two bits set. It must refuse, and
+//                                  the store it refused to touch must still be there
 //   state store B                  the same canonical module from the same sealed
 //                                  plan; re-reads and validates the header from the
 //                                  device
-//   reader                         get(3) refused as absent; get(2) verified byte by
-//                                  byte
+//   reader                         three refusals; get(3) refused as absent; get(2)
+//                                  verified byte by byte
+//
+// **The second initializer run is placed where it is on purpose, and it is not steady-state
+// policy.** Re-provisioning a store that already exists is not something a running system
+// does; this run is a conformance probe, and `STATE_STORE_V1` §12's negative is what it
+// probes. Running it while the store was still empty would have proved only that a *valid
+// empty* store is not reformatted — which is the easy half. Running it after two objects
+// exist is the half that matters: an initializer that wrote unconditionally would reset
+// `occupancy` and lose both of them while reporting success, and the reader's later
+// `get(2)` is the witness that it did not.
+//
+// **No state service is live while the probe runs.** Generation A and the writer are both
+// collected first, and generation B is created after. So the probe is the only thing
+// holding a client capability for the block service at that moment, which is what makes
+// "the header it read is the one on the device" a statement about the device.
 //
 // **Two plans are each used twice**, which is what `MAX_PLANS` = 4 buys: a sealed plan
 // *"is not consumed by the creation that reads it"*, and the entry path is an argument
@@ -147,11 +164,11 @@ const EXIT_COMPLETED: u64 = 0u64;
 const CREATED_BLOCK: i64 = 1i64;
 const CREATED_INITIALIZER: i64 = 2i64;
 const FORMATTED_COLLECTED: i64 = 4i64;
-const CREATED_REINITIALIZER: i64 = 8i64;
-const REFUSAL_COLLECTED: i64 = 16i64;
-const CREATED_STATE_A: i64 = 32i64;
-const CREATED_WRITER: i64 = 64i64;
-const FIRST_PAIR_COLLECTED: i64 = 128i64;
+const CREATED_STATE_A: i64 = 8i64;
+const CREATED_WRITER: i64 = 16i64;
+const FIRST_PAIR_COLLECTED: i64 = 32i64;
+const CREATED_REINITIALIZER: i64 = 64i64;
+const REFUSAL_COLLECTED: i64 = 128i64;
 const CREATED_STATE_B: i64 = 256i64;
 const CREATED_READER: i64 = 512i64;
 // **The remaining three, in whatever order they ended.** Generation B, the reader and
@@ -371,10 +388,32 @@ fn run(
     if (formatted != OK) { return formatted - 6201i64; }
     found = found + FORMATTED_COLLECTED;
 
-    // --- the negative: the same text against a store that exists -------------
+    // --- generation A, and the writer ----------------------------------------
+    if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6104i64; }
+    found = found + CREATED_STATE_A;
+    if (start(client, "system/state/writer.tos", CHILD_GRANT) != OK) { return -6105i64; }
+    found = found + CREATED_WRITER;
+
+    // **Both, before anything else runs.** Which of the two ends first is not this
+    // module's to decide, and it does not need to be: collecting both is what makes "A's
+    // ending was collected before B was created" true whichever order they came in. And it
+    // is exactly these two — the block service still owes the requests of everything that
+    // comes after, so it cannot be one of them.
+    let writer_or_a: i64 = collect();
+    if (writer_or_a != OK) { return writer_or_a - 6203i64; }
+    let the_other: i64 = collect();
+    if (the_other != OK) { return the_other - 6204i64; }
+    found = found + FIRST_PAIR_COLLECTED;
+
+    // --- the negative: the same text against a store that now holds objects --
     // **A second process and not a second code path.** The claim is that *this*
-    // initializer refuses, so what runs is the same module from the same sealed plan,
-    // and the only thing that differs is what it finds on the device.
+    // initializer refuses, so what runs is the same module from the same sealed plan, and
+    // the only thing that differs is what it finds on the device — which is now a valid
+    // header with two occupancy bits set, and not an empty store.
+    //
+    // **Nothing else is live that could be serving the store**, which is the other half of
+    // why this runs here: a re-provisioning probe against a store somebody was using would
+    // be testing two things at once.
     if (start(initializer, "system/state/initializer.tos", CHILD_GRANT) != OK) {
         return -6103i64;
     }
@@ -383,26 +422,10 @@ fn run(
     if (refused != OK) { return refused - 6202i64; }
     found = found + REFUSAL_COLLECTED;
 
-    // --- generation A, and the writer ----------------------------------------
-    if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6104i64; }
-    found = found + CREATED_STATE_A;
-    if (start(client, "system/state/writer.tos", CHILD_GRANT) != OK) { return -6105i64; }
-    found = found + CREATED_WRITER;
-
-    // **Both, before B exists.** Which of the two ends first is not this module's to
-    // decide, and it does not need to be: collecting both is what makes "A's ending was
-    // collected before B was created" true whichever order they came in. And it is
-    // exactly these two — the block service still owes generation B its two requests, so
-    // it cannot be one of them.
-    let writer_or_a: i64 = collect();
-    if (writer_or_a != OK) { return writer_or_a - 6203i64; }
-    let the_other: i64 = collect();
-    if (the_other != OK) { return the_other - 6204i64; }
-    found = found + FIRST_PAIR_COLLECTED;
-
     // --- generation B, and the reader ----------------------------------------
     // The same plan and the same entry. Nothing crossed from A: its address space and
-    // its capabilities are gone, and the header B validates is the one on the device.
+    // its capabilities are gone, and the header B validates is the one on the device —
+    // the one the re-provisioning probe was refused permission to overwrite.
     if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6106i64; }
     found = found + CREATED_STATE_B;
     if (start(client, "system/state/reader.tos", CHILD_GRANT) != OK) { return -6107i64; }

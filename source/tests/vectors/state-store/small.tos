@@ -1,0 +1,365 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The supervisor of the **too-small-device** boot: the same store, the same initializer
+// and the same block service, against a device one sector short of the layout.
+//
+// `STATE_STORE_V1` §9 gives `ST_STORE` two reasons — *"no valid header, **or the device is
+// too small**"* — and the ordinary boot proves neither of them, because its device is
+// large and its header is valid. This boot is the other case, and it is a separate boot
+// rather than a phase of the first one because the device's size is a property of the
+// machine and not of anything a module can choose.
+//
+//   block service   claims the same function on a 64-sector image
+//   initializer     capacity() < 65 -> it formats **nothing** and says so
+//   state store     capacity() < 65 -> it is not open, and serves ST_STORE
+//   probe           five differently-shaped requests, five ST_STORE answers
+//
+// **Sector 0 is never read in this boot**, which is the sharp end of the correction this
+// fixture exists for: a store that validated the header and stopped would have opened on
+// a device that cannot hold the sectors the header describes, and would have run past the
+// end of the extent on the first `PUT` of a high id. Two block requests in the whole boot,
+// both `CAPACITY`, and the gate counts them.
+//
+// **The block service ends because nobody is left to ask it anything.** Its request count
+// is a constant — fourteen, the number the *ordinary* boot makes — and this boot makes two:
+// one `CAPACITY` for the initializer and one for the store. When the initializer, the store
+// and the probe have all ended, no live process holds a name it can send on, and
+// `SYSTEM_ABI_V1` §6's liveness rule ends the receive it is blocked on. The service reads
+// that cancellation for what it is and reports what it proved, so its ending is an ordinary
+// exit and this supervisor collects it like any other.
+//
+// **Nothing is terminated and no child control is kept.** A supervisor that held one would
+// be claiming authority it does not need, and the rule that ends this boot is the one the
+// system already has.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability platform.pci.Bus as device;
+import capability system.ipc.Endpoint as block_serve_full;
+import capability system.ipc.Endpoint as state_serve_full;
+import capability system.ipc.Endpoint as state_inbox_full;
+import capability system.ipc.Endpoint as client_inbox_full;
+import capability system.ipc.Endpoint as init_inbox_full;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 16
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn endow_for_launch(
+    held: platform.pci.Bus,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [device];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn process_wait_child(
+    cap: system.process.Control, flags: u64
+) -> Result<system.process.ChildEnding, i64> uses [process];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_CALL: u64 = 4u64;
+const RIGHT_CLAIM: u64 = 2048u64;
+const RIGHT_SPEND: u64 = 128u64;
+const BLOCKING: u64 = 0u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+const SERVICE_GRANT: u64 = 25165824u64;
+const CHILD_GRANT: u64 = 8388608u64;
+
+const ENDING_EXITED: u64 = 1u64;
+const EXIT_COMPLETED: u64 = 0u64;
+const E_CANCELLED: i64 = -5i64;
+
+const CREATED_BLOCK: i64 = 1i64;
+const CREATED_INITIALIZER: i64 = 2i64;
+const INITIALIZER_COLLECTED: i64 = 4i64;
+const CREATED_STORE: i64 = 8i64;
+const CREATED_PROBE: i64 = 16i64;
+const PAIR_COLLECTED: i64 = 32i64;
+const BLOCK_COLLECTED: i64 = 64i64;
+
+fn block_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, device, block_serve_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-2001i64);
+            }
+            if (endow_for_launch(block_serve_full, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2002i64);
+            }
+            if (endow_for_launch(device, builder, RIGHT_CLAIM, "device") != OK) {
+                return Err(-2003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2100i64); }
+    }
+}
+
+fn initializer_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, block_serve_full, init_inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-3001i64);
+            }
+            if (endow_for_launch(block_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
+                return Err(-3002i64);
+            }
+            if (endow_for_launch(init_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-3003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 3100i64); }
+    }
+}
+
+fn state_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, block_serve_full, state_serve_full, state_inbox_full,
+          system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-4001i64);
+            }
+            if (endow_for_launch(state_serve_full, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-4002i64);
+            }
+            if (endow_for_launch(block_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
+                return Err(-4003i64);
+            }
+            if (endow_for_launch(state_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-4004i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 4100i64); }
+    }
+}
+
+fn client_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, state_serve_full, client_inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-5001i64);
+            }
+            if (endow_for_launch(state_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "store") != OK) {
+                return Err(-5002i64);
+            }
+            if (endow_for_launch(client_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-5003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 5100i64); }
+    }
+}
+
+fn start(plan: system.process.LaunchPlan, entry: string, grant: u64) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(process, memory, plan, entry, grant, NO_SELF_RIGHTS)) {
+        Ok(child) => {
+            if (capability_release(child.control) != OK) { return -9001i64; }
+            return OK;
+        }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+// Whether one ending is a clean one: the nucleus says the child exited, and the child's own
+// claim about itself is the completion status.
+//
+// **`ending_kind` and `self_reported_status` are different facts and both are checked.** A
+// supervisor that read only the status would accept a fault whose status field is a zero
+// nobody claimed.
+fn clean(ending: system.process.ChildEnding) -> i64 {
+    if (ending.ending_kind != ENDING_EXITED) { return -8001i64; }
+    match (ending.self_reported_status) {
+        Some(status) => {
+            if (status != EXIT_COMPLETED) { return -8002i64; }
+            return OK;
+        }
+        None => { return -8003i64; }
+    }
+}
+
+// Collects one ending and requires it to be a clean exit.
+fn collect() -> i64
+    uses [process]
+{
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(ending) => { return clean(ending); }
+        Err(uncollected) => { return uncollected - 8100i64; }
+    }
+}
+
+// The last collection, which may be cancelled once and then succeed.
+//
+// **Both waits are ended in the same census, and that is correct.** When the only things
+// left in the system are this supervisor waiting on its child relation and the block service
+// waiting for a message, nothing can satisfy either — so `SYSTEM_ABI_V1` §6's liveness rule
+// ends both. The block service reads its cancellation for what it is and exits; this wait is
+// then one there *is* an answer for, so it is made again.
+//
+// **Exactly once.** A second cancellation would mean the child had not ended after all,
+// which is a different fact and is reported rather than waited out.
+fn collect_after_the_census() -> i64
+    uses [process]
+{
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(ending) => { return clean(ending); }
+        Err(uncollected) => {
+            if (uncollected != E_CANCELLED) { return uncollected - 8100i64; }
+            return collect();
+        }
+    }
+}
+
+pub fn main() -> i64
+    uses [process, memory, device, block_serve_full, state_serve_full,
+          state_inbox_full, client_inbox_full, init_inbox_full, system.ipc.Endpoint]
+{
+    match (block_plan()) {
+        Ok(block) => {
+            match (initializer_plan()) {
+                Ok(initializer) => {
+                    match (state_plan()) {
+                        Ok(state) => {
+                            match (client_plan()) {
+                                Ok(client) => {
+                                    return run(block, initializer, state, client);
+                                }
+                                Err(unplanned) => { return unplanned; }
+                            }
+                        }
+                        Err(unplanned) => { return unplanned; }
+                    }
+                }
+                Err(unplanned) => { return unplanned; }
+            }
+        }
+        Err(unplanned) => { return unplanned; }
+    }
+}
+
+fn run(
+    block: system.process.LaunchPlan,
+    initializer: system.process.LaunchPlan,
+    state: system.process.LaunchPlan,
+    client: system.process.LaunchPlan
+) -> i64
+    uses [process, memory, block_serve_full, state_serve_full, state_inbox_full,
+          client_inbox_full, init_inbox_full, system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    if (capability_release(block_serve_full) != OK) { return -6001i64; }
+    if (capability_release(state_serve_full) != OK) { return -6002i64; }
+    if (capability_release(state_inbox_full) != OK) { return -6003i64; }
+    if (capability_release(client_inbox_full) != OK) { return -6004i64; }
+    if (capability_release(init_inbox_full) != OK) { return -6005i64; }
+
+    if (start(block, "system/service/block.tos", SERVICE_GRANT) != OK) { return -6101i64; }
+    found = found + CREATED_BLOCK;
+
+    // --- provisioning, which formats nothing on a device this size ------------
+    if (start(initializer, "system/state/initializer.tos", CHILD_GRANT) != OK) {
+        return -6102i64;
+    }
+    found = found + CREATED_INITIALIZER;
+    let provisioned: i64 = collect();
+    if (provisioned != OK) { return provisioned - 6200i64; }
+    found = found + INITIALIZER_COLLECTED;
+
+    // --- the ordinary store, and a client of it -------------------------------
+    // **The ordinary service and not a special one.** What is being proved is that the
+    // store a running system would start is the one that refuses, so this is
+    // `store.tos` from the same kind of sealed plan as the boot that works.
+    if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6103i64; }
+    found = found + CREATED_STORE;
+    if (start(client, "system/state/probe.tos", CHILD_GRANT) != OK) { return -6104i64; }
+    found = found + CREATED_PROBE;
+
+    let first: i64 = collect();
+    if (first != OK) { return first - 6300i64; }
+    let second: i64 = collect();
+    if (second != OK) { return second - 6400i64; }
+    found = found + PAIR_COLLECTED;
+
+    // --- and the device service, which now has nobody left to serve ----------
+    // **It ends by itself.** No live process holds a name it can be sent on, so the
+    // receive it is blocked on is one nothing can satisfy and the liveness rule ends it
+    // (`SYSTEM_ABI_V1` §6). The service reads that for what it is and exits reporting what
+    // it proved, which is why this is an ordinary collection.
+    let device_service: i64 = collect_after_the_census();
+    if (device_service != OK) { return device_service - 6500i64; }
+    found = found + BLOCK_COLLECTED;
+
+    return found;
+}

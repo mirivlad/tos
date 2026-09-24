@@ -8,10 +8,26 @@
 // and generation B re-read the header from the device. Nothing was handed to anybody in
 // memory. So the 512 bytes this module verifies came off the device.
 //
+//   get(65)                   -> REFUSED + ST_ID, because MAX_ID is 64
+//   get(2) with no answer     -> REFUSED + ST_NO_ANSWER
+//   a call whose length is 0  -> answered, and the store's own account says it was
+//                                refused as malformed
 //   get(3)   an id never created   -> refusal, exactly REFUSED + ST_ABSENT, and
 //                                     **no region follows**
 //   get(2)   -> Answer{length: 8, word: 0}, then exactly one region, 512 bytes of
 //               pattern B
+//
+// **Three of §9's refusals are exercised here and three by the writer**, split so that
+// both generations of the store serve the same number of requests — one canonical module,
+// one constant request count. Each is asserted by **exact reply word**, except the
+// malformed one.
+//
+// **The malformed refusal is the one whose caller cannot read the reply.** `endpoint_call`
+// is the only row that lets a client choose an inline length at all, and its result is a
+// status rather than an answer — so what this module can prove is that the call was
+// *answered*, and the store's own account carries that it was answered as malformed. No
+// second IPC surface is invented to make this negative prettier than it is; the block
+// layer's malformed evidence has exactly the same shape.
 //
 // **It holds no `block.device.v1` capability**, which is the store's isolation boundary
 // (§2) and is readable from the boot journal rather than from this text.
@@ -55,21 +71,32 @@ const OP_GET: u64 = 0u64;
 const OPCODE_SPAN: u64 = 4u64;
 const REQUEST_BYTES: u64 = 8u64;
 const REFUSED: u64 = 9223372036854775808u64;
+const ST_ID: u64 = 2u64;
+const ST_NO_ANSWER: u64 = 5u64;
 const ST_ABSENT: u64 = 6u64;
 // The object the writer created, and one it never did. Both are in `MIN_ID..MAX_ID`, so
 // neither can be refused as `ST_ID`.
 const ID_PRESENT: u64 = 2u64;
 const ID_NEVER: u64 = 3u64;
+// **One past `MAX_ID`** (§3, §6). The other end of the id range from the writer's zero, so
+// between them both boundaries of `MIN_ID..MAX_ID` are exercised rather than one twice.
+const ID_PAST_END: u64 = 65u64;
+// A length this protocol has no request of (§7). Zero is the honest choice: it is what an
+// empty message carries, and `endpoint_call` is the only row that can state it.
+const NO_PAYLOAD_LENGTH: u64 = 0u64;
 // The pattern the writer put in object 2, stated here as its own constant: the check is
 // against what this module expects, not against anything it was told.
 const PATTERN_B: u64 = 1u64;
 
 // --- what this module proves, one bit each ------------------------------------
 // **Its own range**, above the writer's.
-const PROVED_ABSENT_REFUSED: i64 = 16384i64;
-const PROVED_GET_ACKNOWLEDGED: i64 = 32768i64;
-const PROVED_REGION_ARRIVED: i64 = 65536i64;
-const PROVED_EVERY_BYTE: i64 = 131072i64;
+const PROVED_ID_REFUSED: i64 = 131072i64;
+const PROVED_NO_ANSWER_REFUSED: i64 = 262144i64;
+const PROVED_MALFORMED_ANSWERED: i64 = 524288i64;
+const PROVED_ABSENT_REFUSED: i64 = 1048576i64;
+const PROVED_GET_ACKNOWLEDGED: i64 = 2097152i64;
+const PROVED_REGION_ARRIVED: i64 = 4194304i64;
+const PROVED_EVERY_BYTE: i64 = 8388608i64;
 
 // A `GET` says where to answer, because a reply cannot carry a region.
 //
@@ -85,6 +112,19 @@ extern fn endpoint_call_word_carrying(
 extern fn endpoint_receive_region(
     cap: system.ipc.Endpoint
 ) -> Result<Region<u8>, i64> uses [inbox];
+
+// A `GET` with nowhere to answer: the same request word, on the row that carries no
+// capability at all.
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [store];
+
+// The malformed case: a payload length this module chooses, which is the only row that
+// lets it choose one — and the only row over this protocol whose result is a status
+// rather than an answer.
+extern fn endpoint_call(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [store];
 
 // ADR-0100. The channel handed over is a **send-only** alias: a delegation carries the
 // rights the sender holds (`IPC_V1` §6), and a name carrying `receive` would ask the
@@ -125,31 +165,72 @@ fn agreeing(borrow payload: Region<u8>) -> u64 {
     return agreed;
 }
 
+// Whether one refusal is exactly the one it should be — both halves, and the length
+// first (§7).
+fn refused_as(answer: system.ipc.Answer, code: u64) -> bool {
+    if (answer.length != REQUEST_BYTES) { return false; }
+    return answer.word == REFUSED + code;
+}
+
+// One `GET` that carries an answer channel and must be refused with one exact code.
+//
+// **The alias is made, used and released per request**, and released whether the call
+// succeeded or not: `STATE_STORE_V1` §2a's pattern, and `ADR-0100`'s row.
+fn refused_get(word: u64, code: u64) -> i64
+    uses [store, inbox, system.ipc.Endpoint]
+{
+    match (capability_attenuate(inbox, RIGHT_SEND)) {
+        Ok(reply_to) => {
+            let asked: Result<system.ipc.Answer, i64> =
+                endpoint_call_word_carrying(reply_to, store, word);
+            if (capability_release(reply_to) != OK) { return -1i64; }
+            match (asked) {
+                Ok(answer) => {
+                    if (!refused_as(answer, code)) { return -2i64; }
+                    return OK;
+                }
+                Err(status) => { return status; }
+            }
+        }
+        Err(status) => { return status; }
+    }
+}
+
 pub fn main() -> i64
     uses [budget, store, inbox, system.ipc.Endpoint, system.memory.Region]
 {
     let mut proved: i64 = 0i64;
 
-    // --- 1. an id that was never created -------------------------------------
-    match (capability_attenuate(inbox, RIGHT_SEND)) {
-        Ok(reply_to) => {
-            let asked: Result<system.ipc.Answer, i64> =
-                endpoint_call_word_carrying(reply_to, store,
-                    ID_NEVER * OPCODE_SPAN + OP_GET);
-            if (capability_release(reply_to) != OK) { return -1i64; }
-            match (asked) {
-                Ok(answer) => {
-                    if (answer.length != REQUEST_BYTES) { return -2i64; }
-                    if (answer.word != REFUSED + ST_ABSENT) { return -3i64; }
-                    proved = proved + PROVED_ABSENT_REFUSED;
-                }
-                Err(status) => { return status - 100i64; }
-            }
+    // --- 1. an id past the end of the range ----------------------------------
+    // **Carrying an answer channel on purpose**, so the only thing wrong with this
+    // request is the id: a refusal two rules could satisfy proves neither.
+    let past: i64 = refused_get(ID_PAST_END * OPCODE_SPAN + OP_GET, ST_ID);
+    if (past != OK) { return past - 600i64; }
+    proved = proved + PROVED_ID_REFUSED;
+
+    // --- 2. a read with nowhere to answer ------------------------------------
+    // A valid, present id, so the only thing wrong with it is the missing channel.
+    match (endpoint_call_word(store, ID_PRESENT * OPCODE_SPAN + OP_GET)) {
+        Ok(answer) => {
+            if (!refused_as(answer, ST_NO_ANSWER)) { return -9i64; }
+            proved = proved + PROVED_NO_ANSWER_REFUSED;
         }
-        Err(status) => { return status - 200i64; }
+        Err(status) => { return status - 700i64; }
     }
 
-    // --- 2. the object the writer created ------------------------------------
+    // --- 3. a call that is not eight bytes long ------------------------------
+    // **Answered, which is the whole of what this row can observe.** That it was answered
+    // *as malformed* is the store's bit in the same exchange, and the two together are
+    // the negative.
+    if (endpoint_call(store, NO_PAYLOAD_LENGTH) != OK) { return -10i64; }
+    proved = proved + PROVED_MALFORMED_ANSWERED;
+
+    // --- 4. an id that was never created -------------------------------------
+    let never: i64 = refused_get(ID_NEVER * OPCODE_SPAN + OP_GET, ST_ABSENT);
+    if (never != OK) { return never - 100i64; }
+    proved = proved + PROVED_ABSENT_REFUSED;
+
+    // --- 5. the object the writer created ------------------------------------
     // **The alias again, made fresh.** One outstanding `GET` per answer endpoint is all
     // §8b permits, and the previous one is finished — refused, with nothing owed.
     match (capability_attenuate(inbox, RIGHT_SEND)) {
@@ -170,7 +251,7 @@ pub fn main() -> i64
         Err(status) => { return status - 400i64; }
     }
 
-    // --- 3. and the bytes ----------------------------------------------------
+    // --- 6. and the bytes ----------------------------------------------------
     // Waited for only now, and only because the reply said exactly one region is owed.
     match (endpoint_receive_region(inbox)) {
         Ok(object) => {
