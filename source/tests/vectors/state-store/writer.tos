@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The writer: two objects into the store, and then it ends.
+//
+// ADR-0099 §13. It holds **no** `block.device.v1` capability and cannot address a
+// sector; what it can do is name an id, which is the store's isolation boundary (§2).
+// It ends before the store's generation does, and its ending is collected — the point
+// of the boot is that what it wrote outlives it.
+//
+//   put(1, pattern A)   -> Answer{length: 8, word: 0}
+//   put(2, pattern B)   -> Answer{length: 8, word: 0}
+//
+// **One atomic call each** (§8a). The request word and the payload region cross in the
+// same message: a region sent in one message and a request in another is correct only
+// where one client is serialized against itself, and two clients' messages interleave
+// in one queue.
+//
+// **The patterns vary per byte**, and neither is a constant fill. The Stage 4 harness
+// seeds sectors 1..4 with 512 copies of `0xC0 + n` and leaves sector 0 zeroed, so a
+// reader that found a constant fill, a zero fill, or the other pattern would be
+// reporting something other than what this module wrote — and ids 1 and 2 land on
+// seeded sectors on purpose.
+
+module system.state.writer version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as store;
+// **Granted by the shared client plan and used for nothing here.** The writer and the
+// reader are sequential processes created from one plan, and only the reader needs an
+// answer endpoint: a `PUT` is one atomic call answered by a word. An unused grant is
+// not a defect — a plan is a policy, and `granted()` records what was installed
+// (ADR-0099 §13a).
+import capability system.ipc.Endpoint as inbox;
+
+resource [
+    fuel: 1048576,
+    stack: 8KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+
+// --- `STATE_STORE_V1` §3, §6, §7 ----------------------------------------------
+const OBJECT_BYTES: size = 512B;
+const OP_PUT: u64 = 1u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const ID_ONE: u64 = 1u64;
+const ID_TWO: u64 = 2u64;
+
+// Which pattern to compose. Not an opcode and not persisted: a local choice.
+const PATTERN_A: u64 = 0u64;
+const PATTERN_B: u64 = 1u64;
+
+// --- what this module proves, one bit each ------------------------------------
+// **Its own range**, above the store's, so a value in the journal names its reporter.
+const PROVED_FIRST_PUT: i64 = 4096i64;
+const PROVED_SECOND_PUT: i64 = 8192i64;
+
+extern fn endpoint_call_word_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region, word: u64
+) -> Result<system.ipc.Answer, i64> uses [store, system.memory.Region];
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [budget];
+
+extern fn region_freeze(
+    cap: system.memory.Region
+) -> Result<Region<u8>, i64> uses [system.memory.Region];
+
+// The byte object `id` should hold at `index`.
+//
+// **Two patterns that vary per byte and differ from each other everywhere they can.**
+// `0x40 + index` walks the whole byte range; `0xA5 - index * 3` walks it the other way
+// at a different step, so no single offset comparison could confuse the two and neither
+// resembles the harness's `0xC0 + n` constant fill.
+fn pattern(which: u64, index: u64) -> u64 {
+    if (which == PATTERN_A) { return (64u64 + index) % 256u64; }
+    return (165u64 + 253u64 * index) % 256u64;
+}
+
+fn compose(borrow mut payload: Region<mut u8>, which: u64) -> unit {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    while (at < OBJECT_BYTES) {
+        match (to_u8(pattern(which, index))) {
+            Ok(byte) => { payload[at] = byte; }
+            Err(impossible) => { payload[at] = 0u8; }
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+}
+
+// One `PUT`, and the reply read rather than merely awaited.
+//
+// **Both halves of the answer, length first** (§7): the inline length is what makes the
+// word a word of this protocol, and `word == 0` is the success both operations answer
+// with. A refusal would be `word >= REFUSED`, and this module's job is to report that it
+// got neither.
+fn put(id: u64, which: u64) -> i64
+    uses [budget, store, system.memory.Region]
+{
+    match (region_allocate(budget, OBJECT_BYTES)) {
+        Ok(payload) => {
+            compose(borrow mut payload, which);
+            match (region_freeze(payload)) {
+                Ok(frozen) => {
+                    match (endpoint_call_word_region(store, frozen,
+                        id * OPCODE_SPAN + OP_PUT)) {
+                        Ok(answer) => {
+                            if (answer.length != REQUEST_BYTES) { return -1i64; }
+                            if (answer.word != 0u64) { return -2i64; }
+                            return OK;
+                        }
+                        Err(status) => { return status - 100i64; }
+                    }
+                }
+                Err(unfrozen) => { return unfrozen - 200i64; }
+            }
+        }
+        Err(unallocated) => { return unallocated - 300i64; }
+    }
+}
+
+pub fn main() -> i64
+    uses [budget, store, inbox, system.memory.Region]
+{
+    let mut proved: i64 = 0i64;
+
+    let first: i64 = put(ID_ONE, PATTERN_A);
+    if (first != OK) { return first - 1000i64; }
+    proved = proved + PROVED_FIRST_PUT;
+
+    let second: i64 = put(ID_TWO, PATTERN_B);
+    if (second != OK) { return second - 2000i64; }
+    proved = proved + PROVED_SECOND_PUT;
+
+    return proved;
+}

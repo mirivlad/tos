@@ -1,5 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
+// The **normative** `block.device.v1` service, under a persistent object store.
+//
+// **This is `block-protocol/service.tos` with one constant changed.** The request
+// count is that constant, because a module cannot be told at launch how many requests
+// to expect, and this boot makes twelve where that one makes twenty-two. Everything
+// else — the protocol, the refusals, the ordering, the device work — is the same text,
+// and `block-protocol` is where it is proved. Here it is infrastructure: the real
+// device under ADR-0099's store.
+//
+// **Every request it serves here is well-formed and in range**, which is itself worth
+// stating: this instance's account carries the five device-side refusal bits **not at
+// all**, because nothing above it sends a malformed request. A store that reached the
+// device with a bad request would show as a refusal bit that is required to be absent.
+//
+// The original header follows.
+//
+//
 // The **normative** `block.device.v1` service: `BLOCK_DEVICE_V1`, spoken over the
 // accepted request word rather than over a fixture's own encoding.
 //
@@ -873,21 +890,20 @@ const PROVED_REFUSED_DEVICE: i64 = 2147483648i64;
 // How many exchanges this service serves before it returns. The client makes exactly
 // this many, and a fixture has to finish.
 //
-// **Ten of conformance and twelve of repetition.** The ten are the protocol's
-// operations and refusals; the twelve are the same read again, and they are here
-// because a service that kept the answer endpoint each read delegates would run out
-// of capability-table entries long before the twelfth. `MAX_CAPABILITIES` is sixteen
-// and this process already holds a budget, a request endpoint, a PCI root, a
-// function, a window, a DMA region and an interrupt source.
+// **Twelve, and every one of them is accounted for**, because a canonical module's
+// request count is a constant and this boot makes a different number from
+// `block-protocol`'s:
 //
-// **The tenth is a `READ` past the capacity** (ADR-0101): the same out-of-range
-// refusal as the sixth, but made with the row that carries an answer channel, so the
-// refusal is read from the reply of the row `BLOCK_DEVICE_V1` §6a names. Nothing
-// here changes to serve it — the range is checked before the request's carried parts
-// are looked at, so it lands in the same arm and OR's in the same bit.
-const CONFORMANCE_REQUESTS: u64 = 10u64;
-const REPEATED_READS: u64 = 12u64;
-const REQUESTS: u64 = 22u64;
+//   initializer, first run    capacity, read sector 0, write the header       3
+//   initializer, second run   capacity, read sector 0 — then it refuses       2
+//   state A                   open, and two new objects at two writes each    5
+//   state B                   open, and one read of one present object        2
+//
+// **The counting is the fixture's arithmetic and not a rule of the protocol.** A
+// production service loops until its endpoint goes away; what is proved here is
+// ADR-0099's store, and this instance has to finish so that its ending can be
+// collected like any other.
+const REQUESTS: u64 = 12u64;
 // **This account is a pure bitmask**, unlike the lifecycle fixture's composite.
 // Several requests are served in one boot and their facts are OR'd together, so a
 // packed field — `used.len`, the queue size, a flag at bit 56 — would be added to
