@@ -7,8 +7,21 @@
 // It ends before the store's generation does, and its ending is collected — the point
 // of the boot is that what it wrote outlives it.
 //
-//   put(1, pattern A)   -> Answer{length: 8, word: 0}
-//   put(2, pattern B)   -> Answer{length: 8, word: 0}
+//   a reserved opcode       -> REFUSED + ST_OPCODE
+//   put(0, ...)             -> REFUSED + ST_ID, because id 0 is never valid
+//   put(1) with no region   -> REFUSED + ST_NO_REGION
+//   put(1, pattern A)       -> Answer{length: 8, word: 0}
+//   put(2, pattern B)       -> Answer{length: 8, word: 0}
+//
+// **Three of §9's refusals are exercised here rather than in a fixture of their own**,
+// and the reader takes three more. Both halves of the store's life serve the same number
+// of requests, because both generations run one canonical module and its request count is
+// a constant — so the refusals are split to make that balance true rather than to make
+// the numbers look tidy. Each is asserted by **exact reply word**: a refusal that was
+// right for the wrong reason is not evidence.
+//
+// **None of them may reach the device**, and the gate's counted block requests are what
+// says so — this module cannot see the device at all.
 //
 // **One atomic call each** (§8a). The request word and the payload region cross in the
 // same message: a region sent in one message and a request in another is correct only
@@ -50,10 +63,21 @@ const OK: i64 = 0i64;
 // --- `STATE_STORE_V1` §3, §6, §7 ----------------------------------------------
 const OBJECT_BYTES: size = 512B;
 const OP_PUT: u64 = 1u64;
+// Reserved at v1 and always refused (§3). Not a spelling of `PUT` and not a future
+// operation this module knows about — what it tests is that an opcode this store has no
+// meaning for is refused rather than interpreted.
+const OP_RESERVED: u64 = 2u64;
 const OPCODE_SPAN: u64 = 4u64;
 const REQUEST_BYTES: u64 = 8u64;
+const REFUSED: u64 = 9223372036854775808u64;
+const ST_OPCODE: u64 = 1u64;
+const ST_ID: u64 = 2u64;
+const ST_NO_REGION: u64 = 4u64;
 const ID_ONE: u64 = 1u64;
 const ID_TWO: u64 = 2u64;
+// **Never a valid id** (§6): `MIN_ID` is one, so a zero word — which is what an absent or
+// malformed payload looks like — is refused rather than meaning something.
+const ID_ZERO: u64 = 0u64;
 
 // Which pattern to compose. Not an opcode and not persisted: a local choice.
 const PATTERN_A: u64 = 0u64;
@@ -61,12 +85,21 @@ const PATTERN_B: u64 = 1u64;
 
 // --- what this module proves, one bit each ------------------------------------
 // **Its own range**, above the store's, so a value in the journal names its reporter.
-const PROVED_FIRST_PUT: i64 = 4096i64;
-const PROVED_SECOND_PUT: i64 = 8192i64;
+const PROVED_OPCODE_REFUSED: i64 = 4096i64;
+const PROVED_ID_REFUSED: i64 = 8192i64;
+const PROVED_NO_REGION_REFUSED: i64 = 16384i64;
+const PROVED_FIRST_PUT: i64 = 32768i64;
+const PROVED_SECOND_PUT: i64 = 65536i64;
 
 extern fn endpoint_call_word_region(
     cap: system.ipc.Endpoint, region: system.memory.Region, word: u64
 ) -> Result<system.ipc.Answer, i64> uses [store, system.memory.Region];
+
+// The refusal probes: a request word and nothing else, which is exactly what a `PUT`
+// missing its region is.
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [store];
 
 extern fn region_allocate(
     cap: system.memory.Authority, bytes: size
@@ -131,11 +164,53 @@ fn put(id: u64, which: u64) -> i64
     }
 }
 
+// Whether one refusal is exactly the one it should be.
+//
+// **Both halves, and the length first** (§7): the inline length is what makes the word a
+// word of this protocol, and the word is meaningless without it.
+fn refused_as(answer: system.ipc.Answer, code: u64) -> bool {
+    if (answer.length != REQUEST_BYTES) { return false; }
+    return answer.word == REFUSED + code;
+}
+
+// One probe that must be refused with one exact code.
+fn refused(word: u64, code: u64) -> i64
+    uses [store]
+{
+    match (endpoint_call_word(store, word)) {
+        Ok(answer) => {
+            if (!refused_as(answer, code)) { return -1i64; }
+            return OK;
+        }
+        Err(status) => { return status; }
+    }
+}
+
 pub fn main() -> i64
     uses [budget, store, inbox, system.memory.Region]
 {
     let mut proved: i64 = 0i64;
 
+    // --- 1. an opcode this store has no meaning for --------------------------
+    // Refused before the id is looked at, because a request the store does not
+    // understand is not a request about an object.
+    let reserved: i64 = refused(ID_ONE * OPCODE_SPAN + OP_RESERVED, ST_OPCODE);
+    if (reserved != OK) { return reserved - 100i64; }
+    proved = proved + PROVED_OPCODE_REFUSED;
+
+    // --- 2. an id that is never valid ----------------------------------------
+    let zero: i64 = refused(ID_ZERO * OPCODE_SPAN + OP_PUT, ST_ID);
+    if (zero != OK) { return zero - 200i64; }
+    proved = proved + PROVED_ID_REFUSED;
+
+    // --- 3. a write with nothing to write ------------------------------------
+    // **A valid id and a valid opcode**, so the only thing wrong with it is the missing
+    // region: a negative two rules could satisfy proves neither.
+    let empty: i64 = refused(ID_ONE * OPCODE_SPAN + OP_PUT, ST_NO_REGION);
+    if (empty != OK) { return empty - 300i64; }
+    proved = proved + PROVED_NO_REGION_REFUSED;
+
+    // --- 4. and the two objects ----------------------------------------------
     let first: i64 = put(ID_ONE, PATTERN_A);
     if (first != OK) { return first - 1000i64; }
     proved = proved + PROVED_FIRST_PUT;

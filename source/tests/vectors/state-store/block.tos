@@ -884,26 +884,51 @@ const PROVED_DROPPED_NON_CALL: i64 = 1073741824i64;
 // and the evidence class is static rather than pretended.
 const PROVED_REFUSED_DEVICE: i64 = 2147483648i64;
 
+// **And one bit `block-protocol`'s service has no use for**: every client of this service
+// has finished, and the receive it was blocked on was ended by the liveness rule.
+//
+// `SYSTEM_ABI_V1` §6 ends a wait that nothing can satisfy, and a receive on an endpoint no
+// live process can send to is exactly that. It is not a failure. This fixture serves a
+// **constant** number of requests, and the boot in which the store above it could not open
+// asks for two of them — so the honest ending for that boot is "nobody has anything more
+// to ask", and this bit is what that looks like from inside. The ordinary boot never sets
+// it, because there the fourteenth request arrives.
+const PROVED_CLIENTS_GONE: i64 = 4294967296i64;
+const E_CANCELLED: i64 = -5i64;
+
 // Everything this module can prove is `2^31 - 1`; the gate derives that sum from
 // the same bits rather than this module asserting its own total.
 
 // How many exchanges this service serves before it returns. The client makes exactly
 // this many, and a fixture has to finish.
 //
-// **Twelve, and every one of them is accounted for**, because a canonical module's
+// **Fourteen, and every one of them is accounted for**, because a canonical module's
 // request count is a constant and this boot makes a different number from
 // `block-protocol`'s:
 //
-//   initializer, first run    capacity, read sector 0, write the header       3
-//   initializer, second run   capacity, read sector 0 — then it refuses       2
-//   state A                   open, and two new objects at two writes each    5
-//   state B                   open, and one read of one present object        2
+//   initializer, first run    capacity, read sector 0, write the header        3
+//   state A                   capacity and read sector 0 to open, then two new
+//                             objects at two writes each                      6
+//   initializer, second run   capacity, read sector 0 — then it refuses        2
+//   state B                   capacity and read sector 0 to open, and one read of
+//                             the one present object it is asked for           3
+//
+// **Every `open` asks for the capacity as well as the header**, because
+// `STATE_STORE_V1` §9 makes "the device is too small" a reason a store is not open, and a
+// store that validated sector 0 and stopped would open on a device that cannot hold the
+// sectors the header describes. Six of the fourteen are `CAPACITY` or a header read for
+// that reason.
+//
+// **None of the store's refusals is in this count**, and that is the point of counting:
+// a reserved opcode, an id out of range, a length that is not eight, a `PUT` with no
+// region, a `GET` with no answer endpoint and a `GET` of an absent id are all refused
+// above this service, and if one of them reached the device the number would move.
 //
 // **The counting is the fixture's arithmetic and not a rule of the protocol.** A
 // production service loops until its endpoint goes away; what is proved here is
 // ADR-0099's store, and this instance has to finish so that its ending can be
 // collected like any other.
-const REQUESTS: u64 = 12u64;
+const REQUESTS: u64 = 14u64;
 // **This account is a pure bitmask**, unlike the lifecycle fixture's composite.
 // Several requests are served in one boot and their facts are OR'd together, so a
 // packed field — `used.len`, the queue size, a flag at bit 56 — would be added to
@@ -965,6 +990,12 @@ fn serve_requests(
             }
             Err(refused) => {
                 give_up(borrow mut window);
+                if (refused == E_CANCELLED) {
+                    // **Every client is gone**, which the liveness rule is what tells this
+                    // service. What it has proved up to here is what it proved; the
+                    // requests it will never be asked for are not failures of its own.
+                    return proved + PROVED_CLIENTS_GONE;
+                }
                 return refused - 7200i64;
             }
         }

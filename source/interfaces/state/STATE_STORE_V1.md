@@ -510,24 +510,50 @@ all.
 ## 12. Conformance evidence
 
 `ADR-0099` §13 is the obligation list: an initializer formatting a fresh device and
-being collected; a store service opening the header it wrote; two objects written by
-a writer that then ends; the store service ending, being retired and having its
-ending collected by its supervisor; a successor of the same canonical module
-re-reading and validating the header from the device; and a new reader — holding no
-`block.device.v1` capability — getting the second object and verifying all 512 bytes
-in canonical text.
+being collected; a store service opening — asking the layer below for the capacity and
+then validating the header it wrote; two objects written by a writer that then ends;
+the store service ending, being retired and having its ending collected by its
+supervisor; a successor of the same canonical module re-reading and validating the
+header from the device; and a new reader — holding no `block.device.v1` capability —
+getting the second object and verifying all 512 bytes in canonical text.
 
 **One negative is about formatting rather than about persistence:** the initializer
 run against a **valid existing header** must refuse, and the header and `occupancy`
 must be **unchanged** afterwards. A mutation removing §4.4's zero-header check must
 turn that negative red.
 
-Its seven required mutations: omit the **initializer's** header write, so the state
+**That header must hold objects when the probe meets it.** An initializer run against
+a valid but *empty* store proves only that an empty store is not reformatted; the
+destructive case is the one §4.4 exists for — an unconditional write resets
+`occupancy` and loses every object while reporting success. So the probe is run after
+objects exist and with **no state service alive**, and a later successful `get` of one
+of those objects is what says the store survived it.
+
+Its nine required mutations: omit the **initializer's** header write, so the state
 service cannot open; omit or falsify the payload device write; answer `get(2)` from
 object 1's sector; ignore the occupancy bitmap, which must make an id never created
 become visible and must turn the negative gate red; omit `PUT(2)`'s
 occupancy-header update, so that a successor reading the persisted header finds
 object 2 **absent** however much of its sector was written; send `GET`'s region
-before replying success, which must turn the ordering assertion red; and remove the
-initializer's zero-header check, which must turn the refuse-to-reformat negative
-red.
+before replying success, which must turn the ordering assertion red; remove the
+initializer's zero-header check, which must destroy the occupancy of a **populated**
+store and so make a later `get` of a persisted object fail; make a `GET`'s lower
+`READ` fail at the IPC level, which must **not** produce `ST_BLOCK`; and have the
+block layer reply success to a `READ` and then never send the owed region, which must
+not produce `ST_BLOCK` either.
+
+**Every refusal of §9 carries evidence**, by exact reply word where the caller can
+read one: `ST_OPCODE`, `ST_ID` at both ends of the id range, `ST_NO_REGION`,
+`ST_NO_ANSWER` and `ST_ABSENT` against an open store, and `ST_STORE` against a store
+whose device is one sector too small to hold the extent. `ST_MALFORMED`'s caller
+cannot read the reply at all — `endpoint_call` is the only row that lets a client
+choose an inline length, and its result is a status — so it is proved by an answered
+call together with the store's own account, which is the shape `BLOCK_DEVICE_V1`'s
+malformed evidence has. **`ST_BLOCK` is implemented and not exercised**: the
+conforming reference endpoint answers every well-formed in-range request with
+`VIRTIO_BLK_S_OK`, so no real lower refusal is reachable from a valid request of this
+contract, and none is manufactured.
+
+**None of the early refusals may reach the block layer** — `ST_OPCODE`, `ST_ID`,
+`ST_MALFORMED`, `ST_NO_REGION`, `ST_NO_ANSWER` and `ST_ABSENT` are all decided above
+it — and the counted device requests of the boot are what says so.

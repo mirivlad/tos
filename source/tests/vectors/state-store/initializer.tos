@@ -77,16 +77,15 @@ const AT_SCHEMA_IDENTIFIER: size = 16B;
 const AT_OCCUPANCY: size = 24B;
 
 // --- what this module proves, one bit each ------------------------------------
-// And the account of a run that proved nothing, which is its own value rather than an
-// arithmetic accident: a device too small to hold the layout is a state this module
-// reports, not a step that failed.
-const NOTHING_PROVED: i64 = 0i64;
 const PROVED_CAPACITY_FITS: i64 = 1i64;
 const PROVED_HEADER_READ: i64 = 2i64;
 const PROVED_WAS_ZERO: i64 = 4i64;
 const PROVED_FORMATTED: i64 = 8i64;
 // And what it reports instead when it finds a store already there.
 const PROVED_REFUSED_TO_FORMAT: i64 = 16i64;
+// Or when the device cannot hold the bounded extent at all, in which case nothing is
+// read and nothing is written.
+const PROVED_TOO_SMALL: i64 = 32i64;
 
 extern fn endpoint_call_word(
     cap: system.ipc.Endpoint, word: u64
@@ -272,13 +271,13 @@ pub fn main() -> i64
             if (answer.word >= BLOCK_REFUSED) { return -2i64; }
             if (answer.word < STORE_SECTORS) {
                 // **Too small, and that is not a failure of this module.** It reports
-                // that it proved nothing and formats nothing; the state service then
-                // cannot open, and every request it receives is refused with `ST_STORE`
+                // what it found and formats nothing; the state service then cannot
+                // open, and every request it receives is refused with `ST_STORE`
                 // (`STATE_STORE_V1` §4.4, §9). A device that cannot contain the whole
                 // bounded layout is refused *before* the header is written, rather than
                 // discovered later by running past the end of it — which is why
                 // `ADR-0098` keeps `capacity` in v1 at all.
-                return NOTHING_PROVED;
+                return PROVED_TOO_SMALL;
             }
             proved = proved + PROVED_CAPACITY_FITS;
         }

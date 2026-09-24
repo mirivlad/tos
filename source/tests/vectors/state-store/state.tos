@@ -10,8 +10,9 @@
 // and it never formats (§4.4) — a missing or invalid header means it cannot open, and
 // it then refuses every request with `ST_STORE` rather than repairing or guessing.
 //
-//   open      READ sector 0; validate magic, format_version, the owner's schema
-//             identity and the reserved run; take `occupancy` from it
+//   open      CAPACITY; require `capacity >= STORE_SECTORS`; then READ sector 0 and
+//             validate magic, format_version, the owner's schema identity and the
+//             reserved run; take `occupancy` from it
 //   PUT id    forward the client's own region to WRITE sector `id`; if the id was
 //             absent, WRITE sector 0 with bit `id - 1` set; then reply success
 //   GET id    refuse an absent id **without reading its sector**; otherwise READ
@@ -20,6 +21,18 @@
 // **Presence is `occupancy` and nothing else** (§5). A store that inferred presence
 // from bytes could be convinced by anything that had been on the device before it, and
 // the Stage 4 harness seeds sectors 1..4 on purpose.
+//
+// **Opening asks the device how big it is, and §9 is why.** `ST_STORE` is *"the store is
+// not open: no valid header, **or the device is too small**"* — so a service that
+// validated sector 0 and stopped would open a store on a device that cannot hold the
+// sectors the header describes, and would run past the end of the extent on the first
+// `PUT` of a high id. The bound is asked for, never assumed.
+//
+// **The layer below answers in three classes and only one of them is a refusal this
+// store may pass on** (§2a). A block layer that refused is `ST_BLOCK`. A block layer that
+// never answered at all — the call failed, or a reply promised a region that never came —
+// is an **incomplete operation**, and no refusal is invented for it: the reply is not
+// sent, and the caller learns what §8b says it learns.
 //
 // **What it holds**: a budget, `receive` on its request endpoint, `send | call` on the
 // block service's endpoint, and `send | receive` on its own answer endpoint. Four, which
@@ -57,6 +70,7 @@ const RIGHT_SEND: u64 = 1u64;
 // --- the lower layer: `BLOCK_DEVICE_V1` §3, §4, §5 -----------------------------
 const BLK_OP_READ: u64 = 0u64;
 const BLK_OP_WRITE: u64 = 1u64;
+const BLK_OP_CAPACITY: u64 = 2u64;
 const BLK_OPCODE_SPAN: u64 = 4u64;
 const BLK_REQUEST_BYTES: u64 = 8u64;
 const BLK_REFUSED: u64 = 9223372036854775808u64;
@@ -66,6 +80,9 @@ const OBJECT_BYTES: size = 512B;
 const MIN_ID: u64 = 1u64;
 const MAX_ID: u64 = 64u64;
 const HEADER_SECTOR: u64 = 0u64;
+// `MAX_ID + 1` — the whole bounded v1 layout, and the least a device must hold for this
+// store to be open at all (§3, §9).
+const STORE_SECTORS: u64 = 65u64;
 const OP_GET: u64 = 0u64;
 const OP_PUT: u64 = 1u64;
 const OPCODE_SPAN: u64 = 4u64;
@@ -99,18 +116,54 @@ const AT_RESERVED: size = 32B;
 
 // --- how many requests one generation serves ----------------------------------
 // **A constant, because a child is never told anything at launch but its endowment.**
-// Generation A serves the writer's two `PUT`s and generation B the reader's two
-// `GET`s; both run this text, so both serve two. A production store loops until its
-// endpoint goes away — a fixture has to finish, so that its ending can be collected
-// and the next generation created from the same plan.
-const REQUESTS: u64 = 2u64;
+// Both generations run this text, so both serve the same number, and the fixture is
+// balanced to make that true: generation A takes three refusals and two `PUT`s from the
+// writer, generation B three refusals, an absent `GET` and one served `GET` from the
+// reader. A production store loops until its endpoint goes away — a fixture has to
+// finish, so that its ending can be collected and the next generation created from the
+// same plan.
+const REQUESTS: u64 = 5u64;
+// How many of those are refused for their **shape** — a reserved opcode, an id out of
+// range, a length that is not eight, a `PUT` with no region, a `GET` with no answer
+// endpoint. Three per generation, and none of them may reach the device.
+const SHAPE_REFUSALS: u64 = 3u64;
+
+// --- the three classes the layer below answers in (§2a, §9) --------------------
+// **This store's own classification, and not a status or a refusal code.** The point of
+// keeping three is that only one of them is a refusal this store may pass on:
+//
+//   `OK`                 the lower operation succeeded
+//   `LOWER_REFUSED`      the block layer **answered**, and its answer was a refusal or
+//                        was not a reply of `block.device.v1` at all. `ST_BLOCK` is what
+//                        §9 assigns to that, and the only thing it is assigned to
+//   `LOWER_INCOMPLETE`   nobody refused anything. The call failed at the IPC level, or
+//                        the reply said a region was owed and it never came, or the
+//                        reply's word was neither a success nor a refusal. There is no
+//                        refusal to report, so **none is fabricated**: the operation
+//                        stays incomplete and the caller learns that the way §8b says it
+//                        does, through the liveness path
+//
+// **The difference is not cosmetic.** A store that answered `ST_BLOCK` to a caller whose
+// request the block layer never refused would be reporting a refusal that does not
+// exist — and a caller cannot tell an invented one from a real one.
+const LOWER_REFUSED: i64 = -1i64;
+const LOWER_INCOMPLETE: i64 = -2i64;
+
+// Why `open_store` could not open, which is a different question from why a request
+// failed: `STORE_CLOSED` is §9's `ST_STORE` — the device answered, and either it is too
+// small to hold the bounded extent or sector 0 is not this store's header.
+// `OPEN_INCOMPLETE` is the lower layer never having said, in which case this store has
+// nothing to serve and reports the fault rather than inventing a closed store.
+const STORE_CLOSED: i64 = -1i64;
+const OPEN_INCOMPLETE: i64 = -2i64;
 
 // --- what one generation proves, one bit each ---------------------------------
 // **Its own range of bits**, above the initializer's, so that a value in the journal
 // names the module that reported it.
 //
-// The header was read from the device and validated: magic, `format_version`, the
-// owner's schema identity and the whole reserved run (§4.3).
+// The bounded extent exists and the header is this store's: `capacity >= STORE_SECTORS`
+// asked of the layer below, then sector 0 read and validated — magic, `format_version`,
+// the owner's schema identity and the whole reserved run (§4.3, §9).
 const PROVED_OPENED: i64 = 64i64;
 // Every request this generation received was answered, refusal or not (§9).
 const PROVED_ALL_ANSWERED: i64 = 128i64;
@@ -122,9 +175,20 @@ const PROVED_ABSENT_REFUSED: i64 = 512i64;
 // One `GET` served: the sector read completely, success replied, and **then** exactly
 // one region forwarded (§8b).
 const PROVED_ONE_SERVED: i64 = 1024i64;
-// And what a generation that could not open reports instead: every request refused
-// with `ST_STORE`, and no device request made at all (§4.4).
+// And what a generation that could not open reports instead: every request refused with
+// `ST_STORE`, and no device request at all beyond the ones its own opening needed — one
+// `CAPACITY` if the device is too small, and a header read as well if it is not (§4.4,
+// §9).
 const PROVED_CLOSED: i64 = 2048i64;
+// Exactly `SHAPE_REFUSALS` requests refused before this store looked at an id or at the
+// device: a reserved opcode, an id out of range, a length that is not eight, a `PUT`
+// with no region, or a `GET` with no answer endpoint.
+const PROVED_SHAPE_REFUSED: i64 = 4096i64;
+// And at least one of them refused for its **length**, which is the one refusal whose
+// caller cannot read the reply word — `endpoint_call` is the only row that lets a client
+// choose a length, and it produces a status rather than an answer. So this bit is the
+// service-side half of that negative.
+const PROVED_MALFORMED_REFUSED: i64 = 8192i64;
 
 extern fn endpoint_receive_call_region(
     cap: system.ipc.Endpoint
@@ -143,6 +207,13 @@ extern fn endpoint_call_word_carrying(
     on: system.ipc.Endpoint,
     word: u64
 ) -> Result<system.ipc.Answer, i64> uses [system.ipc.Endpoint, block];
+
+// The lower `CAPACITY`: how many sectors the device has, which §9 makes part of whether
+// this store is open at all — a valid header on a device too small to hold sectors
+// `0..64` is not an open store, and asking is the only honest way to know.
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [block];
 
 // The lower `WRITE`: one atomic call carrying the request word **and** the region.
 extern fn endpoint_call_word_region(
@@ -288,15 +359,23 @@ fn compose(borrow mut header: Region<mut u8>, occupancy: u64) -> unit {
 
 // One `block.device.v1` `READ`, and the region it owes.
 //
-// **The four arms of `STATE_STORE_V1` §2a, and each is a different thing that
-// happened** (ADR-0101):
+// **Five outcomes, sorted into the two error classes §2a distinguishes** (ADR-0101):
 //
-//   Err(status)            the lower IPC operation failed: an incomplete operation of
-//                          this store's own, and not a refusal it received
-//   length != 8            not a reply of `block.device.v1` at all (§5 there)
-//   word >= BLK_REFUSED    the block layer refused. `ST_BLOCK`, and **no region is
-//                          waited for**
-//   word == 0              exactly one region is owed; take it
+//   Err from the call         nothing was refused: the IPC operation failed and there is
+//                            no answer at all.               `LOWER_INCOMPLETE`
+//   length != 8              not a reply of `block.device.v1` (§5 there): the layer
+//                            below answered badly.           `LOWER_REFUSED`
+//   word >= BLK_REFUSED      the block layer refused, and §7 there says why.
+//                                                            `LOWER_REFUSED`
+//   word != 0, word < BLK_REFUSED
+//                            **not a `READ` success and not a refusal either.** §5 of
+//                            `BLOCK_DEVICE_V1` gives a served `READ` the word 0; a
+//                            number that is neither is a lower protocol fault, and no
+//                            `BLK_*` code is invented for it.
+//                                                            `LOWER_INCOMPLETE`
+//   word == 0                exactly one region is owed; take it. If it does not come,
+//                            §8b made that a **different** observation from a refusal on
+//                            purpose, and it stays one.      `LOWER_INCOMPLETE`
 //
 // **Nothing waits for a region after a refusal.** A wait for one that a refusal means
 // will never arrive is a wait the liveness rule ends, so inferring the refusal from the
@@ -314,18 +393,41 @@ fn read_sector(sector: u64) -> Result<Region<u8>, i64>
             let asked: Result<system.ipc.Answer, i64> =
                 endpoint_call_word_carrying(reply_to, block,
                     sector * BLK_OPCODE_SPAN + BLK_OP_READ);
-            if (capability_release(reply_to) != OK) { return Err(-4000i64); }
+            if (capability_release(reply_to) != OK) { return Err(LOWER_INCOMPLETE); }
             match (asked) {
                 Ok(answer) => {
-                    if (answer.length != BLK_REQUEST_BYTES) { return Err(-4001i64); }
-                    if (answer.word >= BLK_REFUSED) { return Err(-4002i64); }
-                    if (answer.word != 0u64) { return Err(-4003i64); }
-                    return endpoint_receive_region(inbox);
+                    if (answer.length != BLK_REQUEST_BYTES) { return Err(LOWER_REFUSED); }
+                    if (answer.word >= BLK_REFUSED) { return Err(LOWER_REFUSED); }
+                    if (answer.word != 0u64) { return Err(LOWER_INCOMPLETE); }
+                    match (endpoint_receive_region(inbox)) {
+                        Ok(arrived) => { return Ok(arrived); }
+                        Err(status) => { return Err(LOWER_INCOMPLETE); }
+                    }
                 }
-                Err(status) => { return Err(status - 4100i64); }
+                Err(status) => { return Err(LOWER_INCOMPLETE); }
             }
         }
-        Err(status) => { return Err(status - 4200i64); }
+        Err(status) => { return Err(LOWER_INCOMPLETE); }
+    }
+}
+
+// How many sectors the device has, in the same two classes.
+//
+// **A device that answers zero is not an answer this store can use.** §9 makes "the
+// device is too small" a reason the store is not open, and zero sectors is not a size —
+// `BLOCK_DEVICE_V1` clamps a real capacity into a `u64` and a served `CAPACITY` reports
+// one. So zero is a lower protocol fault rather than a very small device.
+fn lower_capacity() -> Result<u64, i64>
+    uses [block]
+{
+    match (endpoint_call_word(block, BLK_OP_CAPACITY)) {
+        Ok(answer) => {
+            if (answer.length != BLK_REQUEST_BYTES) { return Err(LOWER_REFUSED); }
+            if (answer.word >= BLK_REFUSED) { return Err(LOWER_REFUSED); }
+            if (answer.word == 0u64) { return Err(LOWER_INCOMPLETE); }
+            return Ok(answer.word);
+        }
+        Err(status) => { return Err(LOWER_INCOMPLETE); }
     }
 }
 
@@ -340,12 +442,12 @@ fn write_sector(payload: Region<u8>, sector: u64) -> i64
     match (endpoint_call_word_region(block, payload,
         sector * BLK_OPCODE_SPAN + BLK_OP_WRITE)) {
         Ok(answer) => {
-            if (answer.length != BLK_REQUEST_BYTES) { return -4300i64; }
-            if (answer.word >= BLK_REFUSED) { return -4301i64; }
-            if (answer.word != 0u64) { return -4302i64; }
+            if (answer.length != BLK_REQUEST_BYTES) { return LOWER_REFUSED; }
+            if (answer.word >= BLK_REFUSED) { return LOWER_REFUSED; }
+            if (answer.word != 0u64) { return LOWER_INCOMPLETE; }
             return OK;
         }
-        Err(status) => { return status - 4400i64; }
+        Err(status) => { return LOWER_INCOMPLETE; }
     }
 }
 
@@ -360,31 +462,58 @@ fn write_header(occupancy: u64) -> i64
             compose(borrow mut header, occupancy);
             match (region_freeze(header)) {
                 Ok(frozen) => { return write_sector(frozen, HEADER_SECTOR); }
-                Err(unfrozen) => { return unfrozen - 4500i64; }
+                // **This store's own fault, not the layer below's.** It refused nothing
+                // and answered nothing, so the operation is incomplete.
+                Err(unfrozen) => { return LOWER_INCOMPLETE; }
             }
         }
-        Err(unallocated) => { return unallocated - 4600i64; }
+        Err(unallocated) => { return LOWER_INCOMPLETE; }
     }
 }
 
 // Opens the store from the device (§4.5) and answers with `occupancy`.
+//
+// **Two conditions, and §9 names both.** `ST_STORE` is *"the store is not open: no valid
+// header, **or the device is too small**"*, so a service that validated sector 0 and
+// stopped would open a store on a device that cannot hold sectors `1..64` — and would
+// then run past the end of the extent on the first `PUT` of a high id. The bound is
+// asked for rather than assumed, through `BLOCK_DEVICE_V1`'s `CAPACITY`, which is the
+// row `ADR-0098` keeps in v1 for exactly this.
+//
+// **The capacity comes first.** A header is meaningless on a device that cannot hold the
+// layout the header describes, and reading sector 0 of a device this store will not use
+// is work nobody asked for.
+//
+// **A lower fault is not a closed store.** `STORE_CLOSED` is reserved for what the layer
+// below actually said — too few sectors, or sector 0 not being this store's header. If
+// the layer below refused or never answered, this store has nothing to serve and says
+// so: it does not invent a closed store out of a lower failure, any more than §9 lets it
+// invent `ST_BLOCK` out of one.
 fn open_store() -> Result<u64, i64>
     uses [block, inbox, system.ipc.Endpoint, system.memory.Region]
 {
-    match (read_sector(HEADER_SECTOR)) {
-        Ok(sector) => {
-            if (!header_valid(borrow sector)) {
-                if (capability_release(sector) != OK) { return Err(-4700i64); }
-                // **Not a failure of this module.** An invalid or missing header means
-                // the store is not open, which §4.4 makes a state this service serves
-                // rather than repairs.
-                return Err(-1i64);
+    match (lower_capacity()) {
+        Ok(sectors) => {
+            if (sectors < STORE_SECTORS) { return Err(STORE_CLOSED); }
+            match (read_sector(HEADER_SECTOR)) {
+                Ok(sector) => {
+                    if (!header_valid(borrow sector)) {
+                        if (capability_release(sector) != OK) {
+                            return Err(OPEN_INCOMPLETE);
+                        }
+                        // **Not a failure of this module.** An invalid or missing header
+                        // means the store is not open, which §4.4 makes a state this
+                        // service serves rather than repairs.
+                        return Err(STORE_CLOSED);
+                    }
+                    let occupancy: u64 = get_le(borrow sector, AT_OCCUPANCY, 8u64);
+                    if (capability_release(sector) != OK) { return Err(OPEN_INCOMPLETE); }
+                    return Ok(occupancy);
+                }
+                Err(lower) => { return Err(OPEN_INCOMPLETE); }
             }
-            let occupancy: u64 = get_le(borrow sector, AT_OCCUPANCY, 8u64);
-            if (capability_release(sector) != OK) { return Err(-4701i64); }
-            return Ok(occupancy);
         }
-        Err(status) => { return Err(status); }
+        Err(lower) => { return Err(OPEN_INCOMPLETE); }
     }
 }
 
@@ -434,13 +563,18 @@ fn released(
 
 // --- the closed store ----------------------------------------------------------
 
-// Every request refused with `ST_STORE`, and **no device request at all** (§4.4).
+// Every request refused with `ST_STORE`, whatever its shape (§4.4, §9).
 //
 // **This exists so that "it cannot open" is a served state and not a dead boot.** A
 // store that stopped answering would leave its clients blocked until the liveness rule
 // cancelled them, and a client could not tell a store with no header from a store that
-// had died. It is also what makes the mutation that omits the initializer's header
-// write turn this gate red on the right assertion.
+// had died.
+//
+// **`ST_STORE` comes before every other refusal, and that precedence is this module's to
+// fix.** §9 states the codes and not their order; a store that is not open has no
+// object to have an opinion about, so a reserved opcode, a bad id and a missing region
+// are all the same answer here — the store is not open. A client that got `ST_ID` from a
+// closed store would be told that its id was the problem.
 fn serve_closed() -> i64
     uses [serve, system.ipc.Reply, system.ipc.Endpoint, system.memory.Region]
 {
@@ -494,11 +628,20 @@ pub fn main() -> i64
           system.memory.Region]
 {
     match (open_store()) {
-        Ok(occupancy) => { return PROVED_OPENED + serve_open(occupancy); }
+        Ok(occupancy) => {
+            // **The account is added only to a success.** A negative from the request
+            // loop names the step that did not hold, and adding an achievement bit to it
+            // would turn a fault into a smaller fault.
+            let served: i64 = serve_open(occupancy);
+            if (served < 0i64) { return served; }
+            return PROVED_OPENED + served;
+        }
         Err(unopened) => {
             // **A store that cannot open serves anyway**, and what it serves is
-            // `ST_STORE`. It does not format, repair or guess (§4.4).
-            if (unopened != -1i64) { return unopened; }
+            // `ST_STORE`. It does not format, repair or guess (§4.4). But a store whose
+            // *lower layer* never answered cannot even say that much, and reports the
+            // fault instead of pretending to be closed.
+            if (unopened != STORE_CLOSED) { return unopened - 5900i64; }
             return serve_closed();
         }
     }
@@ -518,6 +661,12 @@ fn serve_open(opening_occupancy: u64) -> i64
     let mut created: u64 = 0u64;
     let mut absent_refused: u64 = 0u64;
     let mut delivered: u64 = 0u64;
+    // **Refused for shape**, which is every refusal decided before an id is looked up:
+    // a length that is not eight, a reserved opcode, an id out of range, a `PUT` with no
+    // region, a `GET` with no answer endpoint. None of them reaches the device, and the
+    // gate's counted device requests are the other half of that.
+    let mut shape_refused: u64 = 0u64;
+    let mut malformed_refused: u64 = 0u64;
 
     while (served < REQUESTS) {
         served = served + 1u64;
@@ -537,6 +686,8 @@ fn serve_open(opening_occupancy: u64) -> i64
                     let dropped: i64 = released(supplied, carried, OK);
                     if (dropped < 0i64) { return dropped; }
                     answered = answered + 1u64;
+                    shape_refused = shape_refused + 1u64;
+                    malformed_refused = malformed_refused + 1u64;
                 } else {
                     let opcode: u64 = request.word % OPCODE_SPAN;
                     let id: u64 = request.word / OPCODE_SPAN;
@@ -550,6 +701,7 @@ fn serve_open(opening_occupancy: u64) -> i64
                         let dropped: i64 = released(supplied, carried, OK);
                         if (dropped < 0i64) { return dropped; }
                         answered = answered + 1u64;
+                        shape_refused = shape_refused + 1u64;
                     } else {
                         if (id < MIN_ID) {
                             if (endpoint_reply_word(reply, REFUSED + ST_ID) != OK) {
@@ -558,6 +710,7 @@ fn serve_open(opening_occupancy: u64) -> i64
                             let dropped: i64 = released(supplied, carried, OK);
                             if (dropped < 0i64) { return dropped; }
                             answered = answered + 1u64;
+                            shape_refused = shape_refused + 1u64;
                         } else {
                             if (id > MAX_ID) {
                                 if (endpoint_reply_word(reply, REFUSED + ST_ID) != OK) {
@@ -566,6 +719,7 @@ fn serve_open(opening_occupancy: u64) -> i64
                                 let dropped: i64 = released(supplied, carried, OK);
                                 if (dropped < 0i64) { return dropped; }
                                 answered = answered + 1u64;
+                                shape_refused = shape_refused + 1u64;
                             } else {
                                 let done: i64 = one_object(reply, opcode, id, occupancy,
                                     supplied, carried);
@@ -576,6 +730,7 @@ fn serve_open(opening_occupancy: u64) -> i64
                                 }
                                 if (done == 2i64) { absent_refused = absent_refused + 1u64; }
                                 if (done == 3i64) { delivered = delivered + 1u64; }
+                                if (done == 4i64) { shape_refused = shape_refused + 1u64; }
                                 answered = answered + 1u64;
                             }
                         }
@@ -591,6 +746,8 @@ fn serve_open(opening_occupancy: u64) -> i64
     if (created == 2u64) { proved = proved + PROVED_TWO_CREATED; }
     if (absent_refused == 1u64) { proved = proved + PROVED_ABSENT_REFUSED; }
     if (delivered == 1u64) { proved = proved + PROVED_ONE_SERVED; }
+    if (shape_refused == SHAPE_REFUSALS) { proved = proved + PROVED_SHAPE_REFUSED; }
+    if (malformed_refused > 0u64) { proved = proved + PROVED_MALFORMED_REFUSED; }
     return proved;
 }
 
@@ -602,9 +759,20 @@ fn serve_open(opening_occupancy: u64) -> i64
 //   1   a `PUT` made an absent id present
 //   2   a `GET` of an absent id was refused
 //   3   a `GET` was served and its region forwarded
+//   4   refused for its shape: a `PUT` with no region, or a `GET` with no answer endpoint
 //
 // A negative names the step that did not hold. **A refusal is not a negative**:
 // refusing an absent id is this store working, and the bit it sets is the evidence.
+//
+// **An incomplete lower operation *is* a negative, and deliberately so.** When the layer
+// below refused, this store passes that on as `ST_BLOCK` — that is what §9 assigns the
+// code to. When the layer below never refused anything — the call failed at the IPC
+// level, or a reply promised a region that never came — there is no refusal to pass on,
+// and one is not invented. What happens instead is what §8b already describes: whatever
+// can be let go is let go, the reply is **not** sent, and the caller learns through the
+// ordinary liveness path that its operation did not complete. This module then reports
+// the fault rather than continuing to serve, because its request count is a constant and
+// a store that had lost track of the layer below has nothing more to say.
 fn one_object(
     reply: system.ipc.Reply,
     opcode: u64,
@@ -629,19 +797,34 @@ fn one_object(
                 // copied, and this call takes it: after a successful transfer neither
                 // the handle nor the mapping is this process's (`IPC_V1` §5).
                 let written: i64 = write_sector(payload, id);
-                if (written != OK) {
+                if (written == LOWER_REFUSED) {
+                    // The layer below **answered**, and its answer was a refusal. That
+                    // is the one thing `ST_BLOCK` means (§9).
                     if (endpoint_reply_word(reply, REFUSED + ST_BLOCK) != OK) {
                         return -5200i64;
                     }
                     return release_endpoint(carried, 0i64);
                 }
+                if (written != OK) {
+                    // **Incomplete, and no refusal exists.** The reply is not sent; the
+                    // answer endpoint a client may have attached is let go anyway,
+                    // because keeping it would be a leak on top of a fault.
+                    let tidied: i64 = release_endpoint(carried, OK);
+                    if (tidied < 0i64) { return tidied; }
+                    return -5250i64;
+                }
                 if (!present(occupancy, id)) {
                     let headed: i64 = write_header(with_present(occupancy, id));
-                    if (headed != OK) {
+                    if (headed == LOWER_REFUSED) {
                         if (endpoint_reply_word(reply, REFUSED + ST_BLOCK) != OK) {
                             return -5201i64;
                         }
                         return release_endpoint(carried, 0i64);
+                    }
+                    if (headed != OK) {
+                        let tidied: i64 = release_endpoint(carried, OK);
+                        if (tidied < 0i64) { return tidied; }
+                        return -5251i64;
                     }
                     if (endpoint_reply_word(reply, 0u64) != OK) { return -5202i64; }
                     let done: i64 = release_endpoint(carried, 1i64);
@@ -659,7 +842,7 @@ fn one_object(
                 // **Nothing supplied to release here**, which the match has just
                 // established: this arm *is* the absence, and `supplied` was consumed
                 // proving it.
-                return release_endpoint(carried, 0i64);
+                return release_endpoint(carried, 4i64);
             }
         }
     }
@@ -706,13 +889,27 @@ fn one_object(
                     return 3i64;
                 }
                 Err(unread) => {
-                    if (endpoint_reply_word(reply, REFUSED + ST_BLOCK) != OK) {
-                        return -5330i64;
+                    if (unread == LOWER_REFUSED) {
+                        // The block layer answered and refused: `ST_BLOCK`, and **no
+                        // region follows** (§8b, `BLOCK_DEVICE_V1` §7).
+                        if (endpoint_reply_word(reply, REFUSED + ST_BLOCK) != OK) {
+                            return -5330i64;
+                        }
+                        let dropped: i64 = release_region(supplied, 0i64);
+                        if (dropped < 0i64) { return dropped; }
+                        if (capability_release(answer_to) != OK) { return -5331i64; }
+                        return 0i64;
                     }
-                    let dropped: i64 = release_region(supplied, 0i64);
+                    // **Incomplete, and that is not `ST_BLOCK`.** Either the lower call
+                    // failed at the IPC level, or its reply said one region was owed and
+                    // the region never arrived — and §8b makes that second case a
+                    // different observation from a refusal *on purpose*, because a
+                    // successful read followed by incomplete delivery is a state a client
+                    // can be in. No reply is sent; what can be let go is.
+                    let dropped: i64 = release_region(supplied, OK);
                     if (dropped < 0i64) { return dropped; }
-                    if (capability_release(answer_to) != OK) { return -5331i64; }
-                    return 0i64;
+                    if (capability_release(answer_to) != OK) { return -5341i64; }
+                    return -5340i64;
                 }
             }
         }
@@ -720,7 +917,7 @@ fn one_object(
             if (endpoint_reply_word(reply, REFUSED + ST_NO_ANSWER) != OK) {
                 return -5400i64;
             }
-            return release_region(supplied, 0i64);
+            return release_region(supplied, 4i64);
         }
     }
 }

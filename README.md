@@ -159,14 +159,24 @@ counted in canonical text, and one corrupted byte fails the gate.
 **And since 2026-09-25 what is written outlives the process that wrote it.** A
 `state.store.v1` store keeps 64 objects of 512 bytes in a bounded 65-sector extent on
 that device, reached only through `block.device.v1`. An initializer formats a zeroed
-device once and refuses the second time, because only an all-zero sector 0 is permission
-to format. A writer puts two objects and ends. The store's first generation ends, is
-retired and is collected. Its successor — the same canonical module from the same sealed
-launch plan, handed nothing in memory — re-reads and validates the header from the
-device, and a reader that holds no way to address a sector gets one of those objects and
-checks all 512 bytes in canonical text. An id that was never created is refused as
-absent and its sector is never read. **What that is not**: durability. No power-loss
-guarantee, no `FLUSH`, no crash consistency, no transactions — and no Stage 4 closure.
+device once. A writer puts two objects and ends. The store's first generation ends, is
+retired and is collected — and then the **same initializer runs again**, meets a header
+whose occupancy now says two objects are there, and refuses to format: only an all-zero
+sector 0 is permission, because an unconditional write would lose both objects while
+reporting success. Its successor generation — the same canonical module from the same
+sealed launch plan, handed nothing in memory — re-reads and validates the header from
+the device, and a reader that holds no way to address a sector gets one of those objects
+and checks all 512 bytes in canonical text. That last read is the witness for both
+claims at once. An id that was never created is refused as absent and its sector is
+never read: presence is the occupancy bitmap and nothing else.
+
+**A valid header is not enough to be open.** The store asks the layer below for the
+device's capacity before it reads sector 0, because a store on a device too small to
+hold the extent is not a store — and a second boot against a 64-sector image proves it,
+answering every request `ST_STORE` and reading sector 0 not at all.
+
+**What that is not**: durability. No power-loss guarantee, no `FLUSH`, no crash
+consistency, no transactions — and no Stage 4 closure.
 
 The publication authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095
 amended it: a dedicated publication endpoint whose identity fixes what may be
@@ -491,21 +501,37 @@ scheduling and no filesystem — and there is no capsule-to-repository handoff.
 
 **Persistent object/state storage is built** (ADR-0099, `STATE_STORE_V1`), and
 `state-store.sh` is what it means. `state.store.v1` sits over `block.device.v1` over
-the reference device, every layer canonical text: six modules and eight processes, an
-initializer that formats a zeroed device once and **refuses** the second time because
-only an all-zero sector 0 is permission, a writer that puts two objects and ends, a
-store generation that ends and is retired and is collected **before** its successor
-exists, a successor of the same module that re-reads and validates the header from the
-device, and a reader — holding no way to address a sector — that gets object 2 and
-checks all 512 bytes in canonical text. An id never created is refused as absent and
-its sector is never read: presence is the occupancy bitmap and nothing else, which the
-twelve counted device requests confirm. All seven mutations ADR-0099 §13 requires turn
-it red, each on its own assertion.
+the reference device, every layer canonical text. Two boots and eight modules.
+
+The ordinary boot: an initializer formats a zeroed device; a store generation opens by
+asking the layer below for the capacity and then validating the header; a writer puts
+two objects and ends; that generation ends, is retired and is collected; the **same
+initializer** then runs again as an adversarial re-provisioning probe against a header
+with two occupancy bits set, with no state service alive, and must refuse; a successor
+generation of the same module re-reads and validates the header from the device; and a
+reader — holding no way to address a sector — gets object 2 and checks all 512 bytes in
+canonical text.
+
+Every refusal the contract defines carries evidence, by exact reply word where a caller
+can read one: a reserved opcode, an id off either end of the range, a `PUT` with no
+region, a `GET` with no answer endpoint, and an id never created. A length that is not
+eight is proved by an answered call plus the store's own account, because the only row
+that lets a client choose a length produces a status and not an answer. And a second
+boot against a 64-sector image — one short of the extent — answers five differently
+shaped requests with `ST_STORE` and reads sector 0 not at all.
+
+An incomplete lower operation is **not** a refusal: the store keeps "the layer below
+succeeded", "the layer below refused" and "nobody refused anything" apart, and only the
+middle one becomes `ST_BLOCK`. All nine mutations ADR-0099 §13 requires turn the gate
+red, each on its own assertion.
 
 **What that does not mean.** No power-loss durability, no `VIRTIO_BLK_F_FLUSH`, no
 crash consistency, no journaling, no transactions, no exactly-once `PUT`, no delete, no
 enumeration, no second owner or store, no `docs/09` `/state` namespace, no path
 semantics — and **no Stage 4 closure**: Stage 4C, Stage 4D and Stage 4 remain open.
+`ST_BLOCK` is implemented and deliberately **not** exercised: the conforming reference
+endpoint answers every well-formed in-range request successfully, and no device failure
+is manufactured to colour the row green.
 
 **What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
 separately rather than collected under one word:
