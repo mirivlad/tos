@@ -16,8 +16,12 @@
 #   READ with no answer channel  -> refused, device untouched
 #   WRITE past the capacity      -> refused as out of range, device untouched
 #   a decoy region, sent alone   -> dropped: a send carries no reply
+#   READ past the capacity, made with the row that carries an answer channel
+#                                -> refused as out of range **in its own reply**,
+#                                   device untouched, and no region follows
 #   WRITE sector 9, atomically   -> one call carrying the word *and* the region
-#   READ sector 9                -> reply, then exactly one region, 512 bytes
+#   READ sector 9                -> Answer{length: 8, word: 0}, then exactly one
+#                                   region, 512 bytes, in that order
 #
 # **Two claims this gate is built around.**
 #
@@ -37,6 +41,22 @@
 # only from the submission path. A service that performed a harmless real request and
 # then replied with the right refusal code would keep every account bit it reports and
 # the later valid requests would still succeed, so the account could not have caught it.
+#
+# *A carried read can read its own refusal (ADR-0101).* §5 makes every reply a
+# `system.ipc.Answer{length, word}` and §6a makes a `READ` with
+# `endpoint_call_word_carrying`, whose result was a bare `i64` — so the client §6a
+# names could not read the reply §5 obliges it to read. The out-of-range `READ` here
+# is made with that row and its refusal is asserted from the reply: `length == 8` and
+# `word == REFUSED + BLK_RANGE`. **`BLK_NO_ANSWER` is not evidence for this**, because
+# a delivered `endpoint_call_word_carrying` carried an answer endpoint by
+# construction; that refusal is reachable only through `endpoint_call_word`, which is a
+# different row, and its own exchange above still proves §7's code.
+#
+# *And no region follows a refused read.* Asserted twice and never by waiting for an
+# absence: the exchange window for that refusal contains no `endpoint_send_region` at
+# all, and the whole-journal count of region sends stays one per **served** read plus
+# the decoy. The client's side is the byte check on the next region it takes, which is
+# the served read's and carries the pattern the write put there.
 #
 # *A read replies before it sends.* `BLOCK_DEVICE_V1` §6a fixes control before data,
 # because the reverse leaves an orphan region queued on an endpoint that outlives
@@ -85,8 +105,10 @@ EXPECTED_SERVICE="i64:$((PROVED_DEVICE_ALL + PROVED_PROTOCOL_ALL))"
 # had started failing requests rather than that this gate had got stronger.
 PROVED_REFUSED_DEVICE=$(( 1 << 31 ))
 
-# The client: twelve facts, and the capacity it was told riding above them.
-CLIENT_FACTS=4095
+# The client: thirteen facts, and the capacity it was told riding above them. The
+# thirteenth is ADR-0101's: the out-of-range `READ` made with the carried-call row,
+# refused in its own reply.
+CLIENT_FACTS=8191
 CAPACITY_SHIFT=8192
 # The reference image is 16 MiB of 512-byte sectors.
 REFERENCE_SECTORS=$((16 * 1024 * 1024 / 512))
@@ -159,13 +181,26 @@ done
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_call_word_region status=0$')" = 2 ] ||
     fail "the atomic call-with-region row was not used exactly twice"
 # And the receive that serves it: nine messages, one per exchange.
-[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call_region status=')" = 21 ] ||
-    fail "the service did not receive exactly twenty-one messages"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call_region status=')" = 22 ] ||
+    fail "the service did not receive exactly twenty-two messages"
 # The decoy: exactly one region sent by the client with no call behind it, plus the
-# one the service sends back for the read.
+# one the service sends back for each **served** read.
+#
+# **And this is the whole-journal half of "no region follows a refused read".** The
+# count is one per served read, so the out-of-range carried read added a fourteenth
+# exchange and no fifteenth region; a window boundary that moved could not hide one.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_region status=0$')" = 14 ] ||
     fail "expected exactly fourteen successful region sends: the decoy and one answer
-       per read"
+       per served read — a refused read owes none"
+# The row ADR-0101 corrects: fourteen calls, every one of them delivered — thirteen
+# served reads and the out-of-range refusal, whose *call* succeeded and whose refusal
+# is in the reply rather than in the status. A refused call would mean the answer the
+# client reported was never an answer.
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_call_word_carrying status=0$')" = 14 ] ||
+    fail "expected exactly fourteen delivered carried calls: thirteen reads and the
+       out-of-range refusal"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_call_word_carrying status=-[0-9]*$')" = 0 ] ||
+    fail "a carried call was refused, so a reply the client read was not a reply"
 # The dropped non-call: the service's reply to it is refused, because a send
 # carries no reply capability and a handle of all zeros names nothing.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply_word status=-[0-9]*$')" = 1 ] ||
@@ -185,12 +220,20 @@ done
 # client makes its requests:
 #
 #   0 CAPACITY   1 malformed   2 opcode   3 no region   4 no answer
-#   5 out of range   6 the decoy   7 the atomic WRITE   8 the READ
-#   9..20 the twelve repeated reads
+#   5 out-of-range WRITE   6 the decoy   7 out-of-range carried READ
+#   8 the atomic WRITE   9 the READ   10..21 the twelve repeated reads
 #
-# Windows 0 to 6 are the seven refusals and the dropped decoy and must contain no
-# device work at all; every window from 7 on is a write or a read and must contain
-# exactly one request's worth.
+# Windows 0 to 7 are the six refusals and the dropped decoy and must contain no device
+# work at all; every window from 8 on is a write or a read and must contain exactly one
+# request's worth.
+#
+# **Window 7 carries ADR-0101's second half as well**, and it is the same slice: a
+# refused read that sent a region anyway would put an `endpoint_send_region` in its own
+# window, which is an assertion about a message rather than about waiting for one that
+# never comes. **That is why the carried refusal comes after the decoy** and not with
+# the other refusals: a window runs from one receive to the next and contains whatever
+# either process did in between, so a window followed by the client's decoy send would
+# hold a region send belonging to the client.
 #
 # **What counts as device work is `dma_device_address`, and the choice matters.** It
 # is emitted by the **nucleus**, once per address the driver resolves against its
@@ -213,13 +256,17 @@ events = [line.rstrip("\r\n") for line in open(sys.argv[1], encoding="utf-8", er
 RECEIVE = "TOS.RUN.INTERFACE operation=endpoint_receive_call_region status="
 ADDRESS = "TOS.RUN.INTERFACE operation=dma_device_address status=0"
 WAIT = "TOS.RUN.INTERFACE operation=irq_wait status=0"
+SENT_REGION = "TOS.RUN.INTERFACE operation=endpoint_send_region status=0"
 ADDRESSES_PER_REQUEST = 3
+# Which exchange is the out-of-range carried read, whose window must hold a reply and
+# no region at all (ADR-0101 §4 obligation 4).
+CARRIED_REFUSAL = 7
 
 opened = [i for i, line in enumerate(events) if line.startswith(RECEIVE)]
 names = [
     "CAPACITY", "a malformed length", "a reserved opcode", "a write with no region",
     "a read with no answer endpoint", "an out-of-range write", "the decoy region",
-    "the atomic write", "the read",
+    "an out-of-range carried read", "the atomic write", "the read",
 ]
 REPEATED = 12
 names = names + [f"repeated read {n + 1}" for n in range(REPEATED)]
@@ -233,7 +280,7 @@ for index, name in enumerate(names):
     window = events[bounds[index] + 1:bounds[index + 1]]
     addresses = window.count(ADDRESS)
     waits = window.count(WAIT)
-    allowed = index >= 7
+    allowed = index >= 8
     if allowed:
         if addresses != ADDRESSES_PER_REQUEST:
             print(f"{name} resolved {addresses} device addresses, not "
@@ -249,6 +296,13 @@ for index, name in enumerate(names):
             print(f"{name} must be refused before the device is touched, and it "
                   f"resolved {addresses} device address(es) and waited {waits} "
                   f"time(s)", file=sys.stderr)
+            raise SystemExit(1)
+    if index == CARRIED_REFUSAL:
+        sends = window.count(SENT_REGION)
+        if sends != 0:
+            print(f"{name} was refused and then sent {sends} region(s); a refusal "
+                  f"owes none, and a client that waited for one would be cancelled "
+                  f"rather than refused", file=sys.stderr)
             raise SystemExit(1)
 if len(touched) != 2 + REPEATED:
     print(f"expected exactly {2 + REPEATED} requests to reach the device, "
@@ -281,15 +335,18 @@ resolved="$(count '^TOS\.RUN\.INTERFACE operation=dma_device_address status=0$')
 #
 #   supervisor   2 child controls, and the 2 receiving names it let go before
 #                creating the children that receive on them
-#   service      3 regions — the out-of-range refusal's, the decoy, and the write's
-#                payload — and 1 answer endpoint per read
-#   client       1 received region per read
+#   service      3 regions — the out-of-range write's, the decoy, and the atomic
+#                write's payload — 1 answer endpoint per served read, and 1 more for
+#                the out-of-range carried read, which is refused and whose channel
+#                therefore has no other way to be let go
+#   client       1 received region per served read
 #
 # Every release in the boot is one of those, and `capability_release` is emitted by
 # the nucleus: a service cannot claim to have released anything.
 READS=$((1 + 12))
 SUPERVISOR_RELEASES=4
-SERVICE_RELEASES=$((3 + READS))
+CARRIED_REFUSALS=1
+SERVICE_RELEASES=$((3 + READS + CARRIED_REFUSALS))
 CLIENT_RELEASES=$READS
 EXPECTED_RELEASES=$((SUPERVISOR_RELEASES + SERVICE_RELEASES + CLIENT_RELEASES))
 releases="$(count '^TOS\.RUN\.INTERFACE operation=capability_release status=0$')"
@@ -391,14 +448,26 @@ echo "  512-byte read-back, so the region proved is the one that call carried"
 echo "  a read replies **before** it sends, asserted on the journal after the"
 echo "  device's own completion wait — the reverse order would leave an orphan"
 echo "  region queued on an endpoint that outlives its caller"
-echo "  five refusals, each with its own code and its own bit: reserved opcode,"
-echo "  out of range, malformed length, a write with no region, a read with"
-echo "  nowhere to answer — and every one of them a reply, not a dropped call"
+echo "  and the reply the read is answered with is now **read** (ADR-0101):"
+echo "  Answer{length: 8, word: 0} checked before the region is waited for,"
+echo "  through the one row BLOCK_DEVICE_V1 §6a names for a READ"
+echo "  five refusal codes, each with its own bit: reserved opcode, out of range,"
+echo "  malformed length, a write with no region, a read with nowhere to answer —"
+echo "  and every one of them a reply, not a dropped call"
+echo "  six refused requests, because out of range is exhibited twice: once on a"
+echo "  WRITE through endpoint_call_word_region and once on a READ through"
+echo "  endpoint_call_word_carrying, whose refusal Answer{length: 8, word:"
+echo "  REFUSED + BLK_RANGE} no i64 result could have carried — BLK_NO_ANSWER is"
+echo "  not evidence for that row, since a delivered carried call carried an"
+echo "  answer endpoint by construction"
+echo "  and no region follows the refused read, asserted twice and never by"
+echo "  waiting for an absence: its exchange window holds no region send, and"
+echo "  the whole-journal count stays one per **served** read plus the decoy"
 echo "  thirteen reads in all, and every answer endpoint a request handed over"
 echo "  was released exactly once — counted, not inferred from the boot"
 echo "  surviving, because exhaustion is a symptom and a shorter fixture would"
 echo "  stop showing it"
-echo "  and each of those five left the device **untouched**: the journal is"
+echo "  and each of those six left the device **untouched**: the journal is"
 echo "  sliced by the service's own receives, and only the two windows that"
 echo "  are allowed to reach the device resolved a device address in them —"
 echo "  three each, and nine in the boot with the ring's own three, none"

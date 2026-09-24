@@ -60,11 +60,14 @@ extern fn endpoint_receive_call(
     cap: system.ipc.Endpoint
 ) -> Result<system.ipc.ReceivedCall, i64> uses [inbox];
 
+// **Its result is the reply** (ADR-0101): this service's acknowledgement carries
+// how many bytes the client should find, which is a number no inline length could
+// state, so the reply's `word` is the only place it can travel.
 extern fn endpoint_call_word_carrying(
     held: system.ipc.Endpoint,
     on: system.ipc.Endpoint,
     word: u64
-) -> i64 uses [reply_to, system.ipc.Endpoint];
+) -> Result<system.ipc.Answer, i64> uses [reply_to, system.ipc.Endpoint];
 
 extern fn endpoint_send_region(
     cap: system.ipc.Endpoint, region: system.memory.Region
@@ -91,6 +94,8 @@ const WRITE_REQUEST: u64 = 17u64;
 const READ_REQUEST: u64 = 16u64;
 const SECTOR_BYTES: size = 512B;
 const SECTOR_COUNT: u64 = 512u64;
+// What this service's reply is: eight payload bytes carrying that same count.
+const REPLY_BYTES: u64 = 8u64;
 
 // The pattern, computed from the index so that no byte of it is a copy of
 // anything, and non-zero everywhere so that unwritten memory cannot pass for it.
@@ -142,7 +147,18 @@ fn exchange(service: system.ipc.Endpoint, word: u64) -> i64
             match (region_freeze(payload)) {
                 Ok(frozen) => {
                     if (endpoint_send_region(service, frozen) != OK) { return -101i64; }
-                    return endpoint_call_word_carrying(reply_to, service, word);
+                    // **The answer is read and not merely awaited** (ADR-0101).
+                    // This service acknowledges with the byte count, so a reply of
+                    // any other shape is not this protocol's reply — and an
+                    // exchange that returns `OK` here has been told so.
+                    match (endpoint_call_word_carrying(reply_to, service, word)) {
+                        Ok(answer) => {
+                            if (answer.length != REPLY_BYTES) { return -102i64; }
+                            if (answer.word != SECTOR_COUNT) { return -103i64; }
+                            return OK;
+                        }
+                        Err(status) => { return status; }
+                    }
                 }
                 Err(unfrozen) => { return unfrozen - 200i64; }
             }
@@ -224,9 +240,16 @@ pub fn main() -> i64
                         Err(refused) => { return refused - 3000i64; }
                     }
                     // --- the stale name, with the successor alive and waiting ---
-                    let stale: i64 = endpoint_call_word_carrying(reply_to, first, READ_REQUEST);
-                    if (stale == E_CANCELLED) { found = found + 128i64; }
-                    if (stale == OK) { return -4001i64; }
+                    // **A dead predecessor's name cancels the call** — and now the
+                    // two outcomes are two variants rather than two numbers
+                    // (ADR-0101). `Ok` here would mean the retired instance
+                    // answered, which is the thing this boot exists to refuse.
+                    match (endpoint_call_word_carrying(reply_to, first, READ_REQUEST)) {
+                        Ok(answered) => { return -4001i64; }
+                        Err(stale) => {
+                            if (stale == E_CANCELLED) { found = found + 128i64; }
+                        }
+                    }
                 }
                 Err(refused) => { return refused - 2500i64; }
             }

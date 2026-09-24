@@ -5,7 +5,11 @@
 - Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
   tree implements it yet**: acceptance fixes the format and the protocol and
   carries §13's evidence obligations, which are outstanding
-- Date: 2026-09-23, accepted 2026-09-24
+- Date: 2026-09-23, accepted 2026-09-24. **§13a's bound accounting was corrected on
+  2026-09-25** (ADR-0101 §6), after implementation found that the initializer needs an
+  answer inbox of its own: five endpoints of six and three startup endowments for the
+  initializer, not four and two. `MAX_ENDPOINTS` and `MAX_ENDOWMENT` do not move, and
+  no other part of this decision changes
 - Decision level: **3** — architectural, **requiring Project Architect
   approval**. `docs/21` places *"changes persistent formats"* at Level 3, and
   `ADR-0017` applied that test to itself in as many words — *"Explicitly **not**
@@ -582,8 +586,8 @@ sequential processes:
 |---|---|---|
 | `MAX_PROCESSES` | 4 | peak **4**: `init + block + state + client`. The initializer is collected before state A is created, and the writer and state A are collected before state B and the reader exist |
 | `MAX_PLANS` | 4 | exactly **4**: block; initializer; **state**, shared by A and B; **client**, shared by writer and reader |
-| `MAX_ENDPOINTS` | 6 | **4**: `block-serve`, `state-serve`, `state-inbox`, `client-inbox`. Two spare |
-| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **2** (`budget`, `block-serve` send\|call); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive). **Startup grants only**: the send-only alias a `GET` hands over is transient and is not one of these (§2a) |
+| `MAX_ENDPOINTS` | 6 | **5**: `block-serve`, `state-serve`, `state-inbox`, `client-inbox`, `init-inbox`. One spare |
+| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **3** (`budget`, `block-serve` send\|call, `init-inbox` send\|receive); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive). **Startup grants only**: the send-only alias a `GET` hands over is transient and is not one of these (§2a) |
 | `MAX_CAPABILITIES` | 16 per process | the supervisor is the only one near it, as in `block-lifecycle`; its peak must be counted during implementation and child controls released after each collection |
 
 **One client plan for the writer and the reader**, as directed: they are
@@ -592,9 +596,29 @@ it — a `PUT` is one atomic call answered by a word, so only the reader needs a
 inbox at all. An unused grant is not a defect; a plan is a policy, and
 `granted()` records what was installed.
 
-**The initializer needs no inbox either**, because `CAPACITY` is an ordinary call
-and `WRITE` is an atomic call carrying its region — neither is answered with a
-region. That is what keeps it at two endowments.
+**The initializer does need an inbox, and the first count of this said it did not.**
+`CAPACITY` is an ordinary call and `WRITE` is an atomic call carrying its region, so
+neither is answered with a region — but the initializer has to **read** the header
+before it decides whether to write one, and a `READ` is answered with a region on a
+channel the asker delegates (`BLOCK_DEVICE_V1` §6a). It cannot attenuate the *block
+service's* endpoint for that: that name is the service's, not an inbox, and a
+send-only alias of it would deliver the answer back to the service. So the
+initializer holds an endpoint of its own.
+
+**Corrected accounting, found by building it** (2026-09-25, ADR-0101 §6):
+
+```text
+endpoints: 5 of 6      block-serve, state-serve, state-inbox, client-inbox, init-inbox
+plans:     4 of 4      block, initializer, state A/B, writer/reader client
+startup endowments     block 3, initializer 3, state 4, client 3
+```
+
+**This is a correction to the count and not a new topology decision.**
+`MAX_ENDPOINTS` stays 6 and `MAX_ENDOWMENT` stays 4; both are still satisfied, with
+one spare endpoint instead of two and the initializer one endowment below its bound
+instead of two. Nothing about what the processes are, what they hold, or the order
+they are created and collected in changes, and the initializer is still collected
+before the ordinary state service starts.
 
 **Sharing one plan makes the receive-holder rule load-bearing, and three separate
 things must not be merged into one claim.**

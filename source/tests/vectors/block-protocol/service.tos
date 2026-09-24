@@ -873,15 +873,21 @@ const PROVED_REFUSED_DEVICE: i64 = 2147483648i64;
 // How many exchanges this service serves before it returns. The client makes exactly
 // this many, and a fixture has to finish.
 //
-// **Nine of conformance and twelve of repetition.** The nine are the protocol's
+// **Ten of conformance and twelve of repetition.** The ten are the protocol's
 // operations and refusals; the twelve are the same read again, and they are here
 // because a service that kept the answer endpoint each read delegates would run out
 // of capability-table entries long before the twelfth. `MAX_CAPABILITIES` is sixteen
 // and this process already holds a budget, a request endpoint, a PCI root, a
 // function, a window, a DMA region and an interrupt source.
-const CONFORMANCE_REQUESTS: u64 = 9u64;
+//
+// **The tenth is a `READ` past the capacity** (ADR-0101): the same out-of-range
+// refusal as the sixth, but made with the row that carries an answer channel, so the
+// refusal is read from the reply of the row `BLOCK_DEVICE_V1` §6a names. Nothing
+// here changes to serve it — the range is checked before the request's carried parts
+// are looked at, so it lands in the same arm and OR's in the same bit.
+const CONFORMANCE_REQUESTS: u64 = 10u64;
 const REPEATED_READS: u64 = 12u64;
-const REQUESTS: u64 = 21u64;
+const REQUESTS: u64 = 22u64;
 // **This account is a pure bitmask**, unlike the lifecycle fixture's composite.
 // Several requests are served in one boot and their facts are OR'd together, so a
 // packed field — `used.len`, the queue size, a flag at bit 56 — would be added to

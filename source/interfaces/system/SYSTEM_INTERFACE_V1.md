@@ -300,7 +300,7 @@ such a module whole by its header.
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 | `endpoint_call_word` | `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
-| `endpoint_call_word_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `word: u64` | `i64` | 3 |
+| `endpoint_call_word_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
 | `endpoint_send_region` | `system.ipc.Endpoint` with `send`, then `system.memory.Region` with `none` | *(none)* | `i64` | 1 |
 | `endpoint_receive_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<Region<u8>, i64>` | 2 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
@@ -397,6 +397,19 @@ capability: `ipc::hand` copies payload bytes and touches neither the transfer
 table nor the region area. So a service whose answer is a region answers on a
 channel the asker handed over, and the asker has to say *what it wants* and
 *where to answer* in one message.
+
+**Its result is an answer and not a status (ADR-0101, a correction).** This row
+was first admitted producing `i64`, which made it the one call in this schema
+whose caller could learn that it had been answered and nothing about the answer —
+precisely the failure §4.2 gives as the reason `system.ipc.Answer` exists. The
+reply was never missing: `ipc::hand` copies the replier's payload into the woken
+caller's own argument region and the nucleus returns its inline length, which is
+what `endpoint_call_word` and `endpoint_call_word_region` read over this same
+selector. `BLOCK_DEVICE_V1` §5 requires every reply to be read as
+`system.ipc.Answer{length, word}` and §6a makes its `READ` with this row, so the
+original result made a normative rule unreadable by the client that has to obey
+it. Nothing below the row moved to correct it: the same operation, the same
+transfer slot, the same payload placement and the same bounds.
 
 `endpoint_send_region` moves one **immutable ordinary region** through the
 message's region area, and `endpoint_receive_region` produces what arrived.

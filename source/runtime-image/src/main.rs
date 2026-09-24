@@ -1379,6 +1379,13 @@ const PERFORMED: &[Performed] = &[
     // capability goes into transfer slot 0 and the count register says one; the
     // word goes where `IPC_V1` §3 puts a payload and fills the length register
     // itself, so a protocol cannot reach that register through this row either.
+    //
+    // **It produces an answer, not a status (ADR-0101).** `ipc::hand` copies the
+    // replier's payload into the woken caller's own argument region and returns
+    // the reply's inline length in `rdx`, exactly as it does for the two sibling
+    // rows over this operation; this row read the status and discarded both,
+    // which left `BLOCK_DEVICE_V1` §5 — every reply is read as
+    // `system.ipc.Answer{length, word}` — unreadable by the client §6a names.
     Performed {
         interface: "system.ipc.Endpoint",
         name: "endpoint_call_word_carrying",
@@ -1391,7 +1398,7 @@ const PERFORMED: &[Performed] = &[
             },
             Slot::Fixed(Reg::R10, 1),
         ],
-        result: Produced::Status,
+        result: Produced::Answer,
     },
     // A send that moves one immutable ordinary region through the message's
     // **region** area. `Placed::Region(0)` writes `MESSAGE_REGIONS[0]` and the

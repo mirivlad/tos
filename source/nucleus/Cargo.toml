@@ -56,6 +56,11 @@ test-region-transfer-text = []
 test-block-lifecycle = []
 test-block-protocol = []
 test-endpoint-attenuation = []
+# ADR-0101's generic evidence: two processes and one endpoint between them, where a
+# call that carries a capability reads the reply it is answered with. Named after the
+# claim rather than a protocol, because the claim is about the schema row and not
+# about `block.device.v1`.
+test-carried-call-answer = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after

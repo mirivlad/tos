@@ -2,9 +2,8 @@
 
 # ADR-0101: A call that carries a capability must expose its reply
 
-- Status: **Proposed** (raised 2026-09-24 during the ADR-0099 implementation; **not
-  accepted, and nothing in the tree implements it**)
-- Date: 2026-09-24
+- Status: **Accepted**
+- Date: 2026-09-24 (raised during the ADR-0099 implementation), accepted 2026-09-25
 - Decision level: **2** — a corrective contract extension. It changes the declared
   **result** of one already-accepted schema row to the result the same ABI call
   already produces, and switches one runtime-image row from `Produced::Status` to
@@ -13,7 +12,7 @@
   IPC semantics and no persistent format. **Explicitly not Level 3** on `docs/21`'s
   test: nothing here moves a trust boundary, changes a persistent format, introduces
   a runtime dependency, changes source identity or touches owner control
-- Project Architect approval: **not granted; this is a draft for review**
+- Project Architect approval: **2026-09-25**
 - Related: **ADR-0098** and `BLOCK_DEVICE_V1` §5, §6a, §7, which already require the
   observation this row erases; **ADR-0099** and `STATE_STORE_V1` §8b, whose `ST_BLOCK`
   cannot be produced honestly without it; **ADR-0058** (`MESSAGE_PAYLOAD`);
@@ -123,12 +122,19 @@ kind, IPC bound, representation-family member or language version. No persistent
 format. `system.ipc.Answer` is unchanged — this row starts producing the record the
 schema already declares.
 
-**Existing callers are updated, not grandfathered.** Four call sites read the row's
-result as an `i64` today and become `match` arms:
-`block-data-path/client.tos`, `block-lifecycle/client.tos` (two), and
-`block-protocol/client.tos` (two). Their behaviour does not change — a status of `OK`
-becomes `Ok(answer)` and the accounts they report stay the same — which is what makes
-their existing gates the regression for this change.
+**Existing callers are updated, not grandfathered.** **Five** call sites in three
+modules read the row's result as an `i64` today and become `match` arms:
+
+```text
+block-data-path/client.tos    1
+block-lifecycle/client.tos    2
+block-protocol/client.tos     2
+```
+
+Their behaviour does not change — a status of `OK` becomes an `Ok(answer)` whose shape
+each fixture checks as far as it knows what shape to expect, and the accounts they
+report stay the same — which is what makes their existing gates the regression for this
+change.
 
 ## 4. Conformance evidence this decision requires
 
@@ -141,11 +147,16 @@ their existing gates the regression for this change.
 3. **`BLOCK_DEVICE_V1` `READ`, success** — `Answer{length: 8, word: 0}` **and then**
    the region, in that order;
 4. **`BLOCK_DEVICE_V1` `READ`, refusal** — a refusal `Answer` and **no region
-   follows**. `BLK_RANGE` or `BLK_NO_ANSWER` is enough and is honestly exhibitable;
-   **`BLK_DEVICE` is not invented**, because the reference VirtIO device answers every
-   well-formed in-range request with `VIRTIO_BLK_S_OK` and no fake device is built to
-   manufacture a failure (the class `virtio-queue.sh` records for its withdrawn MSI-X
-   negative);
+   follows**. The refusal code must be **`BLK_RANGE`**: a `READ` for an out-of-range
+   sector, made with `endpoint_call_word_carrying` itself. **`BLK_NO_ANSWER` is not an
+   alternative here.** A delivered `endpoint_call_word_carrying` necessarily carried an
+   answer endpoint, so that request shape cannot produce `BLK_NO_ANSWER` at all; the
+   only way to provoke one is `endpoint_call_word`, which is a different row and would
+   not exercise the corrected result. `BLOCK_DEVICE_V1` §7's `BLK_NO_ANSWER` evidence
+   stays where it is and counts for §7, not for this obligation. **`BLK_DEVICE` is not
+   invented**, because the reference VirtIO device answers every well-formed in-range
+   request with `VIRTIO_BLK_S_OK` and no fake device is built to manufacture a failure
+   (the class `virtio-queue.sh` records for its withdrawn MSI-X negative);
 5. **the reply-before-region mutation re-run** — sending the region before the reply
    must still turn `block-protocol`'s ordering assertion red, now with a caller that
    can see the reply.
@@ -208,5 +219,5 @@ before the ordinary state service starts.
 - **Can the owner still recover and boot a previous commit?** Unchanged.
 - **Does the change create a hidden host dependency?** No.
 - **Does it alter licensing or patent exposure?** No.
-- **How is the behavior tested?** §4's five obligations, and the four existing callers
-  whose unchanged accounts are the regression.
+- **How is the behavior tested?** §4's five obligations, and the five existing call
+  sites whose unchanged accounts are the regression.

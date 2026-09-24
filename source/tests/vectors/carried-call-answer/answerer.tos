@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The server half of ADR-0101's generic evidence: it is asked four times and
+// answers each time with a number of its own choosing.
+//
+// **Nothing about blocks, sectors or devices.** `BLOCK_DEVICE_V1` is where the
+// defect ADR-0101 corrects was found, but the claim is about one schema row and not
+// about that protocol — so the row is exercised here by two processes that hold no
+// device, allocate no region and speak a protocol invented for this boot alone.
+//
+//   a call arrives carrying a capability  -> the capability is released
+//   the request word is `w`               -> the reply's word is `w + 1000000`
+//   the request word is 0                 -> the reply has **no payload at all**
+//
+// **Why the answer is not the request.** An echo would be indistinguishable from a
+// failure: `Produced::Answer` reads the caller's own argument region, which is
+// exactly where the caller wrote its request word, so a row that copied nothing back
+// would hand the caller its own number and look right. A fixed offset the caller can
+// predict but never wrote makes the two cases different observations.
+//
+// **Why one request gets an empty reply.** The `length` half of
+// `system.ipc.Answer` has to be the replier's, not a constant: a row that reported
+// eight for every answer would satisfy every other assertion in this boot. So one
+// exchange is answered with `endpoint_reply`, whose declared length is zero, and the
+// asker requires exactly zero back.
+
+module system.test.answerer version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as serve;
+
+resource [
+    fuel: 262144,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+
+// --- the protocol this boot invents for itself --------------------------------
+// One request is eight payload bytes carrying a number, which is what
+// `endpoint_call_word_carrying` sends.
+const REQUEST_BYTES: u64 = 8u64;
+// What the answer is: the request plus this. Chosen only to be a number no caller
+// could mistake for its own.
+const ANSWER_SHIFT: u64 = 1000000u64;
+// The one request that is answered with nothing in it.
+const ASK_EMPTY: u64 = 0u64;
+const NO_PAYLOAD: u64 = 0u64;
+const EXCHANGES: u64 = 4u64;
+
+// --- what this module proves, one bit each -------------------------------------
+// **Its own range of bits**, and so is each of the other two modules'. Three
+// processes reporting the same number would leave a gate unable to say which of them
+// had reported it, and this boot's whole subject is what one of three processes
+// observed.
+//
+// Four calls arrived, each one eight bytes long.
+const PROVED_FOUR_ASKED: i64 = 16i64;
+// Each carried a capability, and each was let go.
+const PROVED_CARRIED_RELEASED: i64 = 32i64;
+// Every reply was accepted.
+const PROVED_FOUR_ANSWERED: i64 = 64i64;
+// And one of them was the empty one, so both reply rows were used.
+const PROVED_EMPTY_SENT: i64 = 128i64;
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [serve];
+
+extern fn endpoint_reply_word(
+    cap: system.ipc.Reply, word: u64
+) -> i64 uses [system.ipc.Reply];
+
+// The reply whose length is the number it declares, and whose payload is nothing.
+extern fn endpoint_reply(
+    cap: system.ipc.Reply, length: u64
+) -> i64 uses [system.ipc.Reply];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+pub fn main() -> i64
+    uses [budget, serve, system.ipc.Endpoint, system.ipc.Reply]
+{
+    let mut served: u64 = 0u64;
+    let mut shaped: u64 = 0u64;
+    let mut let_go: u64 = 0u64;
+    let mut answered: u64 = 0u64;
+    let mut emptied: u64 = 0u64;
+
+    while (served < EXCHANGES) {
+        served = served + 1u64;
+        match (endpoint_receive_call(serve)) {
+            Ok(request) => {
+                if (request.length == REQUEST_BYTES) { shaped = shaped + 1u64; }
+                let asked: u64 = request.word;
+
+                // **The answer channel is let go before the reply is sent**, and
+                // the order is deliberate: this protocol has no use for what a
+                // request hands over, and a service that kept one would let a
+                // caller fill its table with names it will never use.
+                if (capability_release(request.carried) != OK) { return -1i64; }
+                let_go = let_go + 1u64;
+
+                if (asked == ASK_EMPTY) {
+                    if (endpoint_reply(request.reply, NO_PAYLOAD) != OK) {
+                        return -2i64;
+                    }
+                    emptied = emptied + 1u64;
+                } else {
+                    if (endpoint_reply_word(request.reply, asked + ANSWER_SHIFT) != OK) {
+                        return -3i64;
+                    }
+                }
+                answered = answered + 1u64;
+            }
+            Err(status) => { return status - 100i64; }
+        }
+    }
+
+    let mut proved: i64 = 0i64;
+    if (shaped == EXCHANGES) { proved = proved + PROVED_FOUR_ASKED; }
+    if (let_go == EXCHANGES) { proved = proved + PROVED_CARRIED_RELEASED; }
+    if (answered == EXCHANGES) { proved = proved + PROVED_FOUR_ANSWERED; }
+    if (emptied == 1u64) { proved = proved + PROVED_EMPTY_SENT; }
+    return proved;
+}
