@@ -85,9 +85,9 @@ EXPECTED_SERVICE="i64:$((PROVED_DEVICE_ALL + PROVED_PROTOCOL_ALL))"
 # had started failing requests rather than that this gate had got stronger.
 PROVED_REFUSED_DEVICE=$(( 1 << 31 ))
 
-# The client: eleven facts, and the capacity it was told riding above them.
-CLIENT_FACTS=2047
-CAPACITY_SHIFT=4096
+# The client: twelve facts, and the capacity it was told riding above them.
+CLIENT_FACTS=4095
+CAPACITY_SHIFT=8192
 # The reference image is 16 MiB of 512-byte sectors.
 REFERENCE_SECTORS=$((16 * 1024 * 1024 / 512))
 EXPECTED_CLIENT="i64:$((CLIENT_FACTS + REFERENCE_SECTORS * CAPACITY_SHIFT))"
@@ -159,12 +159,13 @@ done
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_call_word_region status=0$')" = 2 ] ||
     fail "the atomic call-with-region row was not used exactly twice"
 # And the receive that serves it: nine messages, one per exchange.
-[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call_region status=')" = 9 ] ||
-    fail "the service did not receive exactly nine messages"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call_region status=')" = 21 ] ||
+    fail "the service did not receive exactly twenty-one messages"
 # The decoy: exactly one region sent by the client with no call behind it, plus the
 # one the service sends back for the read.
-[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_region status=0$')" = 2 ] ||
-    fail "expected exactly two successful region sends, the decoy and the read's answer"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send_region status=0$')" = 14 ] ||
+    fail "expected exactly fourteen successful region sends: the decoy and one answer
+       per read"
 # The dropped non-call: the service's reply to it is refused, because a send
 # carries no reply capability and a handle of all zeros names nothing.
 [ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply_word status=-[0-9]*$')" = 1 ] ||
@@ -185,9 +186,11 @@ done
 #
 #   0 CAPACITY   1 malformed   2 opcode   3 no region   4 no answer
 #   5 out of range   6 the decoy   7 the atomic WRITE   8 the READ
+#   9..20 the twelve repeated reads
 #
-# Windows 7 and 8 are the only two allowed to contain device work; the other seven
-# must contain none.
+# Windows 0 to 6 are the seven refusals and the dropped decoy and must contain no
+# device work at all; every window from 7 on is a write or a read and must contain
+# exactly one request's worth.
 #
 # **What counts as device work is `dma_device_address`, and the choice matters.** It
 # is emitted by the **nucleus**, once per address the driver resolves against its
@@ -218,6 +221,8 @@ names = [
     "a read with no answer endpoint", "an out-of-range write", "the decoy region",
     "the atomic write", "the read",
 ]
+REPEATED = 12
+names = names + [f"repeated read {n + 1}" for n in range(REPEATED)]
 if len(opened) != len(names):
     print(f"expected {len(names)} served exchanges, saw {len(opened)}", file=sys.stderr)
     raise SystemExit(1)
@@ -228,7 +233,7 @@ for index, name in enumerate(names):
     window = events[bounds[index] + 1:bounds[index + 1]]
     addresses = window.count(ADDRESS)
     waits = window.count(WAIT)
-    allowed = index in (7, 8)
+    allowed = index >= 7
     if allowed:
         if addresses != ADDRESSES_PER_REQUEST:
             print(f"{name} resolved {addresses} device addresses, not "
@@ -245,9 +250,9 @@ for index, name in enumerate(names):
                   f"resolved {addresses} device address(es) and waited {waits} "
                   f"time(s)", file=sys.stderr)
             raise SystemExit(1)
-if len(touched) != 2:
-    print(f"expected exactly two requests to reach the device, saw {touched}",
-          file=sys.stderr)
+if len(touched) != 2 + REPEATED:
+    print(f"expected exactly {2 + REPEATED} requests to reach the device, "
+          f"saw {len(touched)}: {touched}", file=sys.stderr)
     raise SystemExit(1)
 UNTOUCHED
 # And the same fact stated once over the whole journal, so a window boundary that
@@ -257,11 +262,45 @@ UNTOUCHED
 # which is why the windowed pass above does not see them — and each request resolves
 # three more, for its header, its data buffer and its status byte.
 RING_ADDRESSES=3
-REQUEST_ADDRESSES=$((3 * 2))
+REQUEST_ADDRESSES=$((3 * (2 + 12)))
 resolved="$(count '^TOS\.RUN\.INTERFACE operation=dma_device_address status=0$')"
 [ "$resolved" = "$((RING_ADDRESSES + REQUEST_ADDRESSES))" ] ||
-    fail "the boot resolved $resolved device addresses; one ring and two requests
-       resolve $((RING_ADDRESSES + REQUEST_ADDRESSES))"
+    fail "the boot resolved $resolved device addresses; one ring and fourteen
+       requests resolve $((RING_ADDRESSES + REQUEST_ADDRESSES))"
+
+# --- 1b: nothing a request handed over is still held -----------------------------
+#
+# **The positive form of "capabilities do not accumulate".** A service that kept the
+# answer endpoint each read delegates would run out of table entries, and the twelve
+# repeated reads above are past the point that exhausts it — so a green boot is
+# already evidence. But exhaustion is a *symptom*, and a fixture tuned one read
+# shorter would stop showing it. The claim itself is that every capability a request
+# handed over was let go exactly once, and that is a count.
+#
+# Derived rather than observed, so a number that moved would have to be explained:
+#
+#   supervisor   2 child controls, and the 2 receiving names it let go before
+#                creating the children that receive on them
+#   service      3 regions — the out-of-range refusal's, the decoy, and the write's
+#                payload — and 1 answer endpoint per read
+#   client       1 received region per read
+#
+# Every release in the boot is one of those, and `capability_release` is emitted by
+# the nucleus: a service cannot claim to have released anything.
+READS=$((1 + 12))
+SUPERVISOR_RELEASES=4
+SERVICE_RELEASES=$((3 + READS))
+CLIENT_RELEASES=$READS
+EXPECTED_RELEASES=$((SUPERVISOR_RELEASES + SERVICE_RELEASES + CLIENT_RELEASES))
+releases="$(count '^TOS\.RUN\.INTERFACE operation=capability_release status=0$')"
+[ "$releases" = "$EXPECTED_RELEASES" ] ||
+    fail "the boot released $releases capabilities; this topology releases
+       $EXPECTED_RELEASES — a read whose answer endpoint was kept would show here
+       before it showed as exhaustion"
+# And none of them failed, which is what makes the count a count of releases rather
+# than of attempts.
+[ "$(count '^TOS\.RUN\.INTERFACE operation=capability_release status=-[0-9]*$')" = 0 ] ||
+    fail "a release was refused, so something was held that could not be let go"
 
 # --- 2: a read replies before it sends -----------------------------------------
 # **The tail after the last completion wait is the read's.** The write's own
@@ -355,6 +394,10 @@ echo "  region queued on an endpoint that outlives its caller"
 echo "  five refusals, each with its own code and its own bit: reserved opcode,"
 echo "  out of range, malformed length, a write with no region, a read with"
 echo "  nowhere to answer — and every one of them a reply, not a dropped call"
+echo "  thirteen reads in all, and every answer endpoint a request handed over"
+echo "  was released exactly once — counted, not inferred from the boot"
+echo "  surviving, because exhaustion is a symptom and a shorter fixture would"
+echo "  stop showing it"
 echo "  and each of those five left the device **untouched**: the journal is"
 echo "  sliced by the service's own receives, and only the two windows that"
 echo "  are allowed to reach the device resolved a device address in them —"
