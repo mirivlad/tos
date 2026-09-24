@@ -281,6 +281,21 @@ extern fn capability_release(
     cap: system.memory.Region
 ) -> i64 uses [system.memory.Region];
 
+// And how an **endpoint** a request handed over stops occupying a table entry.
+//
+// **Resource hygiene, not a wire rule.** `BLOCK_DEVICE_V1` says a read delegates a
+// channel to be answered on; it says nothing about what the service does with the
+// name afterwards, because there is nothing to say — a capability this process is
+// finished with is one it should not be holding. `MAX_CAPABILITIES` is sixteen and
+// this process holds seven things of its own before a request arrives, so a service
+// that kept one name per request would stop being able to accept a message. That is
+// a client's ability to exhaust a service by attaching authority it does not need,
+// and the answer is to let go of everything a request hands over and this protocol
+// does not keep.
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
 extern fn region_allocate(
     cap: system.memory.Authority, bytes: size
 ) -> Result<Region<mut u8>, i64> uses [budget];
@@ -855,9 +870,18 @@ const PROVED_REFUSED_DEVICE: i64 = 2147483648i64;
 // Everything this module can prove is `2^31 - 1`; the gate derives that sum from
 // the same bits rather than this module asserting its own total.
 
-// How many exchanges this service serves before it returns. The client makes
-// exactly this many, and a fixture has to finish.
-const REQUESTS: u64 = 9u64;
+// How many exchanges this service serves before it returns. The client makes exactly
+// this many, and a fixture has to finish.
+//
+// **Nine of conformance and twelve of repetition.** The nine are the protocol's
+// operations and refusals; the twelve are the same read again, and they are here
+// because a service that kept the answer endpoint each read delegates would run out
+// of capability-table entries long before the twelfth. `MAX_CAPABILITIES` is sixteen
+// and this process already holds a budget, a request endpoint, a PCI root, a
+// function, a window, a DMA region and an interrupt source.
+const CONFORMANCE_REQUESTS: u64 = 9u64;
+const REPEATED_READS: u64 = 12u64;
+const REQUESTS: u64 = 21u64;
 // **This account is a pure bitmask**, unlike the lifecycle fixture's composite.
 // Several requests are served in one boot and their facts are OR'd together, so a
 // packed field — `used.len`, the queue size, a flag at bit 56 — would be added to
@@ -972,15 +996,9 @@ fn answer_one(
     if (length != REQUEST_BYTES) {
         if (endpoint_reply_word(reply, REFUSED + BLK_MALFORMED) != OK) {
             // No reply capability: this was not a call. Release and continue.
-            match (supplied) {
-                Some(stray) => {
-                    if (capability_release(stray) != OK) { return -7610i64; }
-                }
-                None => { }
-            }
-            return PROVED_DROPPED_NON_CALL;
+            return released(supplied, carried, PROVED_DROPPED_NON_CALL);
         }
-        return release_unused(supplied, PROVED_REFUSED_MALFORMED);
+        return released(supplied, carried, PROVED_REFUSED_MALFORMED);
     }
 
     let opcode: u64 = word % OPCODE_SPAN;
@@ -989,7 +1007,7 @@ fn answer_one(
     // --- the opcode ----------------------------------------------------------
     if (opcode > OP_CAPACITY) {
         if (endpoint_reply_word(reply, REFUSED + BLK_OPCODE) != OK) { return -7101i64; }
-        return release_unused(supplied, PROVED_REFUSED_OPCODE);
+        return released(supplied, carried, PROVED_REFUSED_OPCODE);
     }
 
     // --- `CAPACITY` ----------------------------------------------------------
@@ -998,11 +1016,11 @@ fn answer_one(
     if (opcode == OP_CAPACITY) {
         if (sector != 0u64) {
             if (endpoint_reply_word(reply, REFUSED + BLK_MALFORMED) != OK) { return -7102i64; }
-            return release_unused(supplied, PROVED_REFUSED_MALFORMED);
+            return released(supplied, carried, PROVED_REFUSED_MALFORMED);
         }
         // The device's own number, clamped. Nothing here is compiled in.
         if (endpoint_reply_word(reply, capacity) != OK) { return -7103i64; }
-        return release_unused(supplied, PROVED_SERVED_CAPACITY);
+        return released(supplied, carried, PROVED_SERVED_CAPACITY);
     }
 
     // --- the sector, before anything the device can see ----------------------
@@ -1012,7 +1030,7 @@ fn answer_one(
     // specific thing to say.
     if (sector >= capacity) {
         if (endpoint_reply_word(reply, REFUSED + BLK_RANGE) != OK) { return -7104i64; }
-        return release_unused(supplied, PROVED_REFUSED_RANGE);
+        return released(supplied, carried, PROVED_REFUSED_RANGE);
     }
 
     // --- what each direction needs the request to have carried ---------------
@@ -1029,7 +1047,7 @@ fn answer_one(
                 if (endpoint_reply_word(reply, REFUSED + BLK_NO_REGION) != OK) {
                     return -7105i64;
                 }
-                return PROVED_REFUSED_NO_REGION;
+                return release_carried(carried, PROVED_REFUSED_NO_REGION);
             }
         }
     }
@@ -1045,6 +1063,9 @@ fn answer_one(
             if (endpoint_reply_word(reply, REFUSED + BLK_NO_ANSWER) != OK) {
                 return -7106i64;
             }
+            // **Nothing carried to release here**, which the match has just
+            // established: this arm *is* the absence, and `carried` was consumed
+            // proving it.
             return release_unused(supplied, PROVED_REFUSED_NO_ANSWER);
         }
     }
@@ -1065,6 +1086,45 @@ fn release_unused(supplied: Option<Region<u8>>, account: i64) -> i64
         }
         None => { return account; }
     }
+}
+
+// And the same for an **endpoint** a request carried that this protocol has no use
+// for.
+//
+// **Every shape but a read has one.** `BLOCK_DEVICE_V1` gives an answer endpoint a
+// meaning only for `READ`; a `WRITE`, a `CAPACITY` or any refused request that
+// carried one handed over authority nobody asked for. Keeping it would let a client
+// fill this service's table with names it will never use, which is a denial of
+// service spelled as generosity — so it goes, and no new refusal code is invented
+// for it, because the contract does not make attaching one an error.
+fn release_carried(carried: Option<system.ipc.Endpoint>, account: i64) -> i64
+    uses [system.ipc.Endpoint]
+{
+    match (carried) {
+        Some(unused) => {
+            if (capability_release(unused) != OK) { return -7660i64; }
+            return account;
+        }
+        None => { return account; }
+    }
+}
+
+// Both at once, which is the form every answer that is not a read uses.
+//
+// **One function rather than two calls at each site**, because two calls are two
+// chances to remember one and forget the other — and the one that would have been
+// forgotten is the endpoint, since a region is obviously a resource and a capability
+// handle does not look like one.
+fn released(
+    supplied: Option<Region<u8>>,
+    carried: Option<system.ipc.Endpoint>,
+    account: i64
+) -> i64
+    uses [system.memory.Region, system.ipc.Endpoint]
+{
+    let regions: i64 = release_unused(supplied, account);
+    if (regions < 0i64) { return regions; }
+    return release_carried(carried, regions);
 }
 
 // The same forced copy, the other way: the client's ordinary region into
@@ -1474,6 +1534,17 @@ fn exchange(
             give_up(borrow mut window);
             return -71i64;
         }
+        // A write has no answer channel, so anything the request carried is
+        // authority nobody asked for and this process should not keep it.
+        match (answer_to) {
+            Some(unused) => {
+                if (capability_release(unused) != OK) {
+                    give_up(borrow mut window);
+                    return -7670i64;
+                }
+            }
+            None => { }
+        }
         return done + PROVED_SERVED_WRITE;
     }
 
@@ -1501,7 +1572,20 @@ fn exchange(
                                 give_up(borrow mut window);
                                 return -7110i64;
                             }
-                            if (endpoint_send_region(channel, frozen) != OK) {
+                            let delivered: i64 = endpoint_send_region(channel, frozen);
+                            // **Released whether the send worked or not**, and in
+                            // that order: the name has served its one purpose
+                            // either way, and a service that only tidied up on the
+                            // happy path would leak exactly when it was under
+                            // stress. A failed send is still a fault — the reply is
+                            // already spent, so it cannot become a refusal — and it
+                            // is reported after the release rather than instead of
+                            // it.
+                            if (capability_release(channel) != OK) {
+                                give_up(borrow mut window);
+                                return -7650i64;
+                            }
+                            if (delivered != OK) {
                                 give_up(borrow mut window);
                                 return -72i64;
                             }

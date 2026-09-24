@@ -77,6 +77,13 @@ const BLK_NO_ANSWER: u64 = 5u64;
 
 const SECTOR_BYTES: size = 512B;
 const TARGET_SECTOR: u64 = 9u64;
+// **How many more reads follow the conformance sequence**, and the number is chosen
+// against the service's capability table rather than for roundness. A service that
+// never released the answer endpoint a read delegates would accumulate one entry per
+// read; with `MAX_CAPABILITIES` at sixteen and the service already holding its
+// budget, its request endpoint, the PCI root, a function, a window, a DMA region and
+// an interrupt source, a handful of reads exhausts it. Twelve is past that.
+const REPEATS: u64 = 12u64;
 const OK: i64 = 0i64;
 
 // --- what this module proves, one bit each ------------------------------------
@@ -91,12 +98,14 @@ const PROVED_WRITE_ACKNOWLEDGED: i64 = 128i64;
 const PROVED_READ_ACKNOWLEDGED: i64 = 256i64;
 const PROVED_REGION_ARRIVED: i64 = 512i64;
 const PROVED_EVERY_BYTE: i64 = 1024i64;
+// Every one of the repeated reads succeeded and every byte of each was the pattern.
+const PROVED_REPEATED_READS: i64 = 2048i64;
 
 // **The capacity rides above the account**, so the gate reads the number the
 // device reported rather than trusting that this module compared it with
 // something. `2^12` is one place above the highest bit used, so no sum of the bits
 // can reach into it.
-const CAPACITY_SHIFT: i64 = 4096i64;
+const CAPACITY_SHIFT: i64 = 8192i64;
 
 extern fn endpoint_call_word(
     cap: system.ipc.Endpoint, word: u64
@@ -234,6 +243,28 @@ fn refused_as(answer: system.ipc.Answer, code: u64) -> bool {
     return answer.word == REFUSED + code;
 }
 
+// One READ of the target sector, verified byte by byte.
+//
+// **Its own function so the repeat loop and the first read are the same code.** A
+// loop that re-implemented the exchange would be proving something about the loop.
+fn one_read() -> i64
+    uses [service, reply_to, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    if (endpoint_call_word_carrying(reply_to, service,
+        TARGET_SECTOR * OPCODE_SPAN + OP_READ) != OK) {
+        return -30i64;
+    }
+    match (endpoint_receive_region(inbox)) {
+        Ok(arrived) => {
+            let agreed: u64 = agreeing(borrow arrived);
+            if (capability_release(arrived) != OK) { return -31i64; }
+            if (agreed != 512u64) { return -32i64; }
+            return OK;
+        }
+        Err(status) => { return status - 33i64; }
+    }
+}
+
 pub fn main() -> i64
     uses [budget, service, inbox, reply_to, system.ipc.Endpoint,
           system.memory.Region]
@@ -355,6 +386,20 @@ pub fn main() -> i64
         }
         Err(status) => { return status - 160i64; }
     }
+
+    // --- 10. the same read, again and again ---------------------------------
+    // **The regression for a service that keeps what a request hands it.** Each
+    // read delegates an answer endpoint, and a service that never released one
+    // would accumulate a capability-table entry per read until it could not accept
+    // another message. Twelve is past the point that exhausts it, so a green run
+    // here is a statement about the service's hygiene and not about luck.
+    let mut repeated: u64 = 0u64;
+    while (repeated < REPEATS) {
+        let again: i64 = one_read();
+        if (again != OK) { return again - 500i64; }
+        repeated = repeated + 1u64;
+    }
+    proved = proved + PROVED_REPEATED_READS;
 
     // **The capacity travels with the account**, so the gate can compare two
     // boots against two devices.
