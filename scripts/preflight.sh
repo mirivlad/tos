@@ -538,6 +538,19 @@ qemu_block_protocol() {
 qemu_endpoint_attenuation() {
     bash "$ROOT/source/host-tools/qemu-test/endpoint-attenuation.sh"
 }
+# A call that carries a capability reads the reply it is answered with (ADR-0101).
+#
+# `endpoint_call_word_carrying` was admitted producing `i64`, which left its caller
+# able to learn that the call had been answered and nothing about the answer — so
+# `BLOCK_DEVICE_V1` §5, which requires every reply to be read as
+# `system.ipc.Answer{length, word}`, was unreadable by the §6a `READ` client bound to
+# obey it. This boot proves the corrected result without a device: two distinct
+# success words, one word in the refusal class above the top bit, and one reply with
+# no payload at all, which is what makes the length the replier's rather than the
+# row's.
+qemu_carried_call_answer() {
+    bash "$ROOT/source/host-tools/qemu-test/carried-call-answer.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -771,6 +784,7 @@ gate qemu       full-only "QEMU a sector crosses IPC as a region"  qemu_block_da
 gate qemu       full-only "QEMU a successor restarts the device path" qemu_block_lifecycle
 gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_block_protocol
 gate qemu       full-only "QEMU a send-only name for an endpoint"    qemu_endpoint_attenuation
+gate qemu       full-only "QEMU a carried call reads its reply"       qemu_carried_call_answer
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

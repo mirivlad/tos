@@ -59,7 +59,7 @@ extern fn endpoint_call_word_carrying(
     held: system.ipc.Endpoint,
     on: system.ipc.Endpoint,
     word: u64
-) -> i64 uses [reply_to, system.ipc.Endpoint];
+) -> Result<system.ipc.Answer, i64> uses [reply_to, system.ipc.Endpoint];
 
 // And the bytes, as a region this process was handed.
 extern fn endpoint_receive_region(
@@ -75,6 +75,11 @@ const WANTED_SECTOR: u64 = 1u64;
 const SEED_BASE: u64 = 192u64;
 const SECTOR_BYTES: size = 512B;
 const SECTOR_COUNT: u64 = 512u64;
+// What this protocol's reply is: eight payload bytes carrying one number, which
+// the service puts there because 512 is not a length `IPC_V1` §3 could state.
+// The number is how many bytes the client should find — checked here against the
+// bytes themselves rather than believed (ADR-0101).
+const REPLY_BYTES: u64 = 8u64;
 
 // The byte the requested sector should hold, computed rather than looked up.
 fn seeded_byte(sector: u64) -> u8 {
@@ -121,8 +126,21 @@ pub fn main() -> i64
             // The request. The service answers on `reply_to` with the bytes and
             // then replies to this call, so the reply returning means both
             // happened — and the region is already on the inbox when it does.
-            if (endpoint_call_word_carrying(reply_to, delivery.carried, WANTED_SECTOR) != OK) {
-                return -1001i64;
+            //
+            // **The answer is read, not just counted.** This protocol's reply
+            // says how many bytes the client should find, so a reply of any other
+            // shape is not this protocol's reply and the call did not succeed.
+            match (endpoint_call_word_carrying(reply_to, delivery.carried,
+                                               WANTED_SECTOR)) {
+                Ok(answer) => {
+                    if (answer.length != REPLY_BYTES) {
+                        return -1002i64;
+                    }
+                    if (answer.word != SECTOR_COUNT) {
+                        return -1003i64;
+                    }
+                }
+                Err(refused) => { return refused - 1000i64; }
             }
             found = found + 4i64;
             match (endpoint_receive_region(inbox)) {

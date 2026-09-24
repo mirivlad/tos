@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The client half of ADR-0101's generic evidence: four calls that each carry a
+// capability, and four answers read exactly.
+//
+// **This is the whole of the claim.** `endpoint_call_word_carrying` was admitted
+// producing `i64`, so a caller learned that its call had been answered and nothing
+// about the answer — the failure `SYSTEM_INTERFACE_V1` §4.2 names as the reason
+// `system.ipc.Answer` exists. This module asks four times and asserts the exact
+// record each time:
+//
+//   ask 5                            -> length 8, word 1000005
+//   ask 9001                         -> length 8, word 1009001    (a different word)
+//   ask REFUSED + 11 - 1000000       -> length 8, word REFUSED + 11, so >= REFUSED
+//   ask 0                            -> length 0, and the word is not read at all
+//
+// **The four are not four copies of one fact.** The first two differ, so the word
+// cannot be a constant this row supplies; the third lands in the refusal class,
+// which is the class `BLOCK_DEVICE_V1` §5 needs and no `i64` result could carry; the
+// fourth has a length the replier chose, which is what makes `length` the answer's
+// rather than the row's.
+//
+// **The word is never the request.** Each expected answer is the request plus a
+// shift, so a row that copied nothing and left the caller reading the request it had
+// written into its own argument region would fail every assertion here rather than
+// pass them.
+//
+// **And the length is checked before the word, every time** — `BLOCK_DEVICE_V1` §5's
+// discipline, which is the general one: the length is what makes the word a word.
+
+module system.test.asker version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as service;
+// **A send-only name for an endpoint nothing receives on**, which is all this boot
+// needs it to be. What the carried channel is *for* is the carrying protocol's
+// business; the claim here is about the reply of the call that carries it, so this
+// fixture gives it no other purpose and says so rather than inventing one.
+import capability system.ipc.Endpoint as reply_to;
+
+resource [
+    fuel: 262144,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+
+// --- the protocol this boot invents for itself --------------------------------
+const REQUEST_BYTES: u64 = 8u64;
+const ANSWER_SHIFT: u64 = 1000000u64;
+const ASK_FIRST: u64 = 5u64;
+const ASK_SECOND: u64 = 9001u64;
+const ASK_EMPTY: u64 = 0u64;
+const NO_PAYLOAD: u64 = 0u64;
+// The refusal class, spelled as `BLOCK_DEVICE_V1` §5 spells it: the top bit. Nothing
+// here is a block refusal — what is borrowed is only the shape of a protocol that
+// puts success and failure in one number, which is the shape an `i64` result made
+// unreadable.
+const REFUSED: u64 = 9223372036854775808u64;
+const REFUSAL_CODE: u64 = 11u64;
+
+// --- what this module proves, one bit each ------------------------------------
+// **Its own range**, above the supervisor's and the answerer's, so the account in the
+// journal names the module that reported it.
+const PROVED_FIRST_WORD: i64 = 256i64;
+const PROVED_SECOND_WORD: i64 = 512i64;
+const PROVED_REFUSAL_CLASS: i64 = 1024i64;
+const PROVED_REPLIERS_LENGTH: i64 = 2048i64;
+
+// The row ADR-0101 corrects.
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [reply_to, service];
+
+// Whether one answer is exactly the one expected.
+//
+// **Both halves, length first.** A word read out of an answer whose length is not
+// this protocol's length is a number read from wherever the last message left one.
+fn exactly(answer: system.ipc.Answer, word: u64) -> bool {
+    if (answer.length != REQUEST_BYTES) { return false; }
+    return answer.word == word;
+}
+
+// One exchange: ask, and require the answer to be the expected one.
+fn asking(word: u64, expected: u64) -> i64
+    uses [service, reply_to, system.ipc.Endpoint]
+{
+    match (endpoint_call_word_carrying(reply_to, service, word)) {
+        Ok(answer) => {
+            if (!exactly(answer, expected)) { return -1i64; }
+            return OK;
+        }
+        Err(status) => { return status; }
+    }
+}
+
+pub fn main() -> i64
+    uses [budget, service, reply_to, system.ipc.Endpoint]
+{
+    let mut proved: i64 = 0i64;
+
+    // --- 1. a word this row could not have invented --------------------------
+    if (asking(ASK_FIRST, ASK_FIRST + ANSWER_SHIFT) != OK) { return -11i64; }
+    proved = proved + PROVED_FIRST_WORD;
+
+    // --- 2. and a different one, so it is not one word ------------------------
+    if (asking(ASK_SECOND, ASK_SECOND + ANSWER_SHIFT) != OK) { return -12i64; }
+    proved = proved + PROVED_SECOND_WORD;
+
+    // --- 3. the refusal class -------------------------------------------------
+    // **The class an `i64` result made unreachable.** A protocol that puts a
+    // refusal in the reply's word needs the caller to see the word; this asks for a
+    // number whose answer lands above the top bit and requires both that the answer
+    // is exactly it and that it is in the class.
+    match (endpoint_call_word_carrying(reply_to, service,
+        REFUSED + REFUSAL_CODE - ANSWER_SHIFT)) {
+        Ok(answer) => {
+            if (answer.length != REQUEST_BYTES) { return -13i64; }
+            if (answer.word < REFUSED) { return -14i64; }
+            if (answer.word != REFUSED + REFUSAL_CODE) { return -15i64; }
+            proved = proved + PROVED_REFUSAL_CLASS;
+        }
+        Err(status) => { return status - 130i64; }
+    }
+
+    // --- 4. a length the replier chose ---------------------------------------
+    // **And the word is deliberately not read.** The answer declares no payload, so
+    // the eight bytes at the payload offset are whatever the last message left
+    // there; asserting anything about them would be asserting about that.
+    match (endpoint_call_word_carrying(reply_to, service, ASK_EMPTY)) {
+        Ok(answer) => {
+            if (answer.length != NO_PAYLOAD) { return -16i64; }
+            proved = proved + PROVED_REPLIERS_LENGTH;
+        }
+        Err(status) => { return status - 140i64; }
+    }
+
+    return proved;
+}

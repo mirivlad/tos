@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `f51029a43b96a92ed3e91ac8e9c9d6dd273859d3f08571ebc13d9a31c229f3bf`\
+Source-manifest SHA-256: `afd315924d56be12e5c974da88c496973f613503bdbeb31f68c56ef150d15469`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -3657,7 +3657,7 @@ such a module whole by its header.
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 | `endpoint_call_word` | `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
-| `endpoint_call_word_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `word: u64` | `i64` | 3 |
+| `endpoint_call_word_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
 | `endpoint_send_region` | `system.ipc.Endpoint` with `send`, then `system.memory.Region` with `none` | *(none)* | `i64` | 1 |
 | `endpoint_receive_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<Region<u8>, i64>` | 2 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
@@ -3754,6 +3754,19 @@ capability: `ipc::hand` copies payload bytes and touches neither the transfer
 table nor the region area. So a service whose answer is a region answers on a
 channel the asker handed over, and the asker has to say *what it wants* and
 *where to answer* in one message.
+
+**Its result is an answer and not a status (ADR-0101, a correction).** This row
+was first admitted producing `i64`, which made it the one call in this schema
+whose caller could learn that it had been answered and nothing about the answer —
+precisely the failure §4.2 gives as the reason `system.ipc.Answer` exists. The
+reply was never missing: `ipc::hand` copies the replier's payload into the woken
+caller's own argument region and the nucleus returns its inline length, which is
+what `endpoint_call_word` and `endpoint_call_word_region` read over this same
+selector. `BLOCK_DEVICE_V1` §5 requires every reply to be read as
+`system.ipc.Answer{length, word}` and §6a makes its `READ` with this row, so the
+original result made a normative rule unreadable by the client that has to obey
+it. Nothing below the row moved to correct it: the same operation, the same
+transfer slot, the same payload placement and the same bounds.
 
 `endpoint_send_region` moves one **immutable ordinary region** through the
 message's region area, and `endpoint_receive_region` produces what arrived.
@@ -6106,19 +6119,37 @@ message and both processes would wait for each other. The channel handed over is
 **send-only alias**, made per request by `capability_attenuate` (ADR-0100):
 
 ```text
-reply_to = capability_attenuate(state_inbox, RIGHT_SEND)
-result   = endpoint_call_word_carrying(reply_to, block_service, request)
+reply_to     = capability_attenuate(state_inbox, RIGHT_SEND)
+block_result = endpoint_call_word_carrying(reply_to, block_service, request)
 capability_release(reply_to)
-then interpret result
-if success: receive the region on state_inbox
+
+Err(status)                          the lower IPC operation failed: an incomplete
+                                     operation, not a refusal
+Ok(answer), answer.length != 8       ST_BLOCK
+Ok(answer), answer.word >= REFUSED   ST_BLOCK
+Ok(answer), answer.word == 0         exactly one region is owed; receive it on
+                                     state_inbox
 ```
+
+**The lower layer's refusal is read from its reply and never inferred from silence**
+(ADR-0101). `BLOCK_DEVICE_V1` §5 makes every reply a `system.ipc.Answer{length, word}`
+and the row above produces it; **no region is waited for after a lower refusal**,
+because waiting for one a refusal means will never arrive is a wait the liveness rule
+ends, which would turn a refused request into a cancelled boot.
 
 **Released whether the call succeeded or not**, and before the result is read: the
 callee has its own name, and a store that tidied up only on the happy path would leak
 under stress. A client's `GET` is the same pattern on `client-inbox`.
 
 **What it costs**: startup endowments stay **four** for the store and **three** for a
-client, `MAX_ENDOWMENT` stays 4, and each outstanding request occupies exactly one
+client — and **three** for the initializer, which holds an answer endpoint of its own
+for the same reason: it reads the header before it decides whether to write one, and a
+`READ` is answered on a channel the asker delegates. It cannot alias the block
+service's own endpoint for that; that name is the service's, not an inbox. So the
+topology is **five endpoints of six** (`block-serve`, `state-serve`, `state-inbox`,
+`client-inbox`, `init-inbox`), corrected on 2026-09-25 from an accounting that had it
+at four (ADR-0101 §6). `MAX_ENDOWMENT` stays 4, `MAX_ENDPOINTS` stays 6, and each
+outstanding request occupies exactly one
 additional capability-table entry. It cannot accumulate, because §8b permits at most
 one outstanding `GET` per answer endpoint. The alias is local temporary authority,
 never a startup grant, and the receiver identity stays one process — attenuation
@@ -6470,7 +6501,13 @@ reports an absent answer endpoint as absence rather than as a handle.
 
 `ST_OPCODE`, `ST_ID`, `ST_MALFORMED`, `ST_NO_REGION`, `ST_NO_ANSWER` and
 `ST_ABSENT` touch the device not at all. `ST_BLOCK` reports what the layer below
-said. A refusal after a payload sector was written but before the occupancy bit
+said, and §2a is the exact mapping: a lower reply whose word is at or above
+`BLK_REFUSED`, or whose inline length is not `REQUEST_BYTES`, is `ST_BLOCK`. A lower
+*IPC* failure is not — that is an incomplete operation of this store's own, reported
+as the fault it is. And a lower reply that succeeded and whose owed region never
+arrived stays an incomplete operation too: `BLOCK_DEVICE_V1` §6a makes those two
+different observations deliberately, and this contract does not collapse them into a
+refusal it did not receive. A refusal after a payload sector was written but before the occupancy bit
 was set leaves the object **absent**, which §8a's order is chosen to make true.
 
 ## 10. The one-copy rule
@@ -36643,7 +36680,11 @@ nobody's yet.
 - Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
   tree implements it yet**: acceptance fixes the format and the protocol and
   carries §13's evidence obligations, which are outstanding
-- Date: 2026-09-23, accepted 2026-09-24
+- Date: 2026-09-23, accepted 2026-09-24. **§13a's bound accounting was corrected on
+  2026-09-25** (ADR-0101 §6), after implementation found that the initializer needs an
+  answer inbox of its own: five endpoints of six and three startup endowments for the
+  initializer, not four and two. `MAX_ENDPOINTS` and `MAX_ENDOWMENT` do not move, and
+  no other part of this decision changes
 - Decision level: **3** — architectural, **requiring Project Architect
   approval**. `docs/21` places *"changes persistent formats"* at Level 3, and
   `ADR-0017` applied that test to itself in as many words — *"Explicitly **not**
@@ -37220,8 +37261,8 @@ sequential processes:
 |---|---|---|
 | `MAX_PROCESSES` | 4 | peak **4**: `init + block + state + client`. The initializer is collected before state A is created, and the writer and state A are collected before state B and the reader exist |
 | `MAX_PLANS` | 4 | exactly **4**: block; initializer; **state**, shared by A and B; **client**, shared by writer and reader |
-| `MAX_ENDPOINTS` | 6 | **4**: `block-serve`, `state-serve`, `state-inbox`, `client-inbox`. Two spare |
-| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **2** (`budget`, `block-serve` send\|call); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive). **Startup grants only**: the send-only alias a `GET` hands over is transient and is not one of these (§2a) |
+| `MAX_ENDPOINTS` | 6 | **5**: `block-serve`, `state-serve`, `state-inbox`, `client-inbox`, `init-inbox`. One spare |
+| `MAX_ENDOWMENT` | 4 per plan | block **3** (`budget`, `block-serve` receive, `device` claim); initializer **3** (`budget`, `block-serve` send\|call, `init-inbox` send\|receive); state **4** (`budget`, `state-serve` receive, `block-serve` send\|call, `state-inbox` send\|receive); client **3** (`budget`, `state-serve` send\|call, `client-inbox` send\|receive). **Startup grants only**: the send-only alias a `GET` hands over is transient and is not one of these (§2a) |
 | `MAX_CAPABILITIES` | 16 per process | the supervisor is the only one near it, as in `block-lifecycle`; its peak must be counted during implementation and child controls released after each collection |
 
 **One client plan for the writer and the reader**, as directed: they are
@@ -37230,9 +37271,29 @@ it — a `PUT` is one atomic call answered by a word, so only the reader needs a
 inbox at all. An unused grant is not a defect; a plan is a policy, and
 `granted()` records what was installed.
 
-**The initializer needs no inbox either**, because `CAPACITY` is an ordinary call
-and `WRITE` is an atomic call carrying its region — neither is answered with a
-region. That is what keeps it at two endowments.
+**The initializer does need an inbox, and the first count of this said it did not.**
+`CAPACITY` is an ordinary call and `WRITE` is an atomic call carrying its region, so
+neither is answered with a region — but the initializer has to **read** the header
+before it decides whether to write one, and a `READ` is answered with a region on a
+channel the asker delegates (`BLOCK_DEVICE_V1` §6a). It cannot attenuate the *block
+service's* endpoint for that: that name is the service's, not an inbox, and a
+send-only alias of it would deliver the answer back to the service. So the
+initializer holds an endpoint of its own.
+
+**Corrected accounting, found by building it** (2026-09-25, ADR-0101 §6):
+
+```text
+endpoints: 5 of 6      block-serve, state-serve, state-inbox, client-inbox, init-inbox
+plans:     4 of 4      block, initializer, state A/B, writer/reader client
+startup endowments     block 3, initializer 3, state 4, client 3
+```
+
+**This is a correction to the count and not a new topology decision.**
+`MAX_ENDPOINTS` stays 6 and `MAX_ENDOWMENT` stays 4; both are still satisfied, with
+one spare endpoint instead of two and the initializer one endowment below its bound
+instead of two. Nothing about what the processes are, what they hold, or the order
+they are created and collected in changes, and the initializer is still collected
+before the ordinary state service starts.
 
 **Sharing one plan makes the receive-holder rule load-bearing, and three separate
 things must not be merged into one claim.**
@@ -37549,6 +37610,236 @@ decision. This is the third and it is the smallest of the three.
   against the existing second-receiver rule.
 
 <!-- END docs/adr/0100-attenuating-an-endpoint-from-canonical-text.md -->
+
+---
+
+<!-- BEGIN docs/adr/0101-a-carried-call-must-expose-its-reply.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0101: A call that carries a capability must expose its reply
+
+- Status: **Accepted**
+- Date: 2026-09-24 (raised during the ADR-0099 implementation), accepted 2026-09-25
+- Decision level: **2** — a corrective contract extension. It changes the declared
+  **result** of one already-accepted schema row to the result the same ABI call
+  already produces, and switches one runtime-image row from `Produced::Status` to
+  `Produced::Answer`. No ABI operation, no nucleus change, no capability or object
+  kind, no bound, no representation-family member, no `LANGUAGE_VERSION` move, no new
+  IPC semantics and no persistent format. **Explicitly not Level 3** on `docs/21`'s
+  test: nothing here moves a trust boundary, changes a persistent format, introduces
+  a runtime dependency, changes source identity or touches owner control
+- Project Architect approval: **2026-09-25**
+- Related: **ADR-0098** and `BLOCK_DEVICE_V1` §5, §6a, §7, which already require the
+  observation this row erases; **ADR-0099** and `STATE_STORE_V1` §8b, whose `ST_BLOCK`
+  cannot be produced honestly without it; **ADR-0058** (`MESSAGE_PAYLOAD`);
+  **ADR-0063**; `IPC_V1` §4; `SYSTEM_ABI_V1` operation 3; `SYSTEM_INTERFACE_V1` §4,
+  §4.2, §5
+
+## 0. What this corrects
+
+**`BLOCK_DEVICE_V1` requires a client to read something the accepted schema row does
+not let it read.** §5 is normative and unconditional:
+
+> Every reply is sent with `endpoint_reply_word`, so its inline length is
+> `REQUEST_BYTES` and its `word` is the answer. A client reads
+> `system.ipc.Answer{length, word}` and checks `length == REQUEST_BYTES` before
+> reading `word` at all.
+>
+> `word < REFUSED` … success. `word >= REFUSED` … refusal. `word - REFUSED` is the
+> refusal code of §7.
+
+And §6a's `READ` is made with the one row that carries an answer endpoint:
+
+```text
+client:   endpoint_call_word_carrying(answer_endpoint, service, sector * 4 + OP_READ)
+```
+
+whose accepted declaration is
+
+| Operation | … | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|
+| `endpoint_call_word_carrying` | … | `i64` | 3 |
+
+with `Produced::Status` in the runtime image. **So a conforming `READ` client cannot
+observe its own reply.** It learns that the call was answered and nothing about the
+answer — which is exactly the failure `SYSTEM_INTERFACE_V1` §4.2 records as the
+reason `system.ipc.Answer` exists at all:
+
+> A row producing only the length would leave a caller able to learn that its call was
+> answered and nothing about the answer — and a service with no other way to send a
+> number back would encode its result as the length of a reply it never sent.
+
+**The reply is delivered; the row discards it.** `ipc::hand` copies the replier's
+payload into the waiting caller's own argument region and the nucleus returns the
+answer's inline length to the woken caller in `rdx` — which is precisely what
+`Produced::Answer` reads, and what `endpoint_call_word` and
+`endpoint_call_word_region` already read over the same operation 3. Nothing about the
+transfer table interferes: a delegated capability goes to `MESSAGE_CAPABILITIES` and
+the answer's bytes to `MESSAGE_PAYLOAD`, which are different areas (ADR-0058).
+
+**This is an ADR-0098 defect, not an ADR-0099 one.** ADR-0099 made it impossible to
+ignore, because `STATE_STORE_V1` §9 has to translate a lower-layer refusal into
+`ST_BLOCK` and there is nothing to translate.
+
+## 1. What must not be done instead
+
+**Inferring the refusal from the region's absence.** The shape
+
+```text
+the call returned OK, then no region arrived, therefore ST_BLOCK
+```
+
+is wrong, and the accepted contracts are the reason. It conflates at least three
+states the contracts deliberately distinguish:
+
+- a **`BLK_DEVICE`** refusal — the device answered and its answer was a failure;
+- a **`BLK_RANGE`**, `BLK_OPCODE`, `BLK_MALFORMED` or `BLK_NO_ANSWER` refusal — the
+  request was wrong and the device was never touched (`BLOCK_DEVICE_V1` §7);
+- a **success reply followed by incomplete delivery** — `BLOCK_DEVICE_V1` §6a puts the
+  reply *before* the region send precisely so that "the read succeeded and exactly one
+  region is owed" is a state a client can be in, and a service that died in the gap
+  leaves the client to the ordinary liveness path.
+
+A client that could not tell those apart would be reporting one of them while in
+another. It is also unimplementable without blocking: waiting for a region that a
+refusal means will never come is a wait the liveness rule ends, which turns a refused
+request into a cancelled boot.
+
+**Adding a second, near-duplicate call row.** The row `BLOCK_DEVICE_V1` §6a names is
+this one. A second row differing only in its result would leave the named row still
+wrong, and would make which of two identical calls a protocol meant a matter of
+spelling.
+
+## 2. The decision
+
+`SYSTEM_INTERFACE_V1`'s row becomes:
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `endpoint_call_word_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
+
+and the runtime-image row's result becomes `Produced::Answer`.
+
+**Everything it needs already exists**, which is what makes this a correction rather
+than a mechanism:
+
+| | |
+|---|---|
+| `SYSTEM_ABI_V1` operation | 3, unchanged |
+| the transferred capability | transfer slot 0, unchanged |
+| the request word | `MESSAGE_PAYLOAD`, filling the length register itself, unchanged |
+| the reply's payload and length | already copied and already returned; `Produced::Answer` is how two other rows read them |
+| bounds | unchanged. A call still reserves the last transfer slot for its answer and may carry three of its own |
+
+## 3. Scope
+
+**Nothing else moves.** No ABI operation, nucleus mechanism, capability kind, object
+kind, IPC bound, representation-family member or language version. No persistent
+format. `system.ipc.Answer` is unchanged — this row starts producing the record the
+schema already declares.
+
+**Existing callers are updated, not grandfathered.** **Five** call sites in three
+modules read the row's result as an `i64` today and become `match` arms:
+
+```text
+block-data-path/client.tos    1
+block-lifecycle/client.tos    2
+block-protocol/client.tos     2
+```
+
+Their behaviour does not change — a status of `OK` becomes an `Ok(answer)` whose shape
+each fixture checks as far as it knows what shape to expect, and the accounts they
+report stay the same — which is what makes their existing gates the regression for this
+change.
+
+## 4. Conformance evidence this decision requires
+
+**Acceptance carries these obligations**, and none is met today:
+
+1. **the success class** — a server replies `length = 8` and a known success word, and
+   the caller observes `Answer.length == 8` and exactly that word;
+2. **the refusal class** — a server replies `REFUSED + code`, and the caller observes
+   exactly that word;
+3. **`BLOCK_DEVICE_V1` `READ`, success** — `Answer{length: 8, word: 0}` **and then**
+   the region, in that order;
+4. **`BLOCK_DEVICE_V1` `READ`, refusal** — a refusal `Answer` and **no region
+   follows**. The refusal code must be **`BLK_RANGE`**: a `READ` for an out-of-range
+   sector, made with `endpoint_call_word_carrying` itself. **`BLK_NO_ANSWER` is not an
+   alternative here.** A delivered `endpoint_call_word_carrying` necessarily carried an
+   answer endpoint, so that request shape cannot produce `BLK_NO_ANSWER` at all; the
+   only way to provoke one is `endpoint_call_word`, which is a different row and would
+   not exercise the corrected result. `BLOCK_DEVICE_V1` §7's `BLK_NO_ANSWER` evidence
+   stays where it is and counts for §7, not for this obligation. **`BLK_DEVICE` is not
+   invented**, because the reference VirtIO device answers every well-formed in-range
+   request with `VIRTIO_BLK_S_OK` and no fake device is built to manufacture a failure
+   (the class `virtio-queue.sh` records for its withdrawn MSI-X negative);
+5. **the reply-before-region mutation re-run** — sending the region before the reply
+   must still turn `block-protocol`'s ordering assertion red, now with a caller that
+   can see the reply.
+
+## 5. What this then lets ADR-0099 do honestly
+
+`STATE_STORE_V1`'s `GET` maps the lower layer's result instead of guessing at it:
+
+```text
+reply_to     = capability_attenuate(state_inbox, RIGHT_SEND)
+block_result = endpoint_call_word_carrying(reply_to, block_service, READ(sector))
+capability_release(reply_to)
+
+Err(status)                          the lower IPC operation failed — an incomplete
+                                     operation, not a refusal
+Ok(answer), answer.length != 8       ST_BLOCK
+Ok(answer), answer.word >= REFUSED   ST_BLOCK
+Ok(answer), answer.word == 0         exactly one region is owed; receive it on
+                                     state_inbox
+```
+
+**No region is waited for after a lower refusal**, which is the whole point. And a
+successful lower reply whose owed region never arrives stays an **incomplete lower
+operation** — it is not turned into a fabricated `BLK_*` refusal, because
+`BLOCK_DEVICE_V1` §6a made those two different observations on purpose.
+
+## 6. The ADR-0099 bound accounting this implementation also corrects
+
+**Found by building it, and it is an accounting correction rather than a new
+topology.** The initializer legitimately needs an **answer inbox of its own**: a block
+`READ` delegates a channel, and the initializer cannot attenuate the *block service's*
+endpoint for that — that name is the service's, not an inbox. So ADR-0099 §13a's
+sketch of two endowments and four endpoints was one short in each. To be applied to
+ADR-0099 and `STATE_STORE_V1` **after** this decision is handled:
+
+```text
+endpoints: 5 of 6      block-serve, state-serve, state-inbox, client-inbox, init-inbox
+plans:     4 of 4      block, initializer, state A/B, writer/reader client
+startup endowments     block 3, initializer 3, state 4, client 3
+```
+
+`MAX_ENDOWMENT` remains 4 and `MAX_ENDPOINTS` remains 6; both are still satisfied with
+room. Nothing else about the topology changes, and the initializer is still collected
+before the ordinary state service starts.
+
+## 7. Architecture impact statement (`docs/21`)
+
+- **Which invariants are affected?** None is amended. I-09 is served rather than
+  strained: a versioned schema row is corrected to describe what the system does, and
+  the correction is recorded rather than slipped in. I-13 is the reason this is a
+  decision at all — a client that could not observe its own reply would have made
+  `BLOCK_DEVICE_V1` §5 a claim no boot could exercise.
+- **What becomes canonical after the change?** That a call carrying a capability
+  answers with the same record as a call that does not. Nothing about what a protocol
+  may put in that record changes.
+- **What enters or leaves the trusted base?** Nothing. The nucleus already produces
+  both halves of the answer; one runtime-image row stops discarding them.
+- **Can the active runtime still identify its exact source?** Unchanged.
+- **Can all derived artifacts be discarded and regenerated?** Unchanged.
+- **Can the owner still recover and boot a previous commit?** Unchanged.
+- **Does the change create a hidden host dependency?** No.
+- **Does it alter licensing or patent exposure?** No.
+- **How is the behavior tested?** §4's five obligations, and the five existing call
+  sites whose unchanged accounts are the regression.
+
+<!-- END docs/adr/0101-a-carried-call-must-expose-its-reply.md -->
 
 ---
 

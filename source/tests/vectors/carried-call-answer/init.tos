@@ -1,0 +1,207 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The supervisor of the carried-call-answer boot: two children, two endpoints, and
+// nothing else in the machine.
+//
+//   the answerer is created with `receive` on `link` and nothing else
+//   the asker is created with `send | call` on `link` and `send` on `inbox`
+//   both endings are collected (ADR-0067, operation 14)
+//
+// **The topology is as small as the claim.** ADR-0101 is about one row producing the
+// reply it always had; what that needs is a caller, a replier, an endpoint between
+// them and a capability to carry. No device, no region, no registry, no publication.
+//
+// **Nothing receives on `inbox`, and that is deliberate.** The asker carries a
+// send-only name for it, because `endpoint_call_word_carrying` is the row a protocol
+// uses to say where to answer — but this boot asserts nothing about answers arriving
+// there, so giving the endpoint a receiver would be building a second protocol to
+// make the first one look complete.
+//
+// **Every receiving name is let go before the child that receives on it exists.**
+// `IPC_V1` §2 admits one receive-rights holder at a time and the nucleus enforces it
+// at creation: a launcher still holding `receive` cannot endow it, and the creation
+// is refused whole (ADR-0055).
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as link_full;
+import capability system.ipc.Endpoint as inbox_full;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 12
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn process_wait_child(
+    cap: system.process.Control, flags: u64
+) -> Result<system.process.ChildEnding, i64> uses [process];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_CALL: u64 = 4u64;
+const RIGHT_SPEND: u64 = 128u64;
+const BLOCKING: u64 = 0u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+const CHILD_GRANT: u64 = 8388608u64;
+
+const CREATED_ANSWERER: i64 = 1i64;
+const CREATED_ASKER: i64 = 2i64;
+const FIRST_ENDING: i64 = 4i64;
+const SECOND_ENDING: i64 = 8i64;
+
+// The answerer: one way to be asked, and nothing else at all.
+//
+// **The budget comes first and is used for nothing.** The runtime image exercises a
+// process's first endowed capability after `main` returns, and for an endpoint
+// carrying `receive` that exercise is a blocking receive — which would leave this
+// child blocked in its own epilogue, counted by the liveness census, instead of ended
+// and collected. A memory authority's exercise blocks on nothing.
+fn answerer_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, link_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-2001i64);
+            }
+            if (endow_for_launch(link_full, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2002i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2200i64); }
+    }
+}
+
+// The asker: a way to call, and a name to hand over when it does.
+//
+// **`send | call` and not `receive`.** A call is answered on the reply capability the
+// nucleus makes for it, not on the endpoint — so the caller needs no receive right
+// there, and asking for one would make it the second receiver §2 forbids.
+fn asker_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, link_full, inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-3001i64);
+            }
+            if (endow_for_launch(link_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "service") != OK) {
+                return Err(-3002i64);
+            }
+            // **Send alone**, because a delegation carries the rights the sender
+            // holds (`IPC_V1` §6): a name carrying `receive` would ask the answerer
+            // to become a second receiver, and the accepting receive refuses the
+            // whole message rather than half of it (ADR-0100).
+            if (endow_for_launch(inbox_full, builder, RIGHT_SEND, "reply_to") != OK) {
+                return Err(-3003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 3200i64); }
+    }
+}
+
+fn start(plan: system.process.LaunchPlan, entry: string) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(process, memory, plan, entry, CHILD_GRANT,
+        NO_SELF_RIGHTS)) {
+        Ok(child) => {
+            if (capability_release(child.control) != OK) { return -9001i64; }
+            return OK;
+        }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+pub fn main() -> i64
+    uses [process, memory, link_full, inbox_full, system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    match (answerer_plan()) {
+        Ok(answerer) => {
+            match (asker_plan()) {
+                Ok(asker) => {
+                    if (capability_release(link_full) != OK) { return -8001i64; }
+                    if (capability_release(inbox_full) != OK) { return -8002i64; }
+
+                    // **The answerer first.** It blocks on its receive until the
+                    // asker calls, so either order works; this is the order the
+                    // claim is made in.
+                    if (start(answerer, "system/test/answerer.tos") != OK) {
+                        return -1i64;
+                    }
+                    found = found + CREATED_ANSWERER;
+                    if (start(asker, "system/test/asker.tos") != OK) { return -2i64; }
+                    found = found + CREATED_ASKER;
+                }
+                Err(unplanned) => { return unplanned - 20i64; }
+            }
+        }
+        Err(unplanned) => { return unplanned - 10i64; }
+    }
+
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(first) => { found = found + FIRST_ENDING; }
+        Err(refused) => { return refused - 30i64; }
+    }
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(second) => { found = found + SECOND_ENDING; }
+        Err(refused) => { return refused - 40i64; }
+    }
+    return found;
+}

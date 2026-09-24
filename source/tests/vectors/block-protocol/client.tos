@@ -100,10 +100,13 @@ const PROVED_REGION_ARRIVED: i64 = 512i64;
 const PROVED_EVERY_BYTE: i64 = 1024i64;
 // Every one of the repeated reads succeeded and every byte of each was the pattern.
 const PROVED_REPEATED_READS: i64 = 2048i64;
+// A `READ` past the capacity, made with the row that carries an answer channel, was
+// refused as out of range in its own reply — and no region followed it (ADR-0101).
+const PROVED_CARRIED_RANGE_REFUSED: i64 = 4096i64;
 
 // **The capacity rides above the account**, so the gate reads the number the
 // device reported rather than trusting that this module compared it with
-// something. `2^12` is one place above the highest bit used, so no sum of the bits
+// something. `2^13` is one place above the highest bit used, so no sum of the bits
 // can reach into it.
 const CAPACITY_SHIFT: i64 = 8192i64;
 
@@ -119,11 +122,15 @@ extern fn endpoint_call_word_region(
 ) -> Result<system.ipc.Answer, i64> uses [service, system.memory.Region];
 
 // A read says where to answer, because a reply cannot carry a region.
+//
+// **And it produces the reply, like every other call in this schema** (ADR-0101).
+// `BLOCK_DEVICE_V1` §5 gives this client no other way to tell a served read from a
+// refused one: both are answered calls, and which it was is the reply's `word`.
 extern fn endpoint_call_word_carrying(
     held: system.ipc.Endpoint,
     on: system.ipc.Endpoint,
     word: u64
-) -> i64 uses [reply_to, service];
+) -> Result<system.ipc.Answer, i64> uses [reply_to, service];
 
 // The malformed case: a payload length this module chooses, which is the only
 // row that lets it choose one at all.
@@ -233,6 +240,17 @@ fn composed(decoying: bool) -> Result<Region<u8>, i64>
     }
 }
 
+// Whether one reply is a served read's acknowledgement.
+//
+// **`BLOCK_DEVICE_V1` §5, both halves and the length first**, exactly as a refusal
+// is read: `length == 8` is what makes the word a word of this protocol at all, and
+// `word == 0` is the success `§6a` promises one region behind. Until ADR-0101 this
+// client could observe neither, and "the call returned" stood in for both.
+fn acknowledged(answer: system.ipc.Answer) -> bool {
+    if (answer.length != REQUEST_BYTES) { return false; }
+    return answer.word == 0u64;
+}
+
 // Whether one refusal is the one it should be.
 //
 // **Both halves, and the length first.** `BLOCK_DEVICE_V1` §5 makes the reply's
@@ -250,9 +268,12 @@ fn refused_as(answer: system.ipc.Answer, code: u64) -> bool {
 fn one_read() -> i64
     uses [service, reply_to, inbox, system.ipc.Endpoint, system.memory.Region]
 {
-    if (endpoint_call_word_carrying(reply_to, service,
-        TARGET_SECTOR * OPCODE_SPAN + OP_READ) != OK) {
-        return -30i64;
+    match (endpoint_call_word_carrying(reply_to, service,
+        TARGET_SECTOR * OPCODE_SPAN + OP_READ)) {
+        Ok(answer) => {
+            if (!acknowledged(answer)) { return -30i64; }
+        }
+        Err(status) => { return status - 34i64; }
     }
     match (endpoint_receive_region(inbox)) {
         Ok(arrived) => {
@@ -350,6 +371,34 @@ pub fn main() -> i64
         Err(status) => { return status - 410i64; }
     }
 
+    // --- 7a. the same sector, read, on the row that carries its answer -------
+    // **The obligation ADR-0101 exists for.** Every refusal above is read through
+    // `endpoint_call_word`, whose result was always an `Answer`; the one row
+    // `BLOCK_DEVICE_V1` §6a actually names for a `READ` produced a bare status, so
+    // no conforming read client could read §5's reply at all. This is that row,
+    // refused, and the refusal read from its own reply.
+    //
+    // **`BLK_RANGE` and not `BLK_NO_ANSWER`.** A delivered
+    // `endpoint_call_word_carrying` carried an answer endpoint by construction, so
+    // this request shape cannot produce `BLK_NO_ANSWER` — step 5's is made with a
+    // different row and is not evidence for this one.
+    //
+    // **And no region follows.** The service refuses the range before it looks at
+    // what the request needs to have carried, so it replies and releases the
+    // channel. This module does not wait to find that out — waiting for a region a
+    // refusal means will never come is a wait the liveness rule ends. What proves
+    // it is that the *next* region to arrive on this inbox is step 9's, carrying
+    // step 8's pattern, which the byte check there would not accept from a region
+    // sent for a sector the device does not have.
+    match (endpoint_call_word_carrying(reply_to, service,
+        capacity * OPCODE_SPAN + OP_READ)) {
+        Ok(answer) => {
+            if (!refused_as(answer, BLK_RANGE)) { return -16i64; }
+            proved = proved + PROVED_CARRIED_RANGE_REFUSED;
+        }
+        Err(status) => { return status - 170i64; }
+    }
+
     // --- 8. the write, atomically -------------------------------------------
     match (composed(false)) {
         Ok(payload) => {
@@ -370,11 +419,17 @@ pub fn main() -> i64
     // The call is answered **before** the region is sent (`BLOCK_DEVICE_V1` §6a),
     // so success here means exactly one region is owed and this module takes it
     // next. It holds one outstanding read on this endpoint and no more.
-    if (endpoint_call_word_carrying(reply_to, service,
-        TARGET_SECTOR * OPCODE_SPAN + OP_READ) != OK) {
-        return -12i64;
+    // **And the acknowledgement is read, not inferred** (ADR-0101): `length == 8`
+    // and `word == 0` is what makes exactly one region owed, and it is checked
+    // before this module blocks for one.
+    match (endpoint_call_word_carrying(reply_to, service,
+        TARGET_SECTOR * OPCODE_SPAN + OP_READ)) {
+        Ok(answer) => {
+            if (!acknowledged(answer)) { return -12i64; }
+            proved = proved + PROVED_READ_ACKNOWLEDGED;
+        }
+        Err(status) => { return status - 180i64; }
     }
-    proved = proved + PROVED_READ_ACKNOWLEDGED;
 
     match (endpoint_receive_region(inbox)) {
         Ok(arrived) => {

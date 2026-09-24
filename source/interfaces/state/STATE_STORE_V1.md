@@ -69,19 +69,37 @@ message and both processes would wait for each other. The channel handed over is
 **send-only alias**, made per request by `capability_attenuate` (ADR-0100):
 
 ```text
-reply_to = capability_attenuate(state_inbox, RIGHT_SEND)
-result   = endpoint_call_word_carrying(reply_to, block_service, request)
+reply_to     = capability_attenuate(state_inbox, RIGHT_SEND)
+block_result = endpoint_call_word_carrying(reply_to, block_service, request)
 capability_release(reply_to)
-then interpret result
-if success: receive the region on state_inbox
+
+Err(status)                          the lower IPC operation failed: an incomplete
+                                     operation, not a refusal
+Ok(answer), answer.length != 8       ST_BLOCK
+Ok(answer), answer.word >= REFUSED   ST_BLOCK
+Ok(answer), answer.word == 0         exactly one region is owed; receive it on
+                                     state_inbox
 ```
+
+**The lower layer's refusal is read from its reply and never inferred from silence**
+(ADR-0101). `BLOCK_DEVICE_V1` §5 makes every reply a `system.ipc.Answer{length, word}`
+and the row above produces it; **no region is waited for after a lower refusal**,
+because waiting for one a refusal means will never arrive is a wait the liveness rule
+ends, which would turn a refused request into a cancelled boot.
 
 **Released whether the call succeeded or not**, and before the result is read: the
 callee has its own name, and a store that tidied up only on the happy path would leak
 under stress. A client's `GET` is the same pattern on `client-inbox`.
 
 **What it costs**: startup endowments stay **four** for the store and **three** for a
-client, `MAX_ENDOWMENT` stays 4, and each outstanding request occupies exactly one
+client — and **three** for the initializer, which holds an answer endpoint of its own
+for the same reason: it reads the header before it decides whether to write one, and a
+`READ` is answered on a channel the asker delegates. It cannot alias the block
+service's own endpoint for that; that name is the service's, not an inbox. So the
+topology is **five endpoints of six** (`block-serve`, `state-serve`, `state-inbox`,
+`client-inbox`, `init-inbox`), corrected on 2026-09-25 from an accounting that had it
+at four (ADR-0101 §6). `MAX_ENDOWMENT` stays 4, `MAX_ENDPOINTS` stays 6, and each
+outstanding request occupies exactly one
 additional capability-table entry. It cannot accumulate, because §8b permits at most
 one outstanding `GET` per answer endpoint. The alias is local temporary authority,
 never a startup grant, and the receiver identity stays one process — attenuation
@@ -433,7 +451,13 @@ reports an absent answer endpoint as absence rather than as a handle.
 
 `ST_OPCODE`, `ST_ID`, `ST_MALFORMED`, `ST_NO_REGION`, `ST_NO_ANSWER` and
 `ST_ABSENT` touch the device not at all. `ST_BLOCK` reports what the layer below
-said. A refusal after a payload sector was written but before the occupancy bit
+said, and §2a is the exact mapping: a lower reply whose word is at or above
+`BLK_REFUSED`, or whose inline length is not `REQUEST_BYTES`, is `ST_BLOCK`. A lower
+*IPC* failure is not — that is an incomplete operation of this store's own, reported
+as the fault it is. And a lower reply that succeeded and whose owed region never
+arrived stays an incomplete operation too: `BLOCK_DEVICE_V1` §6a makes those two
+different observations deliberately, and this contract does not collapse them into a
+refusal it did not receive. A refusal after a payload sector was written but before the occupancy bit
 was set leaves the object **absent**, which §8a's order is chosen to make true.
 
 ## 10. The one-copy rule

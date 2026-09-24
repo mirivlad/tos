@@ -585,6 +585,13 @@ pub const ACCEPTED: &[Interface] = &[
             // can say *what it wants* and *where to answer* in one message, which
             // is what a service whose answer is a region needs — a reply cannot
             // carry one, so the asker hands over a channel.
+            //
+            // **Its result is an answer (ADR-0101, a correction).** It was first
+            // admitted producing `i64`, which discarded a reply the nucleus had
+            // already copied and whose length it had already returned, and left
+            // `BLOCK_DEVICE_V1` §5's "a client reads
+            // `system.ipc.Answer{length, word}`" unreadable by the §6a `READ`
+            // client that must obey it. Nothing below the row changed.
             Operation {
                 name: "endpoint_call_word_carrying",
                 capabilities: &[
@@ -592,7 +599,7 @@ pub const ACCEPTED: &[Interface] = &[
                     Requirement::of("system.ipc.Endpoint", "call"),
                 ],
                 parameters: &[Parameter::fixed("u64")],
-                result: "i64",
+                result: "Result<system.ipc.Answer, i64>",
             },
             // A send that moves one **immutable ordinary region** through the
             // message's region area (ADR-0097, `IPC_V1` §3, §5, ADR-0058).
