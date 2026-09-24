@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The reader: a process created after the store's first generation ended, which gets an
+// object it never wrote and checks every byte of it in canonical text.
+//
+// ADR-0099 §13. **This is where the persistence claim lands.** The writer has ended and
+// been collected, the store's generation A has ended, been retired and been collected,
+// and generation B re-read the header from the device. Nothing was handed to anybody in
+// memory. So the 512 bytes this module verifies came off the device.
+//
+//   get(3)   an id never created   -> refusal, exactly REFUSED + ST_ABSENT, and
+//                                     **no region follows**
+//   get(2)   -> Answer{length: 8, word: 0}, then exactly one region, 512 bytes of
+//               pattern B
+//
+// **It holds no `block.device.v1` capability**, which is the store's isolation boundary
+// (§2) and is readable from the boot journal rather than from this text.
+//
+// **`get(3)` is not a spare assertion.** Presence is `occupancy` and nothing else (§5),
+// and the harness seeds sector 3 with 512 copies of `0xC3` — so a store that inferred
+// presence from bytes would answer it with that fill. The refusal is what says the
+// bitmap is authoritative, and it must be the exact code: a store that refused for some
+// other reason would be right by accident.
+//
+// **And nothing is waited for after that refusal.** §8b makes a refusal a reply with no
+// region behind it; a client that blocked for one would be cancelled by the liveness
+// rule rather than told anything.
+
+module system.state.reader version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as store;
+import capability system.ipc.Endpoint as inbox;
+
+resource [
+    fuel: 1048576,
+    stack: 8KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+
+// --- `STATE_STORE_V1` §3, §6, §7, §9 -------------------------------------------
+const OBJECT_BYTES: size = 512B;
+const OBJECT_COUNT: u64 = 512u64;
+const OP_GET: u64 = 0u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const REFUSED: u64 = 9223372036854775808u64;
+const ST_ABSENT: u64 = 6u64;
+// The object the writer created, and one it never did. Both are in `MIN_ID..MAX_ID`, so
+// neither can be refused as `ST_ID`.
+const ID_PRESENT: u64 = 2u64;
+const ID_NEVER: u64 = 3u64;
+// The pattern the writer put in object 2, stated here as its own constant: the check is
+// against what this module expects, not against anything it was told.
+const PATTERN_B: u64 = 1u64;
+
+// --- what this module proves, one bit each ------------------------------------
+// **Its own range**, above the writer's.
+const PROVED_ABSENT_REFUSED: i64 = 16384i64;
+const PROVED_GET_ACKNOWLEDGED: i64 = 32768i64;
+const PROVED_REGION_ARRIVED: i64 = 65536i64;
+const PROVED_EVERY_BYTE: i64 = 131072i64;
+
+// A `GET` says where to answer, because a reply cannot carry a region.
+//
+// **Its result is the reply** (ADR-0101): §7 puts this protocol's success and refusal in
+// one number, and this is the row §8b makes a `GET` with, so this is the only place
+// either can be read from.
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [system.ipc.Endpoint, store];
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+// ADR-0100. The channel handed over is a **send-only** alias: a delegation carries the
+// rights the sender holds (`IPC_V1` §6), and a name carrying `receive` would ask the
+// store to become a second receive-rights holder, which §2 forbids and the accepting
+// receive refuses whole.
+extern fn capability_attenuate(
+    cap: system.ipc.Endpoint, rights: u64
+) -> Result<system.ipc.Endpoint, i64> uses [inbox];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+// The byte object 2 should hold at `index` — the writer's pattern B, stated
+// independently here.
+fn pattern(which: u64, index: u64) -> u64 {
+    if (which != PATTERN_B) { return (64u64 + index) % 256u64; }
+    return (165u64 + 253u64 * index) % 256u64;
+}
+
+// How many of the 512 bytes are the ones pattern B puts there. **Counted rather than
+// stopped at the first difference**, so that the number itself is the evidence.
+fn agreeing(borrow payload: Region<u8>) -> u64 {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    let mut agreed: u64 = 0u64;
+    while (at < OBJECT_BYTES) {
+        if ((payload[at] as u64) == pattern(PATTERN_B, index)) {
+            agreed = agreed + 1u64;
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+    return agreed;
+}
+
+pub fn main() -> i64
+    uses [budget, store, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut proved: i64 = 0i64;
+
+    // --- 1. an id that was never created -------------------------------------
+    match (capability_attenuate(inbox, RIGHT_SEND)) {
+        Ok(reply_to) => {
+            let asked: Result<system.ipc.Answer, i64> =
+                endpoint_call_word_carrying(reply_to, store,
+                    ID_NEVER * OPCODE_SPAN + OP_GET);
+            if (capability_release(reply_to) != OK) { return -1i64; }
+            match (asked) {
+                Ok(answer) => {
+                    if (answer.length != REQUEST_BYTES) { return -2i64; }
+                    if (answer.word != REFUSED + ST_ABSENT) { return -3i64; }
+                    proved = proved + PROVED_ABSENT_REFUSED;
+                }
+                Err(status) => { return status - 100i64; }
+            }
+        }
+        Err(status) => { return status - 200i64; }
+    }
+
+    // --- 2. the object the writer created ------------------------------------
+    // **The alias again, made fresh.** One outstanding `GET` per answer endpoint is all
+    // §8b permits, and the previous one is finished — refused, with nothing owed.
+    match (capability_attenuate(inbox, RIGHT_SEND)) {
+        Ok(reply_to) => {
+            let asked: Result<system.ipc.Answer, i64> =
+                endpoint_call_word_carrying(reply_to, store,
+                    ID_PRESENT * OPCODE_SPAN + OP_GET);
+            if (capability_release(reply_to) != OK) { return -4i64; }
+            match (asked) {
+                Ok(answer) => {
+                    if (answer.length != REQUEST_BYTES) { return -5i64; }
+                    if (answer.word != 0u64) { return -6i64; }
+                    proved = proved + PROVED_GET_ACKNOWLEDGED;
+                }
+                Err(status) => { return status - 300i64; }
+            }
+        }
+        Err(status) => { return status - 400i64; }
+    }
+
+    // --- 3. and the bytes ----------------------------------------------------
+    // Waited for only now, and only because the reply said exactly one region is owed.
+    match (endpoint_receive_region(inbox)) {
+        Ok(object) => {
+            proved = proved + PROVED_REGION_ARRIVED;
+            let agreed: u64 = agreeing(borrow object);
+            if (capability_release(object) != OK) { return -7i64; }
+            if (agreed != OBJECT_COUNT) { return -8i64; }
+            proved = proved + PROVED_EVERY_BYTE;
+        }
+        Err(status) => { return status - 500i64; }
+    }
+
+    return proved;
+}

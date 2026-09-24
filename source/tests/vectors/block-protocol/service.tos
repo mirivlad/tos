@@ -51,8 +51,8 @@
 //
 // **What this does not claim.** No power-loss durability, no `VIRTIO_BLK_F_FLUSH`,
 // no crash consistency, no exactly-once write, no more than one sector per
-// request, no batching, no filesystem, and nothing about `state.store.v1`, which
-// ADR-0099 accepted and nothing implements.
+// request, no batching, no filesystem, and nothing about `state.store.v1`, which is
+// the layer above and is `state-store.sh`'s.
 //
 // **The launcher wires it.** This module publishes nothing and knows no registry:
 // ADR-0093 case C and the publication path are proved by `block-lifecycle` and are

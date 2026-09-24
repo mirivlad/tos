@@ -551,6 +551,19 @@ qemu_endpoint_attenuation() {
 qemu_carried_call_answer() {
     bash "$ROOT/source/host-tools/qemu-test/carried-call-answer.sh"
 }
+# A persistent object store, read back by a process that came after (ADR-0099).
+#
+# `state.store.v1` over `block.device.v1` over the reference VirtIO device, every layer
+# canonical text. An initializer formats a zeroed device once and **refuses** the second
+# time, because only an all-zero sector 0 is permission; a writer puts two objects and
+# ends; the store's first generation ends, is retired and is collected **before** its
+# successor exists; the successor re-reads and validates the header from the device; and a
+# reader holding no way to address a sector gets object 2 and checks all 512 bytes in
+# canonical text. `get(3)`, an id never created, is refused as absent and its sector is
+# never read — presence is the occupancy bitmap and nothing else.
+qemu_state_store() {
+    bash "$ROOT/source/host-tools/qemu-test/state-store.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -785,6 +798,7 @@ gate qemu       full-only "QEMU a successor restarts the device path" qemu_block
 gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_block_protocol
 gate qemu       full-only "QEMU a send-only name for an endpoint"    qemu_endpoint_attenuation
 gate qemu       full-only "QEMU a carried call reads its reply"       qemu_carried_call_answer
+gate qemu       full-only "QEMU a persistent object store"             qemu_state_store
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

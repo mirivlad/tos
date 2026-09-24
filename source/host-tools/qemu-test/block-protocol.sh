@@ -68,7 +68,7 @@
 #
 # **Not claimed:** power-loss durability, `VIRTIO_BLK_F_FLUSH`, crash consistency,
 # exactly-once write, ADR-0093 case D, more than one sector per request, batching,
-# more than one client, `state.store.v1` (ADR-0099 is accepted and unimplemented),
+# more than one client, `state.store.v1` (which is `state-store.sh`'s),
 # or Stage 4 closure.
 #
 #   bash host-tools/qemu-test/block-protocol.sh [OUT_DIR]

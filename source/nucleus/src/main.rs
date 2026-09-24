@@ -41,6 +41,7 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-block-protocol") as usize
     + cfg!(feature = "test-endpoint-attenuation") as usize
     + cfg!(feature = "test-carried-call-answer") as usize
+    + cfg!(feature = "test-state-store") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1921,6 +1922,92 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             },
         ]
     };
+    // ADR-0099's evidence build: a persistent object store on the reference block
+    // device, and a successor that reads back what its predecessor wrote.
+    //
+    // **Five endpoints and one bus** (ADR-0101 §6's corrected accounting). The block
+    // service receives on `block_serve`; the store receives on `state_serve` and takes
+    // the block layer's regions on `state_inbox`; a client takes the store's regions on
+    // `client_inbox`; and the initializer takes the block layer's on `init_inbox` of its
+    // own, because it reads the header before it decides whether to write one and cannot
+    // be answered on the block service's own name. Each is endowed here carrying every
+    // right the plans above draw from it, because a plan takes what it asks for
+    // intersected with what the creator holds.
+    #[cfg(feature = "test-state-store")]
+    let first_endowment = {
+        let (Some(block_serve), Some(state_serve)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let (Some(state_inbox), Some(client_inbox)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let Some(init_inbox) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let Some(bus) = pci::endow_root(0, 0, 255) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-pci-root\r\n");
+            mem_fail();
+        };
+        tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
+        tos_serial::puts(b" asserted_by=launcher\r\n");
+        pci::qualify_dma(
+            pci::STAGE4_TARGET.0,
+            pci::STAGE4_TARGET.1,
+            pci::STAGE4_TARGET.2,
+            pci::STAGE4_TARGET.3,
+        );
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE
+                    | tos_launch::RIGHT_WAIT_CHILD
+                    | tos_launch::RIGHT_TERMINATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"block_serve_full"),
+                object: capability::Object::Endpoint(block_serve),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"state_serve_full"),
+                object: capability::Object::Endpoint(state_serve),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"state_inbox_full"),
+                object: capability::Object::Endpoint(state_inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"client_inbox_full"),
+                object: capability::Object::Endpoint(client_inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"init_inbox_full"),
+                object: capability::Object::Endpoint(init_inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"device"),
+                object: capability::Object::PciBus(bus),
+                rights: tos_launch::RIGHT_CLAIM,
+                scope: 0,
+            },
+        ]
+    };
     #[cfg(feature = "test-block-protocol")]
     let first_endowment = {
         let (Some(serve), Some(inbox)) = (ipc::create(), ipc::create()) else {
@@ -2408,6 +2495,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-block-protocol",
         feature = "test-endpoint-attenuation",
         feature = "test-carried-call-answer",
+        feature = "test-state-store",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -2447,6 +2535,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-block-protocol",
         feature = "test-endpoint-attenuation",
         feature = "test-carried-call-answer",
+        feature = "test-state-store",
         feature = "test-region-transfer-text",
         feature = "test-block-lifecycle",
         feature = "test-build-topology",

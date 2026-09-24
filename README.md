@@ -156,6 +156,18 @@ The client holds no hardware authority and cannot even request the region
 interface, so what it reads can only have arrived in a message; the bytes are
 counted in canonical text, and one corrupted byte fails the gate.
 
+**And since 2026-09-25 what is written outlives the process that wrote it.** A
+`state.store.v1` store keeps 64 objects of 512 bytes in a bounded 65-sector extent on
+that device, reached only through `block.device.v1`. An initializer formats a zeroed
+device once and refuses the second time, because only an all-zero sector 0 is permission
+to format. A writer puts two objects and ends. The store's first generation ends, is
+retired and is collected. Its successor — the same canonical module from the same sealed
+launch plan, handed nothing in memory — re-reads and validates the header from the
+device, and a reader that holds no way to address a sector gets one of those objects and
+checks all 512 bytes in canonical text. An id that was never created is refused as
+absent and its sector is never read. **What that is not**: durability. No power-loss
+guarantee, no `FLUSH`, no crash consistency, no transactions — and no Stage 4 closure.
+
 The publication authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095
 amended it: a dedicated publication endpoint whose identity fixes what may be
 published through it, with the registry holding `receive` and the authorised
@@ -166,8 +178,9 @@ that cannot name that endpoint cannot publish.
 one client, one service, and reading only. Writing through this path, more than one
 sector in flight, request framing and zero-copy are none of them designed — and
 ADR-0037 makes zero-copy unreachable by decision rather than by omission. Nothing
-here is persistent object storage or the capsule-to-repository handoff, which are
-`docs/16`'s own separate Stage 4 deliverables.
+here is the capsule-to-repository handoff, which is `docs/16`'s own separate Stage 4
+deliverable; **persistent object storage is a separate deliverable and is now built**
+— `state-store.sh`, described further down.
 
 TOS is not yet a user shell, application environment, or desktop operating
 system. What it does with a disk is single sector reads and one write, reached
@@ -474,19 +487,32 @@ against a smaller device from the same compiled module.
 **Read the rest at the width of the fixtures, which is narrow.** The older
 `block-data-path` and `block-lifecycle` boots still carry their own encoding until
 a later slice migrates them. One sector per request, no batching, no multi-sector
-scheduling, no filesystem, and nothing written is stored anywhere but the sector:
-**persistent object/state storage is decided and not built** — ADR-0099 and
-`STATE_STORE_V1` are accepted, and no line of it is implemented — and there is no
-capsule-to-repository handoff.
+scheduling and no filesystem — and there is no capsule-to-repository handoff.
+
+**Persistent object/state storage is built** (ADR-0099, `STATE_STORE_V1`), and
+`state-store.sh` is what it means. `state.store.v1` sits over `block.device.v1` over
+the reference device, every layer canonical text: six modules and eight processes, an
+initializer that formats a zeroed device once and **refuses** the second time because
+only an all-zero sector 0 is permission, a writer that puts two objects and ends, a
+store generation that ends and is retired and is collected **before** its successor
+exists, a successor of the same module that re-reads and validates the header from the
+device, and a reader — holding no way to address a sector — that gets object 2 and
+checks all 512 bytes in canonical text. An id never created is refused as absent and
+its sector is never read: presence is the occupancy bitmap and nothing else, which the
+twelve counted device requests confirm. All seven mutations ADR-0099 §13 requires turn
+it red, each on its own assertion.
+
+**What that does not mean.** No power-loss durability, no `VIRTIO_BLK_F_FLUSH`, no
+crash consistency, no journaling, no transactions, no exactly-once `PUT`, no delete, no
+enumeration, no second owner or store, no `docs/09` `/state` namespace, no path
+semantics — and **no Stage 4 closure**: Stage 4C, Stage 4D and Stage 4 remain open.
 
 **What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
 separately rather than collected under one word:
 
-- **persistent object/state storage**, and the **capsule-to-repository handoff** —
-  two distinct deliverables, neither of which is durability and neither of which
-  exists. `docs/16`'s engineering exit for this stage is "persistent storage works
-  through a textual user-space driver", and a driver that reads and writes sectors
-  is not yet that;
+- **the capsule-to-repository handoff** — a deliverable distinct from persistent
+  object/state storage, which is built, and distinct from durability, which is not
+  claimed by either;
 - **a crash in flight**: the lifecycle boot's first instance ends after
   acknowledging its write, so it asks nothing about a request accepted and never
   answered — ADR-0093's case D, which stays deliberately ambiguous — and an

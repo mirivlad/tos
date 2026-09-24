@@ -12,9 +12,10 @@ Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
 docs/09, whose `/state` namespace class it does **not** implement (§1).
 
-**No implementation of this contract exists yet.** It is accepted as the shape the
-Stage 4 store must take; the conformance evidence §12 requires is outstanding, and
-Stage 4 does not close on an accepted contract.
+**Implemented on 2026-09-25**, and the conformance evidence §12 requires is
+`source/host-tools/qemu-test/state-store.sh`. **Stage 4 does not close on an
+implemented contract** any more than it did on an accepted one: Stage 4C, Stage 4D and
+Stage 4 remain open (`ADR-0099` §14).
 
 ## 1. Role
 

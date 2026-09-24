@@ -1,0 +1,421 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The supervisor of the persistent-state boot: four plans, seven children, five
+// endpoints, and one real block device underneath all of it.
+//
+// ADR-0099 §13 and §13a. The order is the claim:
+//
+//   block service                  created first, ends last: everything above it
+//                                  reaches the device only by asking
+//   initializer, first run         formats a zeroed device; its ending is collected
+//   initializer, second run        the same text against the header the first wrote:
+//                                  it must **refuse to format**
+//   state store A                  opens the header from the device
+//   writer                         put(1, pattern A); put(2, pattern B); ends
+//   A ends, is retired, and **both** endings are collected before B exists
+//   state store B                  the same canonical module from the same sealed
+//                                  plan; re-reads and validates the header from the
+//                                  device
+//   reader                         get(3) refused as absent; get(2) verified byte by
+//                                  byte
+//
+// **Two plans are each used twice**, which is what `MAX_PLANS` = 4 buys: a sealed plan
+// *"is not consumed by the creation that reads it"*, and the entry path is an argument
+// of the creation rather than a field of the plan — so one client plan launches the
+// writer and then the reader, and one state plan launches both generations of the store.
+//
+// **The peak is four processes**, which is `MAX_PROCESSES`: `init + block + state +
+// client`. The initializer runs before any state service exists and is collected before
+// the next child is created, and the writer and A are both collected before B exists.
+//
+// **That last ordering is this module's policy, not a nucleus guarantee** (§13a). The
+// nucleus refuses to create B from the shared plan while A is **live** — `IPC_V1` §2
+// admits one receive-rights holder and `capability.rs` answers
+// `NotGranted::ReceiverExists` — but `process::retire` clears A's capabilities at
+// retirement, before `wait_child` collects its tombstone, so nothing in the nucleus
+// makes collection the only possible order. The persistence proof needs A's address
+// space and capabilities gone before B exists, and an explicit collection is a far
+// stronger witness than an inference from timing. So this module collects, and the gate
+// asserts the order on the journal.
+//
+// **Every receiving name is let go before the child that receives on it exists.** The
+// nucleus enforces §2 at creation: a launcher still holding `receive` cannot endow it,
+// and the creation is refused whole (ADR-0055) rather than half-endowed.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability platform.pci.Bus as device;
+import capability system.ipc.Endpoint as block_serve_full;
+import capability system.ipc.Endpoint as state_serve_full;
+import capability system.ipc.Endpoint as state_inbox_full;
+import capability system.ipc.Endpoint as client_inbox_full;
+import capability system.ipc.Endpoint as init_inbox_full;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 16
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn endow_for_launch(
+    held: platform.pci.Bus,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [device];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn process_wait_child(
+    cap: system.process.Control, flags: u64
+) -> Result<system.process.ChildEnding, i64> uses [process];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_CALL: u64 = 4u64;
+const RIGHT_CLAIM: u64 = 2048u64;
+const RIGHT_SPEND: u64 = 128u64;
+const BLOCKING: u64 = 0u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+// The block service maps a device window and a DMA region; nothing else here does.
+const SERVICE_GRANT: u64 = 25165824u64;
+const CHILD_GRANT: u64 = 8388608u64;
+
+// What a clean ending is: the child ran to the end of `main` and the runtime image
+// reported the completion status it reports for that (ADR-0054, ADR-0067).
+//
+// **`ending_kind` and `self_reported_status` are different facts and both are checked.**
+// The kind is the nucleus's assertion — exited, faulted, terminated or deadlocked — and
+// the status is the child's own claim about itself. A supervisor that read only the
+// status would accept a fault whose status field is a zero nobody claimed.
+//
+// **What a child's account was is not in this record**, and this module does not pretend
+// otherwise: the status here is the runtime image's completion code, not the number the
+// module returned. The accounts are in the journal, where the gate reads them — which is
+// where the refuse-to-format negative is asserted (`STATE_STORE_V1` §12).
+const ENDING_EXITED: u64 = 1u64;
+const EXIT_COMPLETED: u64 = 0u64;
+
+const CREATED_BLOCK: i64 = 1i64;
+const CREATED_INITIALIZER: i64 = 2i64;
+const FORMATTED_COLLECTED: i64 = 4i64;
+const CREATED_REINITIALIZER: i64 = 8i64;
+const REFUSAL_COLLECTED: i64 = 16i64;
+const CREATED_STATE_A: i64 = 32i64;
+const CREATED_WRITER: i64 = 64i64;
+const FIRST_PAIR_COLLECTED: i64 = 128i64;
+const CREATED_STATE_B: i64 = 256i64;
+const CREATED_READER: i64 = 512i64;
+// **The remaining three, in whatever order they ended.** Generation B, the reader and
+// the block service are all still live at this point, and which of them finishes first
+// is not this module's to decide: B ends when it has served the reader's two requests,
+// the reader ends when it has verified its bytes, and the block service ends when it has
+// served the twelfth request of the boot. What is asserted is that every child this boot
+// created was collected, and that none of them faulted.
+const REST_COLLECTED: i64 = 1024i64;
+
+// The block service: the request endpoint it receives on, and the bus it claims from.
+fn block_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, device, block_serve_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-2001i64);
+            }
+            if (endow_for_launch(block_serve_full, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2002i64);
+            }
+            if (endow_for_launch(device, builder, RIGHT_CLAIM, "device") != OK) {
+                return Err(-2003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2100i64); }
+    }
+}
+
+// The initializer: a client of the block service, and an inbox of its own.
+//
+// **Three endowments and not two.** A `READ` is answered on a channel the asker
+// delegates (`BLOCK_DEVICE_V1` §6a), and the initializer has to read the header before
+// it decides whether to write one — it cannot alias the *block service's* endpoint for
+// that, because that name is the service's and an answer sent to it would go back to the
+// service. So it holds an endpoint of its own (ADR-0101 §6).
+fn initializer_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, block_serve_full, init_inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-3001i64);
+            }
+            if (endow_for_launch(block_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
+                return Err(-3002i64);
+            }
+            if (endow_for_launch(init_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-3003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 3100i64); }
+    }
+}
+
+// The state store, both generations: four endowments, which is `MAX_ENDOWMENT`.
+//
+// **`send | receive` on its own inbox**, because a `GET` of the layer below is answered
+// with a region on a channel this store delegates — so it needs `receive` to take the
+// region and `send` to have something to attenuate (ADR-0100). One name carrying both,
+// and the alias is made from it per request.
+fn state_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, block_serve_full, state_serve_full, state_inbox_full,
+          system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-4001i64);
+            }
+            if (endow_for_launch(state_serve_full, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-4002i64);
+            }
+            if (endow_for_launch(block_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
+                return Err(-4003i64);
+            }
+            if (endow_for_launch(state_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-4004i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 4100i64); }
+    }
+}
+
+// The writer and the reader, from one plan.
+//
+// **No `block.device.v1` capability anywhere in it**, which is the store's isolation
+// boundary (`STATE_STORE_V1` §2) and is readable from the boot journal rather than from
+// this text: a client can name an id and cannot address a sector.
+fn client_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, state_serve_full, client_inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-5001i64);
+            }
+            if (endow_for_launch(state_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "store") != OK) {
+                return Err(-5002i64);
+            }
+            if (endow_for_launch(client_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-5003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 5100i64); }
+    }
+}
+
+// Creates one child and lets go of the handle. **The handle is not kept**: this process
+// waits on its own child relation rather than on a name for any one child (ADR-0067),
+// and a capability table with sixteen slots has better uses.
+fn start(plan: system.process.LaunchPlan, entry: string, grant: u64) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(process, memory, plan, entry, grant, NO_SELF_RIGHTS)) {
+        Ok(child) => {
+            if (capability_release(child.control) != OK) { return -9001i64; }
+            return OK;
+        }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+// Collects one ending, and requires it to be a clean one.
+//
+// **A child that reported nothing is a failure here**, not a zero: a faulted,
+// terminated or deadlocked child carries no status at all, and a supervisor that read an
+// absent status as a number would turn a trap into an account.
+fn collect() -> i64
+    uses [process]
+{
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(ending) => {
+            if (ending.ending_kind != ENDING_EXITED) { return -8001i64; }
+            match (ending.self_reported_status) {
+                Some(status) => {
+                    if (status != EXIT_COMPLETED) { return -8002i64; }
+                    return OK;
+                }
+                None => { return -8003i64; }
+            }
+        }
+        Err(uncollected) => { return uncollected - 8100i64; }
+    }
+}
+
+pub fn main() -> i64
+    uses [process, memory, device, block_serve_full, state_serve_full,
+          state_inbox_full, client_inbox_full, init_inbox_full, system.ipc.Endpoint]
+{
+    match (block_plan()) {
+        Ok(block) => {
+            match (initializer_plan()) {
+                Ok(initializer) => {
+                    match (state_plan()) {
+                        Ok(state) => {
+                            match (client_plan()) {
+                                Ok(client) => {
+                                    return run(block, initializer, state, client);
+                                }
+                                Err(unplanned) => { return unplanned; }
+                            }
+                        }
+                        Err(unplanned) => { return unplanned; }
+                    }
+                }
+                Err(unplanned) => { return unplanned; }
+            }
+        }
+        Err(unplanned) => { return unplanned; }
+    }
+}
+
+// The boot, once every plan is sealed.
+//
+// **Sealed first and released second.** A plan takes what it asks for intersected with
+// what the creator holds, so every endowment is drawn before any name is let go; and
+// every name carrying `receive` is let go before the child that receives on it exists.
+fn run(
+    block: system.process.LaunchPlan,
+    initializer: system.process.LaunchPlan,
+    state: system.process.LaunchPlan,
+    client: system.process.LaunchPlan
+) -> i64
+    uses [process, memory, block_serve_full, state_serve_full, state_inbox_full,
+          client_inbox_full, init_inbox_full, system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    if (capability_release(block_serve_full) != OK) { return -6001i64; }
+    if (capability_release(state_serve_full) != OK) { return -6002i64; }
+    if (capability_release(state_inbox_full) != OK) { return -6003i64; }
+    if (capability_release(client_inbox_full) != OK) { return -6004i64; }
+    if (capability_release(init_inbox_full) != OK) { return -6005i64; }
+
+    // --- the device, first and last ------------------------------------------
+    if (start(block, "system/service/block.tos", SERVICE_GRANT) != OK) { return -6101i64; }
+    found = found + CREATED_BLOCK;
+
+    // --- provisioning, which happens once and is then collected --------------
+    if (start(initializer, "system/state/initializer.tos", CHILD_GRANT) != OK) {
+        return -6102i64;
+    }
+    found = found + CREATED_INITIALIZER;
+    let formatted: i64 = collect();
+    if (formatted != OK) { return formatted - 6201i64; }
+    found = found + FORMATTED_COLLECTED;
+
+    // --- the negative: the same text against a store that exists -------------
+    // **A second process and not a second code path.** The claim is that *this*
+    // initializer refuses, so what runs is the same module from the same sealed plan,
+    // and the only thing that differs is what it finds on the device.
+    if (start(initializer, "system/state/initializer.tos", CHILD_GRANT) != OK) {
+        return -6103i64;
+    }
+    found = found + CREATED_REINITIALIZER;
+    let refused: i64 = collect();
+    if (refused != OK) { return refused - 6202i64; }
+    found = found + REFUSAL_COLLECTED;
+
+    // --- generation A, and the writer ----------------------------------------
+    if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6104i64; }
+    found = found + CREATED_STATE_A;
+    if (start(client, "system/state/writer.tos", CHILD_GRANT) != OK) { return -6105i64; }
+    found = found + CREATED_WRITER;
+
+    // **Both, before B exists.** Which of the two ends first is not this module's to
+    // decide, and it does not need to be: collecting both is what makes "A's ending was
+    // collected before B was created" true whichever order they came in. And it is
+    // exactly these two — the block service still owes generation B its two requests, so
+    // it cannot be one of them.
+    let writer_or_a: i64 = collect();
+    if (writer_or_a != OK) { return writer_or_a - 6203i64; }
+    let the_other: i64 = collect();
+    if (the_other != OK) { return the_other - 6204i64; }
+    found = found + FIRST_PAIR_COLLECTED;
+
+    // --- generation B, and the reader ----------------------------------------
+    // The same plan and the same entry. Nothing crossed from A: its address space and
+    // its capabilities are gone, and the header B validates is the one on the device.
+    if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6106i64; }
+    found = found + CREATED_STATE_B;
+    if (start(client, "system/state/reader.tos", CHILD_GRANT) != OK) { return -6107i64; }
+    found = found + CREATED_READER;
+
+    // --- and the last three, including the device service --------------------
+    let fifth: i64 = collect();
+    if (fifth != OK) { return fifth - 6205i64; }
+    let sixth: i64 = collect();
+    if (sixth != OK) { return sixth - 6206i64; }
+    let seventh: i64 = collect();
+    if (seventh != OK) { return seventh - 6207i64; }
+    found = found + REST_COLLECTED;
+
+    return found;
+}

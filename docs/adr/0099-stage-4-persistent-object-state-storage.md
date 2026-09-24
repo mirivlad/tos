@@ -2,9 +2,11 @@
 
 # ADR-0099: Stage 4 persistent object/state storage — a private native store, substrate first
 
-- Status: **Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the
-  tree implements it yet**: acceptance fixes the format and the protocol and
-  carries §13's evidence obligations, which are outstanding
+- Status: **Accepted** (Project Architect-approved, 2026-09-24) and **implemented**
+  on 2026-09-25. §13's evidence is `source/host-tools/qemu-test/state-store.sh`: six
+  canonical modules, eight processes, the reference VirtIO device, and all seven
+  required mutations verified to turn it red. **Stage 4C, Stage 4D and Stage 4 do
+  not close here** (§14)
 - Date: 2026-09-23, accepted 2026-09-24. **§13a's bound accounting was corrected on
   2026-09-25** (ADR-0101 §6), after implementation found that the initializer needs an
   answer inbox of its own: five endpoints of six and three startup endowments for the

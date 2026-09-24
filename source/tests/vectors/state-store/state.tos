@@ -1,0 +1,726 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The `state.store.v1` service: one bounded 65-sector store on a real block device,
+// reached only through `block.device.v1`.
+//
+// ADR-0099 and `STATE_STORE_V1`. **Both generations of this boot run this module from
+// one shared launch plan**, which is what makes the persistence claim a claim: a
+// successor that was handed anything in memory would prove nothing about the device.
+// So this module holds no state across its own life beyond what it read from sector 0,
+// and it never formats (§4.4) — a missing or invalid header means it cannot open, and
+// it then refuses every request with `ST_STORE` rather than repairing or guessing.
+//
+//   open      READ sector 0; validate magic, format_version, the owner's schema
+//             identity and the reserved run; take `occupancy` from it
+//   PUT id    forward the client's own region to WRITE sector `id`; if the id was
+//             absent, WRITE sector 0 with bit `id - 1` set; then reply success
+//   GET id    refuse an absent id **without reading its sector**; otherwise READ
+//             sector `id`, reply success, and **then** forward the region
+//
+// **Presence is `occupancy` and nothing else** (§5). A store that inferred presence
+// from bytes could be convinced by anything that had been on the device before it, and
+// the Stage 4 harness seeds sectors 1..4 on purpose.
+//
+// **What it holds**: a budget, `receive` on its request endpoint, `send | call` on the
+// block service's endpoint, and `send | receive` on its own answer endpoint. Four, which
+// is `MAX_ENDOWMENT`. No PCI bus, no function, no window, no interrupt source, no DMA
+// region: it cannot address a sector except by asking (§2).
+//
+// **The one copy is the device's** (§10). A `PUT` forwards the client's region to the
+// block service without copying it, and a `GET` forwards the block service's region to
+// the client's channel without copying it. The only region this module composes itself
+// is the 512-byte header, which is its own request and not anybody's payload.
+
+module system.state.store version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as serve;
+import capability system.ipc.Endpoint as block;
+import capability system.ipc.Endpoint as inbox;
+
+resource [
+    fuel: 1048576,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 12
+]
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+
+// --- the lower layer: `BLOCK_DEVICE_V1` §3, §4, §5 -----------------------------
+const BLK_OP_READ: u64 = 0u64;
+const BLK_OP_WRITE: u64 = 1u64;
+const BLK_OPCODE_SPAN: u64 = 4u64;
+const BLK_REQUEST_BYTES: u64 = 8u64;
+const BLK_REFUSED: u64 = 9223372036854775808u64;
+
+// --- this layer: `STATE_STORE_V1` §3, §6, §7, §9 -------------------------------
+const OBJECT_BYTES: size = 512B;
+const MIN_ID: u64 = 1u64;
+const MAX_ID: u64 = 64u64;
+const HEADER_SECTOR: u64 = 0u64;
+const OP_GET: u64 = 0u64;
+const OP_PUT: u64 = 1u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const REFUSED: u64 = 9223372036854775808u64;
+const ST_OPCODE: u64 = 1u64;
+const ST_ID: u64 = 2u64;
+const ST_MALFORMED: u64 = 3u64;
+const ST_NO_REGION: u64 = 4u64;
+const ST_NO_ANSWER: u64 = 5u64;
+const ST_ABSENT: u64 = 6u64;
+const ST_STORE: u64 = 7u64;
+const ST_BLOCK: u64 = 8u64;
+
+// --- the persistent layout: §4.1 ----------------------------------------------
+const FORMAT_VERSION: u64 = 1u64;
+// The owner's schema identity. A `u64` chosen by this store's owner, stable for one
+// schema lineage, meaningful only together with this extent — not globally unique, not
+// a content id, not a module id, not a `/state` path id (§4.2a). The same constant the
+// initializer wrote, because at v1 a store has exactly one owner and its identity is a
+// constant of this canonical text (§4.2).
+const SCHEMA_IDENTIFIER: u64 = 8241925632510001u64;
+const SCHEMA_VERSION: u64 = 1u64;
+
+const AT_MAGIC: size = 0B;
+const AT_FORMAT_VERSION: size = 8B;
+const AT_SCHEMA_VERSION: size = 12B;
+const AT_SCHEMA_IDENTIFIER: size = 16B;
+const AT_OCCUPANCY: size = 24B;
+const AT_RESERVED: size = 32B;
+
+// --- how many requests one generation serves ----------------------------------
+// **A constant, because a child is never told anything at launch but its endowment.**
+// Generation A serves the writer's two `PUT`s and generation B the reader's two
+// `GET`s; both run this text, so both serve two. A production store loops until its
+// endpoint goes away — a fixture has to finish, so that its ending can be collected
+// and the next generation created from the same plan.
+const REQUESTS: u64 = 2u64;
+
+// --- what one generation proves, one bit each ---------------------------------
+// **Its own range of bits**, above the initializer's, so that a value in the journal
+// names the module that reported it.
+//
+// The header was read from the device and validated: magic, `format_version`, the
+// owner's schema identity and the whole reserved run (§4.3).
+const PROVED_OPENED: i64 = 64i64;
+// Every request this generation received was answered, refusal or not (§9).
+const PROVED_ALL_ANSWERED: i64 = 128i64;
+// Two `PUT`s of ids that were **absent**, each writing its payload sector and then the
+// header with the bit set, in that order (§8a).
+const PROVED_TWO_CREATED: i64 = 256i64;
+// One `GET` of an absent id, refused as `ST_ABSENT` — and its sector was not read.
+const PROVED_ABSENT_REFUSED: i64 = 512i64;
+// One `GET` served: the sector read completely, success replied, and **then** exactly
+// one region forwarded (§8b).
+const PROVED_ONE_SERVED: i64 = 1024i64;
+// And what a generation that could not open reports instead: every request refused
+// with `ST_STORE`, and no device request made at all (§4.4).
+const PROVED_CLOSED: i64 = 2048i64;
+
+extern fn endpoint_receive_call_region(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCallRegion, i64> uses [serve];
+
+extern fn endpoint_reply_word(
+    cap: system.ipc.Reply, word: u64
+) -> i64 uses [system.ipc.Reply];
+
+// The lower `READ`: it says where to answer, because a reply cannot carry a region.
+// **Its result is the reply** (ADR-0101), which is the only place `BLOCK_DEVICE_V1`
+// §5's success or refusal can be read from — and without it `ST_BLOCK` would have
+// nothing to translate.
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [system.ipc.Endpoint, block];
+
+// The lower `WRITE`: one atomic call carrying the request word **and** the region.
+extern fn endpoint_call_word_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region, word: u64
+) -> Result<system.ipc.Answer, i64> uses [block, system.memory.Region];
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+extern fn endpoint_send_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region
+) -> i64 uses [system.ipc.Endpoint, system.memory.Region];
+
+// ADR-0100. A delegation carries the rights the sender holds and one endpoint has one
+// receive-rights holder, so the channel handed to the block service is a send-only
+// alias of this store's own answer endpoint.
+extern fn capability_attenuate(
+    cap: system.ipc.Endpoint, rights: u64
+) -> Result<system.ipc.Endpoint, i64> uses [inbox];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [budget];
+
+extern fn region_freeze(
+    cap: system.memory.Region
+) -> Result<Region<u8>, i64> uses [system.memory.Region];
+
+// --- the header, read and written ---------------------------------------------
+
+// The magic byte at `at`: `TOSSTORE`, eight bytes in ascending address order, read as
+// bytes so no endianness applies to them (§4.1).
+fn magic_at(at: size) -> u64 {
+    if (at == 0B) { return 84u64; }
+    if (at == 1B) { return 79u64; }
+    if (at == 2B) { return 83u64; }
+    if (at == 3B) { return 83u64; }
+    if (at == 4B) { return 84u64; }
+    if (at == 5B) { return 79u64; }
+    if (at == 6B) { return 82u64; }
+    return 69u64;
+}
+
+// One fixed-width little-endian field, read.
+//
+// **Every persistent number is built and read byte by byte**, because `docs/40`
+// forbids serializing a `size` in a persistent form and requires an explicit
+// fixed-width integer. Nothing here ever reinterprets memory.
+fn get_le(borrow sector: Region<u8>, at: size, width: u64) -> u64 {
+    let mut value: u64 = 0u64;
+    let mut scale: u64 = 1u64;
+    let mut index: u64 = 0u64;
+    let mut offset: size = at;
+    while (index < width) {
+        value = value + (sector[offset] as u64) * scale;
+        if (index + 1u64 < width) { scale = scale * 256u64; }
+        offset = offset + 1B;
+        index = index + 1u64;
+    }
+    return value;
+}
+
+fn byte_of(value: u64, index: u64) -> u8 {
+    let mut shifted: u64 = value;
+    let mut moved: u64 = 0u64;
+    while (moved < index) {
+        shifted = shifted / 256u64;
+        moved = moved + 1u64;
+    }
+    match (to_u8(shifted % 256u64)) {
+        Ok(byte) => { return byte; }
+        Err(impossible) => { return 0u8; }
+    }
+}
+
+fn put_le(borrow mut header: Region<mut u8>, at: size, value: u64, width: u64) -> unit {
+    let mut index: u64 = 0u64;
+    let mut offset: size = at;
+    while (index < width) {
+        header[offset] = byte_of(value, index);
+        offset = offset + 1B;
+        index = index + 1u64;
+    }
+}
+
+// Whether sector 0 is a header of **this** store (§4.3). All four conditions, and the
+// reserved run in full: a reader that skipped it would accept a header a later
+// `format_version` had written fields into.
+fn header_valid(borrow sector: Region<u8>) -> bool {
+    let mut at: size = AT_MAGIC;
+    while (at < AT_FORMAT_VERSION) {
+        if ((sector[at] as u64) != magic_at(at)) { return false; }
+        at = at + 1B;
+    }
+    if (get_le(borrow sector, AT_FORMAT_VERSION, 4u64) != FORMAT_VERSION) { return false; }
+    if (get_le(borrow sector, AT_SCHEMA_VERSION, 4u64) != SCHEMA_VERSION) { return false; }
+    if (get_le(borrow sector, AT_SCHEMA_IDENTIFIER, 8u64) != SCHEMA_IDENTIFIER) {
+        return false;
+    }
+    at = AT_RESERVED;
+    while (at < OBJECT_BYTES) {
+        if (sector[at] != 0u8) { return false; }
+        at = at + 1B;
+    }
+    return true;
+}
+
+// The complete header this store keeps: every field from this module's own constants
+// and the one number that changes. **Recomposed rather than edited in place**, because
+// the region the header arrived in is the block service's and is released as soon as
+// it has been read — and because a header written from constants cannot drift from the
+// constants a reader validates against.
+fn compose(borrow mut header: Region<mut u8>, occupancy: u64) -> unit {
+    let mut at: size = 0B;
+    while (at < OBJECT_BYTES) {
+        header[at] = 0u8;
+        at = at + 1B;
+    }
+    at = AT_MAGIC;
+    while (at < AT_FORMAT_VERSION) {
+        match (to_u8(magic_at(at))) {
+            Ok(byte) => { header[at] = byte; }
+            Err(impossible) => { header[at] = 0u8; }
+        }
+        at = at + 1B;
+    }
+    put_le(borrow mut header, AT_FORMAT_VERSION, FORMAT_VERSION, 4u64);
+    put_le(borrow mut header, AT_SCHEMA_VERSION, SCHEMA_VERSION, 4u64);
+    put_le(borrow mut header, AT_SCHEMA_IDENTIFIER, SCHEMA_IDENTIFIER, 8u64);
+    put_le(borrow mut header, AT_OCCUPANCY, occupancy, 8u64);
+}
+
+// --- the lower layer -----------------------------------------------------------
+
+// One `block.device.v1` `READ`, and the region it owes.
+//
+// **The four arms of `STATE_STORE_V1` §2a, and each is a different thing that
+// happened** (ADR-0101):
+//
+//   Err(status)            the lower IPC operation failed: an incomplete operation of
+//                          this store's own, and not a refusal it received
+//   length != 8            not a reply of `block.device.v1` at all (§5 there)
+//   word >= BLK_REFUSED    the block layer refused. `ST_BLOCK`, and **no region is
+//                          waited for**
+//   word == 0              exactly one region is owed; take it
+//
+// **Nothing waits for a region after a refusal.** A wait for one that a refusal means
+// will never arrive is a wait the liveness rule ends, so inferring the refusal from the
+// region's absence was never implementable — which is why the row's result had to
+// carry it.
+//
+// **The alias is released whether the call succeeded or not**, and before the result is
+// interpreted: the block service holds its own name either way, and a store that tidied
+// up only on the happy path would leak exactly under stress (ADR-0100, §2a).
+fn read_sector(sector: u64) -> Result<Region<u8>, i64>
+    uses [block, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    match (capability_attenuate(inbox, RIGHT_SEND)) {
+        Ok(reply_to) => {
+            let asked: Result<system.ipc.Answer, i64> =
+                endpoint_call_word_carrying(reply_to, block,
+                    sector * BLK_OPCODE_SPAN + BLK_OP_READ);
+            if (capability_release(reply_to) != OK) { return Err(-4000i64); }
+            match (asked) {
+                Ok(answer) => {
+                    if (answer.length != BLK_REQUEST_BYTES) { return Err(-4001i64); }
+                    if (answer.word >= BLK_REFUSED) { return Err(-4002i64); }
+                    if (answer.word != 0u64) { return Err(-4003i64); }
+                    return endpoint_receive_region(inbox);
+                }
+                Err(status) => { return Err(status - 4100i64); }
+            }
+        }
+        Err(status) => { return Err(status - 4200i64); }
+    }
+}
+
+// One `block.device.v1` `WRITE` of a region this store does not keep.
+//
+// **The region is consumed either way.** `IPC_V1` §5 makes a successful call's region
+// transfer linear, and a refused one leaves nothing here to release because the
+// argument was moved in. So this signature takes it rather than borrowing it.
+fn write_sector(payload: Region<u8>, sector: u64) -> i64
+    uses [block, system.memory.Region]
+{
+    match (endpoint_call_word_region(block, payload,
+        sector * BLK_OPCODE_SPAN + BLK_OP_WRITE)) {
+        Ok(answer) => {
+            if (answer.length != BLK_REQUEST_BYTES) { return -4300i64; }
+            if (answer.word >= BLK_REFUSED) { return -4301i64; }
+            if (answer.word != 0u64) { return -4302i64; }
+            return OK;
+        }
+        Err(status) => { return status - 4400i64; }
+    }
+}
+
+// Writes sector 0 with this `occupancy`. **The store's own request**, accounted
+// separately from any client's payload (§10, ADR-0099 §11): the region is allocated
+// here, composed here and frozen here, and no client's bytes are in it.
+fn write_header(occupancy: u64) -> i64
+    uses [budget, block, system.memory.Region]
+{
+    match (region_allocate(budget, OBJECT_BYTES)) {
+        Ok(header) => {
+            compose(borrow mut header, occupancy);
+            match (region_freeze(header)) {
+                Ok(frozen) => { return write_sector(frozen, HEADER_SECTOR); }
+                Err(unfrozen) => { return unfrozen - 4500i64; }
+            }
+        }
+        Err(unallocated) => { return unallocated - 4600i64; }
+    }
+}
+
+// Opens the store from the device (§4.5) and answers with `occupancy`.
+fn open_store() -> Result<u64, i64>
+    uses [block, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    match (read_sector(HEADER_SECTOR)) {
+        Ok(sector) => {
+            if (!header_valid(borrow sector)) {
+                if (capability_release(sector) != OK) { return Err(-4700i64); }
+                // **Not a failure of this module.** An invalid or missing header means
+                // the store is not open, which §4.4 makes a state this service serves
+                // rather than repairs.
+                return Err(-1i64);
+            }
+            let occupancy: u64 = get_le(borrow sector, AT_OCCUPANCY, 8u64);
+            if (capability_release(sector) != OK) { return Err(-4701i64); }
+            return Ok(occupancy);
+        }
+        Err(status) => { return Err(status); }
+    }
+}
+
+// --- what a request carried, let go of when this protocol has no use for it ----
+
+fn release_region(supplied: Option<Region<u8>>, account: i64) -> i64
+    uses [system.memory.Region]
+{
+    match (supplied) {
+        Some(unused) => {
+            if (capability_release(unused) != OK) { return -4800i64; }
+            return account;
+        }
+        None => { return account; }
+    }
+}
+
+fn release_endpoint(carried: Option<system.ipc.Endpoint>, account: i64) -> i64
+    uses [system.ipc.Endpoint]
+{
+    match (carried) {
+        Some(unused) => {
+            if (capability_release(unused) != OK) { return -4801i64; }
+            return account;
+        }
+        None => { return account; }
+    }
+}
+
+// Both, which is the form every answer that is not a served `GET` uses.
+//
+// **A refusal that kept what a request handed over would let a client fill this
+// store's table with authority nobody asked for**, which is a denial of service spelled
+// as generosity — and no refusal code is invented for attaching something unused,
+// because the contract does not make it an error.
+fn released(
+    supplied: Option<Region<u8>>,
+    carried: Option<system.ipc.Endpoint>,
+    account: i64
+) -> i64
+    uses [system.memory.Region, system.ipc.Endpoint]
+{
+    let regions: i64 = release_region(supplied, account);
+    if (regions < 0i64) { return regions; }
+    return release_endpoint(carried, regions);
+}
+
+// --- the closed store ----------------------------------------------------------
+
+// Every request refused with `ST_STORE`, and **no device request at all** (§4.4).
+//
+// **This exists so that "it cannot open" is a served state and not a dead boot.** A
+// store that stopped answering would leave its clients blocked until the liveness rule
+// cancelled them, and a client could not tell a store with no header from a store that
+// had died. It is also what makes the mutation that omits the initializer's header
+// write turn this gate red on the right assertion.
+fn serve_closed() -> i64
+    uses [serve, system.ipc.Reply, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut served: u64 = 0u64;
+    let mut refused: u64 = 0u64;
+    while (served < REQUESTS) {
+        served = served + 1u64;
+        match (endpoint_receive_call_region(serve)) {
+            Ok(request) => {
+                let carried: Option<system.ipc.Endpoint> = request.carried;
+                let supplied: Option<Region<u8>> = request.region;
+                if (endpoint_reply_word(request.reply, REFUSED + ST_STORE) != OK) {
+                    return -4900i64;
+                }
+                let let_go: i64 = released(supplied, carried, OK);
+                if (let_go < 0i64) { return let_go; }
+                refused = refused + 1u64;
+            }
+            Err(status) => { return status - 4950i64; }
+        }
+    }
+    if (refused != REQUESTS) { return -4951i64; }
+    return PROVED_CLOSED;
+}
+
+// --- the open store ------------------------------------------------------------
+
+// Whether object `id` is present. `occupancy` and nothing else (§5).
+fn present(occupancy: u64, id: u64) -> bool {
+    let mut mask: u64 = 1u64;
+    let mut moved: u64 = 1u64;
+    while (moved < id) {
+        mask = mask * 2u64;
+        moved = moved + 1u64;
+    }
+    return (occupancy / mask) % 2u64 == 1u64;
+}
+
+fn with_present(occupancy: u64, id: u64) -> u64 {
+    let mut mask: u64 = 1u64;
+    let mut moved: u64 = 1u64;
+    while (moved < id) {
+        mask = mask * 2u64;
+        moved = moved + 1u64;
+    }
+    return occupancy + mask;
+}
+
+pub fn main() -> i64
+    uses [budget, serve, block, inbox, system.ipc.Endpoint, system.ipc.Reply,
+          system.memory.Region]
+{
+    match (open_store()) {
+        Ok(occupancy) => { return PROVED_OPENED + serve_open(occupancy); }
+        Err(unopened) => {
+            // **A store that cannot open serves anyway**, and what it serves is
+            // `ST_STORE`. It does not format, repair or guess (§4.4).
+            if (unopened != -1i64) { return unopened; }
+            return serve_closed();
+        }
+    }
+}
+
+// The request loop of an open store.
+//
+// **One function and no per-request helper**, because `occupancy` is the one thing that
+// survives a request and a helper would have to hand it back alongside what it proved.
+fn serve_open(opening_occupancy: u64) -> i64
+    uses [budget, serve, block, inbox, system.ipc.Endpoint, system.ipc.Reply,
+          system.memory.Region]
+{
+    let mut occupancy: u64 = opening_occupancy;
+    let mut served: u64 = 0u64;
+    let mut answered: u64 = 0u64;
+    let mut created: u64 = 0u64;
+    let mut absent_refused: u64 = 0u64;
+    let mut delivered: u64 = 0u64;
+
+    while (served < REQUESTS) {
+        served = served + 1u64;
+        match (endpoint_receive_call_region(serve)) {
+            Ok(request) => {
+                // **What arrived first, because holding either costs a table entry**
+                // and this process already holds four startup capabilities.
+                let carried: Option<system.ipc.Endpoint> = request.carried;
+                let supplied: Option<Region<u8>> = request.region;
+                let reply: system.ipc.Reply = request.reply;
+
+                // --- the shape of the request, before anything is decided ------
+                if (request.length != REQUEST_BYTES) {
+                    if (endpoint_reply_word(reply, REFUSED + ST_MALFORMED) != OK) {
+                        return -5000i64;
+                    }
+                    let dropped: i64 = released(supplied, carried, OK);
+                    if (dropped < 0i64) { return dropped; }
+                    answered = answered + 1u64;
+                } else {
+                    let opcode: u64 = request.word % OPCODE_SPAN;
+                    let id: u64 = request.word / OPCODE_SPAN;
+                    if (opcode > OP_PUT) {
+                        // Reserved (§3). Refused before the id is looked at, because a
+                        // request this store does not understand is not a request about
+                        // an object.
+                        if (endpoint_reply_word(reply, REFUSED + ST_OPCODE) != OK) {
+                            return -5001i64;
+                        }
+                        let dropped: i64 = released(supplied, carried, OK);
+                        if (dropped < 0i64) { return dropped; }
+                        answered = answered + 1u64;
+                    } else {
+                        if (id < MIN_ID) {
+                            if (endpoint_reply_word(reply, REFUSED + ST_ID) != OK) {
+                                return -5002i64;
+                            }
+                            let dropped: i64 = released(supplied, carried, OK);
+                            if (dropped < 0i64) { return dropped; }
+                            answered = answered + 1u64;
+                        } else {
+                            if (id > MAX_ID) {
+                                if (endpoint_reply_word(reply, REFUSED + ST_ID) != OK) {
+                                    return -5003i64;
+                                }
+                                let dropped: i64 = released(supplied, carried, OK);
+                                if (dropped < 0i64) { return dropped; }
+                                answered = answered + 1u64;
+                            } else {
+                                let done: i64 = one_object(reply, opcode, id, occupancy,
+                                    supplied, carried);
+                                if (done < 0i64) { return done; }
+                                if (done == 1i64) {
+                                    occupancy = with_present(occupancy, id);
+                                    created = created + 1u64;
+                                }
+                                if (done == 2i64) { absent_refused = absent_refused + 1u64; }
+                                if (done == 3i64) { delivered = delivered + 1u64; }
+                                answered = answered + 1u64;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(status) => { return status - 5100i64; }
+        }
+    }
+
+    let mut proved: i64 = 0i64;
+    if (answered == REQUESTS) { proved = proved + PROVED_ALL_ANSWERED; }
+    if (created == 2u64) { proved = proved + PROVED_TWO_CREATED; }
+    if (absent_refused == 1u64) { proved = proved + PROVED_ABSENT_REFUSED; }
+    if (delivered == 1u64) { proved = proved + PROVED_ONE_SERVED; }
+    return proved;
+}
+
+// One well-formed request about one id in range.
+//
+// Returns what happened, so that the caller can keep `occupancy`:
+//
+//   0   answered, and nothing about presence changed
+//   1   a `PUT` made an absent id present
+//   2   a `GET` of an absent id was refused
+//   3   a `GET` was served and its region forwarded
+//
+// A negative names the step that did not hold. **A refusal is not a negative**:
+// refusing an absent id is this store working, and the bit it sets is the evidence.
+fn one_object(
+    reply: system.ipc.Reply,
+    opcode: u64,
+    id: u64,
+    occupancy: u64,
+    supplied: Option<Region<u8>>,
+    carried: Option<system.ipc.Endpoint>
+) -> i64
+    uses [budget, block, inbox, system.ipc.Endpoint, system.ipc.Reply,
+          system.memory.Region]
+{
+    if (opcode == OP_PUT) {
+        match (supplied) {
+            Some(payload) => {
+                // --- §8a's order, which is normative --------------------------
+                // The payload sector first, so that an object becomes visible only
+                // after its bytes are on the device: a store that stopped between the
+                // two writes leaves a written sector and no object, which is a lost
+                // write and not a corrupt store.
+                //
+                // **The client's own region goes to the device** (§10). It is not
+                // copied, and this call takes it: after a successful transfer neither
+                // the handle nor the mapping is this process's (`IPC_V1` §5).
+                let written: i64 = write_sector(payload, id);
+                if (written != OK) {
+                    if (endpoint_reply_word(reply, REFUSED + ST_BLOCK) != OK) {
+                        return -5200i64;
+                    }
+                    return release_endpoint(carried, 0i64);
+                }
+                if (!present(occupancy, id)) {
+                    let headed: i64 = write_header(with_present(occupancy, id));
+                    if (headed != OK) {
+                        if (endpoint_reply_word(reply, REFUSED + ST_BLOCK) != OK) {
+                            return -5201i64;
+                        }
+                        return release_endpoint(carried, 0i64);
+                    }
+                    if (endpoint_reply_word(reply, 0u64) != OK) { return -5202i64; }
+                    let done: i64 = release_endpoint(carried, 1i64);
+                    return done;
+                }
+                // Already present: the payload sector is enough, and the header did
+                // not change (§8a).
+                if (endpoint_reply_word(reply, 0u64) != OK) { return -5203i64; }
+                return release_endpoint(carried, 0i64);
+            }
+            None => {
+                if (endpoint_reply_word(reply, REFUSED + ST_NO_REGION) != OK) {
+                    return -5204i64;
+                }
+                // **Nothing supplied to release here**, which the match has just
+                // established: this arm *is* the absence, and `supplied` was consumed
+                // proving it.
+                return release_endpoint(carried, 0i64);
+            }
+        }
+    }
+    // --- `GET` (§8b) ----------------------------------------------------------
+    match (carried) {
+        Some(answer_to) => {
+            // **Presence first, and an absent id's sector is not read** (§5). This is
+            // what makes seeded, stale or adversarial sector contents
+            // non-authoritative: a store that inferred presence from bytes could be
+            // convinced by anything that had been on the device before it.
+            if (!present(occupancy, id)) {
+                if (endpoint_reply_word(reply, REFUSED + ST_ABSENT) != OK) {
+                    return -5300i64;
+                }
+                let dropped: i64 = release_region(supplied, 0i64);
+                if (dropped < 0i64) { return dropped; }
+                if (capability_release(answer_to) != OK) { return -5301i64; }
+                return 2i64;
+            }
+            match (read_sector(id)) {
+                Ok(object) => {
+                    // --- control before data, and the order is normative -------
+                    // The sector is read **completely** first, so success means the
+                    // object was obtained and exactly one region is owed. The reverse
+                    // order admits an orphan region: an endpoint object lives for the
+                    // boot, so a region queued on an answer endpoint whose waiter then
+                    // died stays there, and a later holder of receive — including a
+                    // successor from the same launch plan — could take it as the answer
+                    // to its own request.
+                    if (endpoint_reply_word(reply, 0u64) != OK) {
+                        if (capability_release(object) != OK) { return -5310i64; }
+                        if (capability_release(answer_to) != OK) { return -5311i64; }
+                        return -5312i64;
+                    }
+                    let sent: i64 = endpoint_send_region(answer_to, object);
+                    // **Released whether the send worked or not**, and in that order:
+                    // the name has served its one purpose either way. A failed send is
+                    // a fault and not a refusal — the reply is already spent — and it
+                    // is reported after the release rather than instead of it.
+                    if (capability_release(answer_to) != OK) { return -5313i64; }
+                    let dropped: i64 = release_region(supplied, 0i64);
+                    if (dropped < 0i64) { return dropped; }
+                    if (sent != OK) { return sent - 5320i64; }
+                    return 3i64;
+                }
+                Err(unread) => {
+                    if (endpoint_reply_word(reply, REFUSED + ST_BLOCK) != OK) {
+                        return -5330i64;
+                    }
+                    let dropped: i64 = release_region(supplied, 0i64);
+                    if (dropped < 0i64) { return dropped; }
+                    if (capability_release(answer_to) != OK) { return -5331i64; }
+                    return 0i64;
+                }
+            }
+        }
+        None => {
+            if (endpoint_reply_word(reply, REFUSED + ST_NO_ANSWER) != OK) {
+                return -5400i64;
+            }
+            return release_region(supplied, 0i64);
+        }
+    }
+}

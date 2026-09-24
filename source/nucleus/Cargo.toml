@@ -61,6 +61,10 @@ test-endpoint-attenuation = []
 # claim rather than a protocol, because the claim is about the schema row and not
 # about `block.device.v1`.
 test-carried-call-answer = []
+# ADR-0099: a persistent `state.store.v1` object store on the reference block device,
+# with an initializer that formats once and refuses twice, two generations of the store
+# from one sealed plan, and a reader that gets back what a writer that has ended wrote.
+test-state-store = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after

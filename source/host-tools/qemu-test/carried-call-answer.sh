@@ -43,7 +43,7 @@
 # constant this row reports.
 #
 # **Not claimed:** anything about `block.device.v1` (that is `block-protocol`'s),
-# anything about `state.store.v1` (ADR-0099 is accepted and unimplemented), any
+# anything about `state.store.v1` (that is `state-store.sh`'s), any
 # ordering between a reply and a region, or any rule about what a carried channel is
 # for — nothing receives on the endpoint whose name is carried here, and this boot
 # says so rather than building a second protocol to look complete.
@@ -204,6 +204,6 @@ echo "  one answer with no payload at all, so Answer.length is the replier's cho
 echo "  and not a constant this row reports"
 echo "  no device, no region, no driver: the claim is about the schema row, so this"
 echo "  boot is provable without block.device.v1"
-echo "  NOT claimed: block.device.v1 (block-protocol's), state.store.v1 (ADR-0099"
-echo "  is accepted and unimplemented), any reply-before-region ordering, or any"
+echo "  NOT claimed: block.device.v1 (block-protocol's), state.store.v1 (which is"
+echo "  state-store.sh's), any reply-before-region ordering, or any"
 echo "  rule about what a carried channel is for"
