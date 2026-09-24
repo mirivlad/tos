@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 524
+- files in the release package: 525
 - active system invariants: 21
-- architecture decision records: 100 (40 accepted)
+- architecture decision records: 101 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -144,6 +144,7 @@ Architecture decision records
 - docs/adr/0098-the-block-device-v1-wire-protocol.md — ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region [**Accepted** (Project Architect-approved, 2026-09-24), and]
 - docs/adr/0099-stage-4-persistent-object-state-storage.md — ADR-0099: Stage 4 persistent object/state storage — a private native store, substrate first [**Accepted** (Project Architect-approved, 2026-09-24). **Nothing in the]
 - docs/adr/0100-attenuating-an-endpoint-from-canonical-text.md — ADR-0100: Attenuating an endpoint from canonical text [**Accepted** (Project Architect-approved, 2026-09-24), and implemented on]
+- docs/adr/0101-a-carried-call-must-expose-its-reply.md — ADR-0101: A call that carries a capability must expose its reply [**Proposed** (raised 2026-09-24 during the ADR-0099 implementation; **not]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
