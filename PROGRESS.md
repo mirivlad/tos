@@ -9517,7 +9517,6 @@ Stage 4 и до Stage 5.
 ```open-decisions
 ADR-0044
 ADR-0096
-ADR-0102
 ```
 
 Помимо ADR: формальное рассмотрение закрытия Stage 4C и Stage 4D.

@@ -111,6 +111,17 @@ Engineering exit: persistent storage works through a textual user-space driver.
 
 Identity exit: the textual driver performs actual I/O from canonical source; no binary shadow driver or hidden host path exists.
 
+**The capsule-to-repository handoff has two halves, and Stage 4 owes the first**
+(`ADR-0102`, accepted 2026-09-26). Stage 4 delivers **linkage and verification**:
+canonical text reads the commit the boot capsule names out of a bounded repository
+extent on the real device, verifies every object against its own id, and proves that
+the commit resolves `source/system/boot/init.tos` to the bytes the capsule carries.
+The **transition** half — `docs/04`'s *"transitions to the repository-backed system
+tree"* and `docs/11`'s *"repository-backed versions replace capsule versions"* — is
+Stage 5's, because its last clause is word for word Stage 5's identity exit. Through
+Stage 4 the system commit id stays absent, the capsule stays the installed source
+set, and `/system` is not repository-mounted.
+
 ## Stage 4E — Interactive console
 
 **After Stage 4 closes and before Stage 5 begins.** The first stage at which a

@@ -35,6 +35,13 @@ Excluded:
 - merge/diff semantics;
 - garbage collection.
 
+**`ADR-0102` defines a specialized read-only subset of G1 for Stage 4**, as this
+document's purpose section requires of any specialization: commit, tree and blob
+objects; bounded traversal of one normatively fixed path; SHA-1 object identity;
+loose objects restricted to DEFLATE stored blocks; **no refs**, because the boot
+capsule already carries the object id the traversal starts from. It is a subset of
+G1 and is not G1, and it does not promote TOS to G1.
+
 ## G2 — Deterministic local history
 
 Adds:
