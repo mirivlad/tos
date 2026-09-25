@@ -132,6 +132,7 @@ because two imports of one interface are legal and a kind cannot tell them apart
 | `system.process.LaunchPlanBuilder` | launch plan builder | `AsInterface` |
 | `system.process.LaunchPlan` | launch plan | `AsInterface` |
 | `system.process.Control` | process | `AsInterface` |
+| `system.boot.Identity` | boot identity | `AsInterface` |
 
 The third column is version 2's addition and §4.3 is what it means. Every
 interface this document declares has the default, which is the version 1
@@ -796,6 +797,78 @@ is the true value, and a zero would be a claim its caller never made. A record
 carrying `status` and `has_status` side by side puts that rule in the reader's
 hands; `Option<u64>` puts it in the type, and the translation happens once, at
 the boundary, rather than in every supervisor that reads one.
+
+### `system.boot.IdentityRecord`
+
+| Field | Type |
+|---|---|
+| `source_kind` | `u64` |
+| `oid_algorithm` | `u64` |
+| `oid_length` | `u64` |
+| `oid_0` | `u64` |
+| `oid_1` | `u64` |
+| `oid_2` | `u64` |
+| `oid_3` | `u64` |
+| `boot_content_0` | `u64` |
+| `boot_content_1` | `u64` |
+| `boot_content_2` | `u64` |
+| `boot_content_3` | `u64` |
+
+**Eleven `u64` and no byte array, because §4.2 has none** (ADR-0102 §4c). The two
+32-byte values are carried as four chunks each, and the rule is normative: **chunk
+`i` holds bytes `[8i, 8i+8)` of the value in ascending address order, as a
+little-endian `u64`.** A new language representation invented so that one record
+could look tidy would be a language change bought for cosmetics.
+
+`source_kind` is 1 for a git commit and 2 for a detached source set;
+`oid_algorithm` is 0, 1 (SHA-1) or 2 (SHA-256); `oid_length` is 0, 20 or 32. **A
+SHA-1 object id occupies bytes `[0, 20)` and the rest are zero**, exactly as
+`CAPSULE_FORMAT_V1` §6 holds it, and `oid_length` is what says so — a reader that
+ignored it would be right for today's profile and wrong for the next one.
+
+**There is no pathname field and no system-commit field.** `/system/boot/init.tos`
+is normative in `CAPSULE_FORMAT_V1` §5 and `source/system/boot/init.tos` in
+ADR-0031 §2, so a field carrying either would be a second place for a fact that
+already has one. The system commit id is `PROCESS_IDENTITY_V1` §5's, and it stays
+absent until Stage 5.
+
+### `system.boot.Identity`
+
+One immutable object for the boot, minted only at the trusted boot boundary
+(ADR-0102 §3). It authorizes **a read of the verified boot source identity** and
+nothing mutable: holding it does not select a commit, modify any identity, read
+any capsule file, enumerate the capsule, launch anything, control a process,
+allocate memory or change boot policy. It is nevertheless authority — a process
+that holds it learns what the machine booted from and one that does not, does not.
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `boot_identity_read` | `system.boot.Identity` with `read` | *(none)* | `Result<system.boot.IdentityRecord, i64>` | 32 |
+| `capability_attenuate` | `system.boot.Identity` with `none` | `rights: u64` | `Result<system.boot.Identity, i64>` | 5 |
+| `capability_release` | `system.boot.Identity` with `none` | *(none)* | `i64` | 6 |
+| `endow_for_launch` | `system.boot.Identity` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+
+**Four rows and no fifth.** Operations 5, 6 and 22 are generic over a capability's
+object and already did this for every other kind; what is added here is the
+*naming*, which is what ADR-0100 exists to have taught — a capability the nucleus
+would accept is not usable from canonical text until a row names it.
+
+**And a message is not one of the four.** The rows that carry a capability —
+`endpoint_send_carrying`, `endpoint_call_carrying`, `endpoint_call_word_carrying` —
+are nominally typed for `system.ipc.Endpoint`, so canonical text cannot put an
+identity into a message, and the nucleus refuses one that reached that path anyway.
+The supported delegation is **bootstrap endowment or an explicit launch-plan
+endowment**, which is what this slice uses and all it claims. A generic
+arbitrary-capability transfer is a later decision with its own reasons.
+
+**Attenuation is intersection** (`CAPABILITY_V1` §4, ADR-0100): asking for more
+than a name holds yields what it held, and asking for a set that intersects to
+nothing is **refused** rather than producing a rightless handle. So there is no
+such thing as an identity capability that resolves and may not read.
+
+**The object outlives every name.** `capability_release` releases a name; the
+identity is the boot's, is immutable, and ends when the machine does. Nothing
+counts its names for that reason, exactly as nothing counts an endpoint's.
 
 ## 4.1 What a parameter may be
 

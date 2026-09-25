@@ -62,6 +62,18 @@ pub struct Template {
     /// The declared identity of the source set, and how much of it is written.
     source_set: [u8; 96],
     source_set_length: usize,
+    /// The boot-canonical file's content digest (ADR-0102 §4f).
+    ///
+    /// **Retained, not recomputed.** `CAPSULE_FORMAT_V1` §4.2 gives every file a
+    /// SHA-256 the parser has already checked against the exact content bytes, and
+    /// §5 makes exactly one file boot-canonical. Copying that value here is all the
+    /// nucleus does for it: hashing again would be a second computation of a fact
+    /// the boot has already established, and the nucleus does no cryptographic work
+    /// on behalf of operation 32.
+    ///
+    /// **One digest, not a catalog.** What is retained is the boot-canonical file's
+    /// and nothing else's; ADR-0102 exposes no capsule enumeration.
+    boot_content_digest: [u8; 32],
 }
 
 impl Template {
@@ -73,6 +85,11 @@ impl Template {
     /// The declared identity of that set.
     pub fn source_set(&self) -> &[u8] {
         &self.source_set[..self.source_set_length]
+    }
+
+    /// The boot-canonical file's validated content digest (ADR-0102 §4f).
+    pub fn boot_content_digest(&self) -> &[u8; 32] {
+        &self.boot_content_digest
     }
 
     /// Whether `index` names a unit of this boot's set.
@@ -103,6 +120,19 @@ impl Template {
 /// is what a type is for.
 static mut TEMPLATE: Option<Template> = None;
 
+/// What this boot can say about the source it came from.
+///
+/// **Two facts and one parameter, because they are one thing**: the declared
+/// identity of the source set, and the digest of the one file
+/// `CAPSULE_FORMAT_V1` §5 makes boot-canonical. Both come from the same verified
+/// capsule header and both are read back by the same operation (ADR-0102 §4).
+pub struct SourceFacts<'a> {
+    /// `"git:<hex>"` or `"detached:<hex>"`, as the nucleus flattened it.
+    pub set: &'a [u8],
+    /// The boot-canonical file's SHA-256, already validated by the parser.
+    pub boot_content_digest: &'a [u8; 32],
+}
+
 /// Fixes what this boot can launch. Called once, before the first process.
 ///
 /// # Safety
@@ -121,7 +151,7 @@ pub unsafe fn establish(
     capsule: Span,
     units: &[Unit],
     identity: u64,
-    source_set: &[u8],
+    source: SourceFacts<'_>,
 ) {
     let mut template = Template {
         bi,
@@ -132,11 +162,12 @@ pub unsafe fn establish(
         unit_count: units.len().min(MAX_BOOT_MODULES),
         identity,
         source_set: [0; 96],
-        source_set_length: source_set.len().min(96),
+        source_set_length: source.set.len().min(96),
+        boot_content_digest: *source.boot_content_digest,
     };
     template.units[..template.unit_count].copy_from_slice(&units[..template.unit_count]);
     template.source_set[..template.source_set_length]
-        .copy_from_slice(&source_set[..template.source_set_length]);
+        .copy_from_slice(&source.set[..template.source_set_length]);
     // Assigned whole, so there is no instant at which a reader could see a
     // template that is only partly filled.
     // SAFETY: single-context nucleus at boot; nothing else touches this and no

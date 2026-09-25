@@ -2067,6 +2067,30 @@ fn write_child_record(
     Ok(())
 }
 
+/// Writes one fixed-offset result record into a process's own argument region.
+///
+/// **The same rule `write_child_record` follows, stated once for a second
+/// caller**: into the region the nucleus mapped for that process, at an offset
+/// this contract fixed, never through an address the process supplied
+/// (`SYSTEM_ABI_V1` §3). Answers `false` for a process with no argument region,
+/// which is refused rather than partially answered.
+///
+/// The offset-plus-size bound is checked by the `const` assertions in
+/// `tos-launch`, where every fixed result is kept from overlapping the next.
+pub fn write_argument_record<T: Copy>(index: usize, offset: u64, record: &T) -> bool {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    let base = table[index].arguments_phys;
+    if base == 0 {
+        return false;
+    }
+    let at = base + offset;
+    // SAFETY: the region is one frame the nucleus mapped for this process and
+    // reaches through its own identity map, and the record is inside it.
+    unsafe { core::ptr::with_exposed_provenance_mut::<T>(at as usize).write_unaligned(*record) };
+    true
+}
+
 /// `process_wait_child` (ADR-0067): the earliest pending ending, or a block.
 ///
 /// # Safety
