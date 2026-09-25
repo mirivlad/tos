@@ -36,6 +36,10 @@ import subprocess
 import sys
 import zlib
 
+# The two modules beside this one are imported by path and never installed, so
+# nothing should be left behind for having run it: a repository with no
+# `.gitignore` is a repository where every file is either tracked or a mistake.
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capsule_facts
