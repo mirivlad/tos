@@ -1068,7 +1068,15 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             capsule_span,
             &modules[..module_count],
             memory::identity(),
-            &source_set[..named],
+            launch::SourceFacts {
+                set: &source_set[..named],
+                // The boot-canonical file's own digest, taken from the entry the
+                // capsule parser has already checked against its bytes
+                // (ADR-0102 §4f). Not recomputed here: the fact is established,
+                // and establishing it twice would give two places for it to be
+                // wrong.
+                boot_content_digest: &boot.digest,
+            },
         )
     };
 

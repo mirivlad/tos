@@ -238,6 +238,20 @@ const DMA_REGION_ALLOCATE: u64 = 30;
 /// device — no operation of any contract accepts one back.
 const DMA_DEVICE_ADDRESS: u64 = 31;
 
+/// The boot's verified source identity, read (ADR-0102 §4).
+///
+/// `rdi` = a boot-identity capability with `read`. The record goes to
+/// `BOOT_IDENTITY_RECORD` in the caller's own argument region; `rdx` returns
+/// nothing but the status, because the answer has eleven parts and a one-value
+/// result has room for none of them.
+///
+/// **It reports and never selects.** There is no argument: the caller does not
+/// name a commit, a file or an algorithm, because every one of those would be a
+/// question about something other than the boot that actually happened. What comes
+/// back is what the loader verified and the nucleus re-verified before the first
+/// process ran, and nothing this operation does can change it.
+const BOOT_IDENTITY_READ: u64 = 32;
+
 /// The one call flag this contract version has.
 ///
 /// Blocking is the default because it is what `IPC_V1` describes — §4's
@@ -1183,8 +1197,51 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
         }
         DMA_DEVICE_ADDRESS => dma_device_address(caller, arguments.first(), arguments.second()),
 
+        // The boot's own identity (ADR-0102). The only operation of this ABI whose
+        // answer was fixed before any process existed.
+        BOOT_IDENTITY_READ => boot_identity_read(caller, arguments.first()),
+
         _ => Answer::status(E_NOT_SUPPORTED),
     }
+}
+
+/// Operation 32: the boot's verified source identity.
+///
+/// **Everything it answers with was established before this process ran.** The
+/// launch template holds the handoff record the Boot ABI validated and the
+/// boot-canonical digest the capsule parser checked against the file's own bytes
+/// (ADR-0102 §4f); this reads them and copies them out. The nucleus computes no
+/// hash here and parses nothing — it is a read of a fact, and making it anything
+/// more would make a reporting surface into a deciding one.
+fn boot_identity_read(caller: usize, handle: u64) -> Answer {
+    match capability::resolve(caller, handle, tos_launch::RIGHT_READ) {
+        Err(refused) => return refused.into(),
+        Ok(capability::Object::BootIdentity) => {}
+        // The handle resolved to an object of another kind, which is the wrong
+        // authority rather than no handle at all.
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    }
+    let Some(template) = crate::launch::template() else {
+        // No template means no boot was established, which cannot be true of a
+        // running process; it is a defect rather than an answer.
+        crate::memory::note_divergence(b"boot-identity-no-template");
+        return Answer::status(E_BAD_ARGUMENT);
+    };
+    let header = template.bi;
+    let record = tos_launch::BootIdentityRecord {
+        source_kind: u64::from(header.capsule_identity_kind),
+        oid_algorithm: u64::from(header.capsule_oid_alg),
+        oid_length: u64::from(header.capsule_oid_length),
+        oid: tos_launch::identity_chunks(&header.capsule_source_identity),
+        boot_content_sha256: tos_launch::identity_chunks(template.boot_content_digest()),
+    };
+    // SAFETY: a fixed offset of this process's own argument region, which the
+    // launcher mapped a whole frame at, and the record fits inside it by the
+    // `const` assertion in `tos-launch`.
+    if !crate::process::write_argument_record(caller, tos_launch::BOOT_IDENTITY_RECORD, &record) {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    Answer::status(OK)
 }
 
 /// Operation 24: one function out of a bus capability's scope.
@@ -2798,7 +2855,12 @@ fn resolve_transfers(
         // mapping in the receiver for both — and neither is expressible as a
         // delegated capability. Refused rather than quietly accepted into the
         // generic bound, which would let one message spend the other's.
-        if !object.is_delegable() {
+        //
+        // **And the boot identity, which is delegable but does not travel here**
+        // (ADR-0102 §3e): it reaches a process by endowment and by nothing else,
+        // so the predicate asked is about the message path and not about copying
+        // in general.
+        if !object.travels_in_a_message() {
             return Err(Answer::status(E_NO_CAPABILITY));
         }
         *entry = (object, capability::rights_of(caller, handle), 0);

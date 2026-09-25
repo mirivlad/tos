@@ -113,10 +113,14 @@ done < <(sed -n 's/^ *path: "\([a-z.A-Z]*\)",$/\1/p' "$TABLE")
 # that agreed on which fields exist while disagreeing on their order would put
 # every value in the wrong field with nothing saying so.
 records_in_doc=$(sed -n '/^### `system\.process\.CreatedProcess`/,/^## 5\./p' "$DOC" |
-    sed -n 's/^| `\([a-z_]*\)` | `\([^`]*\)` |$/\1 \2/p')
+    sed -n 's/^| `\([a-z_][a-z0-9_]*\)` | `\([^`]*\)` |$/\1 \2/p')
+# The two lines are *tagged* rather than told apart by their shape. A field name
+# may contain digits (`oid_0`), and so may a type (`u64`), so no pattern over the
+# value alone can say which of the two a line is — a gate that guessed would pair
+# every name with the wrong type the first time a record named a field `oid_0`.
 records_in_table=$(sed -n '/^pub const RECORDS/,/^];$/p' "$TABLE" |
-    sed -n -e 's/^ *name: "\([a-z_]*\)",$/\1/p' -e 's/^ *ty: "\([^"]*\)",$/\1/p' |
-    awk '/^[a-z_]+$/ { name = $0; next } { print name, $0 }')
+    sed -n -e 's/^ *name: "\([a-z_][a-z0-9_]*\)",$/N \1/p' -e 's/^ *ty: "\([^"]*\)",$/T \1/p' |
+    awk '$1 == "N" { name = $2; next } { print name, substr($0, 3) }')
 [ -n "$records_in_doc" ] || fail "section 4.2 declares no record fields"
 [ "$records_in_doc" = "$records_in_table" ] || {
     echo "the document declares:" >&2
@@ -156,7 +160,8 @@ kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     -e 's/^ *path: "\([a-z.A-Z]*\)",$/\1/p' \
     -e 's/^ *object: ObjectKind::\([A-Za-z]*\),$/\1/p' |
     paste - - |
-    sed -e 's/Endpoint$/endpoint/' -e 's/Reply$/reply/' -e 's/Process$/process/' \
+    sed -e 's/BootIdentity$/boot identity/' \
+        -e 's/Endpoint$/endpoint/' -e 's/Reply$/reply/' -e 's/Process$/process/' \
         -e 's/DmaRegion$/dma region/' \
         -e 's/Region$/region/' -e 's/InterfacePublication$/interface publication/' \
         -e 's/MemoryAuthority$/memory authority/' \

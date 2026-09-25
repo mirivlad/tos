@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `e10f3424157be1447fe9d5e0075f82cc870f7e2905252f1f08e4982fe3cce8cf`\
+Source-manifest SHA-256: `88368b24c1e966d3dd330370ecb31d29ddbebfa75e3849b88656bad278ad3604`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2956,6 +2956,7 @@ are marked and are exactly those a process can only apply to itself.
 | 30 | `dma_region_allocate` | **two**: `rdi` = PCI function capability with `dma`, `rsi` = memory-authority capability with `spend` | allocates a contiguous run of `rdx` bytes, charges it to the authority, makes it reachable by the function that capability names, and returns a DMA region capability in `rdx` (ADR-0084 §4, §5). The window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime, exactly as 27 does, so the region is indexable from TOS Core. **Neither capability is sufficient alone**: a process holding only memory authority cannot make any memory reachable by any device, and one holding only a function cannot spend somebody else's memory to do it. `E_BAD_ARGUMENT` for a zero, overflowing or unrepresentable length and for a function with no PCI Express capability; `E_NO_CAPABILITY` for either handle naming the wrong kind of object or an assignment that has gone; `E_LIMIT` when the frame pool cannot answer a contiguous run, the charge exceeds the authority, no page-table reserve is left, or the capability table is full. Everything fallible happens before anything is spent (ADR-0084 §8) |
 
 | 31 | `dma_device_address` | DMA region capability at no particular right | returns in `rdx` the device-visible address of offset `rsi` inside the region `rdi` names (ADR-0084 §6b). **The caller presents a capability and an offset, never an address**, and the nucleus does the arithmetic against the region's own extent. `E_BAD_ARGUMENT` for an offset outside that extent — no address at all rather than a clamped one; `E_NO_CAPABILITY` for a handle that does not resolve to a live region. **No right is required beyond holding the region**: an address is not authority, so there is nothing to refine, and making one obtainable through one name of a region and not another would imply otherwise. What comes back is data a driver writes into its own device; no operation of any contract accepts one back |
+| 32 | `boot_identity_read` | boot-identity capability with `read` | writes the boot's verified source identity to `BOOT_IDENTITY_RECORD` in the caller's own argument region and answers `OK` (ADR-0102 §4). **There is no argument**: the caller does not name a commit, a file or an algorithm, because each would be a question about something other than the boot that actually happened. The record carries `source_kind`, `oid_algorithm`, `oid_length`, the raw identity value and the boot-canonical file's SHA-256, every one of them established and checked before the first process ran — the loader validated the capsule header, the nucleus re-verified the capsule digest, and the capsule parser checked the file digest against the file's own bytes. **The nucleus computes no hash here and parses nothing**: it reads a fact and copies it out, and an operation that did more would make a reporting surface into a deciding one. `E_NO_CAPABILITY` for a handle that is not a live boot identity or does not carry `read`; `E_BAD_ARGUMENT` for a caller with no argument region |
 
 
 **A mapping is a descendant of the assignment, not of the handle that made it**
@@ -3541,6 +3542,7 @@ because two imports of one interface are legal and a kind cannot tell them apart
 | `system.process.LaunchPlanBuilder` | launch plan builder | `AsInterface` |
 | `system.process.LaunchPlan` | launch plan | `AsInterface` |
 | `system.process.Control` | process | `AsInterface` |
+| `system.boot.Identity` | boot identity | `AsInterface` |
 
 The third column is version 2's addition and §4.3 is what it means. Every
 interface this document declares has the default, which is the version 1
@@ -4205,6 +4207,78 @@ is the true value, and a zero would be a claim its caller never made. A record
 carrying `status` and `has_status` side by side puts that rule in the reader's
 hands; `Option<u64>` puts it in the type, and the translation happens once, at
 the boundary, rather than in every supervisor that reads one.
+
+### `system.boot.IdentityRecord`
+
+| Field | Type |
+|---|---|
+| `source_kind` | `u64` |
+| `oid_algorithm` | `u64` |
+| `oid_length` | `u64` |
+| `oid_0` | `u64` |
+| `oid_1` | `u64` |
+| `oid_2` | `u64` |
+| `oid_3` | `u64` |
+| `boot_content_0` | `u64` |
+| `boot_content_1` | `u64` |
+| `boot_content_2` | `u64` |
+| `boot_content_3` | `u64` |
+
+**Eleven `u64` and no byte array, because §4.2 has none** (ADR-0102 §4c). The two
+32-byte values are carried as four chunks each, and the rule is normative: **chunk
+`i` holds bytes `[8i, 8i+8)` of the value in ascending address order, as a
+little-endian `u64`.** A new language representation invented so that one record
+could look tidy would be a language change bought for cosmetics.
+
+`source_kind` is 1 for a git commit and 2 for a detached source set;
+`oid_algorithm` is 0, 1 (SHA-1) or 2 (SHA-256); `oid_length` is 0, 20 or 32. **A
+SHA-1 object id occupies bytes `[0, 20)` and the rest are zero**, exactly as
+`CAPSULE_FORMAT_V1` §6 holds it, and `oid_length` is what says so — a reader that
+ignored it would be right for today's profile and wrong for the next one.
+
+**There is no pathname field and no system-commit field.** `/system/boot/init.tos`
+is normative in `CAPSULE_FORMAT_V1` §5 and `source/system/boot/init.tos` in
+ADR-0031 §2, so a field carrying either would be a second place for a fact that
+already has one. The system commit id is `PROCESS_IDENTITY_V1` §5's, and it stays
+absent until Stage 5.
+
+### `system.boot.Identity`
+
+One immutable object for the boot, minted only at the trusted boot boundary
+(ADR-0102 §3). It authorizes **a read of the verified boot source identity** and
+nothing mutable: holding it does not select a commit, modify any identity, read
+any capsule file, enumerate the capsule, launch anything, control a process,
+allocate memory or change boot policy. It is nevertheless authority — a process
+that holds it learns what the machine booted from and one that does not, does not.
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `boot_identity_read` | `system.boot.Identity` with `read` | *(none)* | `Result<system.boot.IdentityRecord, i64>` | 32 |
+| `capability_attenuate` | `system.boot.Identity` with `none` | `rights: u64` | `Result<system.boot.Identity, i64>` | 5 |
+| `capability_release` | `system.boot.Identity` with `none` | *(none)* | `i64` | 6 |
+| `endow_for_launch` | `system.boot.Identity` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+
+**Four rows and no fifth.** Operations 5, 6 and 22 are generic over a capability's
+object and already did this for every other kind; what is added here is the
+*naming*, which is what ADR-0100 exists to have taught — a capability the nucleus
+would accept is not usable from canonical text until a row names it.
+
+**And a message is not one of the four.** The rows that carry a capability —
+`endpoint_send_carrying`, `endpoint_call_carrying`, `endpoint_call_word_carrying` —
+are nominally typed for `system.ipc.Endpoint`, so canonical text cannot put an
+identity into a message, and the nucleus refuses one that reached that path anyway.
+The supported delegation is **bootstrap endowment or an explicit launch-plan
+endowment**, which is what this slice uses and all it claims. A generic
+arbitrary-capability transfer is a later decision with its own reasons.
+
+**Attenuation is intersection** (`CAPABILITY_V1` §4, ADR-0100): asking for more
+than a name holds yields what it held, and asking for a set that intersects to
+nothing is **refused** rather than producing a rightless handle. So there is no
+such thing as an identity capability that resolves and may not read.
+
+**The object outlives every name.** `capability_release` releases a name; the
+identity is the boot's, is immutable, and ends when the machine does. Nothing
+counts its names for that reason, exactly as nothing counts an endpoint's.
 
 ## 4.1 What a parameter may be
 

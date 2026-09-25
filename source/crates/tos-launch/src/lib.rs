@@ -141,6 +141,26 @@ pub const OBJECT_IRQ_SOURCE: u32 = 12;
 /// the address.
 pub const OBJECT_DMA_REGION: u32 = 13;
 
+/// The boot's own verified source identity (ADR-0102 §3).
+///
+/// **A singleton, and the only object kind with neither index nor generation.**
+/// Every other kind names one of many — an endpoint among endpoints, a region
+/// among regions — so a handle must say *which*, and a generation must say which
+/// incarnation. This one names the single immutable fact the boot established
+/// before the first process ran: there is nothing to disambiguate and nothing to
+/// invalidate while the machine is up. A variant carrying an index would invite a
+/// second one.
+///
+/// **Its scope is always zero.** `LaunchCapability.scope` is "the scope the rights
+/// apply to, where the object has one"; this object has none, and an endowment
+/// naming this kind with a non-zero scope is **refused** rather than having the
+/// field ignored — an ignored field is one that later means something nobody
+/// decided.
+///
+/// The number is part of the versioned launch/capability encoding (I-09) and is
+/// fixed by ADR-0102 rather than by whichever implementation came first.
+pub const OBJECT_BOOT_IDENTITY: u32 = 14;
+
 /// The one right a reply capability has: `endpoint_reply` (4) is the only
 /// operation that names one.
 pub const RIGHT_REPLY: u32 = 1 << 5;
@@ -607,6 +627,57 @@ pub const LAUNCH_ENDOW_BINDING: u64 = CREATE_FUNDED_RECORD + 16;
 /// record tells it where its grant is.
 pub const MMIO_MAP_RECORD: u64 = LAUNCH_ENDOW_BINDING + MAX_BINDING;
 
+/// Where `boot_identity_read` (32) leaves the boot's verified source identity
+/// (ADR-0102 §4d).
+///
+/// A record rather than registers, for the reason every other record here is one:
+/// eleven values do not fit a one-value result, and `SYSTEM_ABI_V1` §3's rule that
+/// the nucleus walks no pointer a caller supplied means the answer goes to a fixed
+/// offset of the caller's *own* argument region.
+pub const BOOT_IDENTITY_RECORD: u64 = MMIO_MAP_RECORD + 16;
+
+/// What operation 32 writes there (ADR-0102 §4b, §4c).
+///
+/// **Eleven `u64` and no byte array**, because `SYSTEM_INTERFACE_V1` §4.2 has no
+/// array field type and ADR-0102 declined to invent one for the sake of one record
+/// looking tidy. Each 32-byte value is four chunks, and chunk `i` holds bytes
+/// `[8i, 8i+8)` of the value in ascending address order as a little-endian `u64`.
+///
+/// A SHA-1 object id occupies bytes `[0, 20)` and the rest are zero, exactly as the
+/// capsule header field holds it; `oid_length` is what says so, and a reader that
+/// ignored it would be right for this profile and wrong for the next one.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BootIdentityRecord {
+    /// 1 = git commit, 2 = detached source set (`CAPSULE_FORMAT_V1` §6).
+    pub source_kind: u64,
+    /// 0 = none, 1 = SHA-1, 2 = SHA-256.
+    pub oid_algorithm: u64,
+    /// 0, 20 or 32.
+    pub oid_length: u64,
+    /// The raw identity value, as the capsule header holds it.
+    pub oid: [u64; 4],
+    /// SHA-256 of the boot-canonical file's content, validated by the capsule
+    /// parser and retained rather than recomputed (ADR-0102 §4f).
+    pub boot_content_sha256: [u64; 4],
+}
+
+/// Splits a 32-byte value into the four little-endian chunks the record carries.
+///
+/// One function rather than an open-coded loop at each end, so the producer and
+/// every consumer cannot disagree about which byte is where.
+pub fn identity_chunks(value: &[u8; 32]) -> [u64; 4] {
+    let mut out = [0u64; 4];
+    let mut at = 0;
+    while at < 4 {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&value[at * 8..at * 8 + 8]);
+        out[at] = u64::from_le_bytes(bytes);
+        at += 1;
+    }
+    out
+}
+
 /// What operation 27 writes there.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -784,7 +855,8 @@ const _: () = {
             <= LAUNCH_ENDOW_BINDING
     );
     assert!(LAUNCH_ENDOW_BINDING + MAX_BINDING <= MMIO_MAP_RECORD);
-    assert!(MMIO_MAP_RECORD + core::mem::size_of::<MmioMapRecord>() as u64 <= FRAME);
+    assert!(MMIO_MAP_RECORD + core::mem::size_of::<MmioMapRecord>() as u64 <= BOOT_IDENTITY_RECORD);
+    assert!(BOOT_IDENTITY_RECORD + core::mem::size_of::<BootIdentityRecord>() as u64 <= FRAME);
     // The creation argument areas are read by one call and must not run into
     // each other or into the results a creation writes back.
     assert!(CREATE_SELF_BINDING + MAX_BINDING <= CREATE_MODULE);

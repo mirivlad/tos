@@ -169,6 +169,17 @@ pub enum Object {
     /// answering a request for one with the other would be answering a request
     /// for a decision that has been made with one that has not.
     LaunchPlan { index: u32, generation: u32 },
+    /// The boot's own verified source identity (ADR-0102 §3).
+    ///
+    /// **The only variant with no index and no generation**, and the reason is the
+    /// object rather than the encoding: there is exactly one of these for the boot,
+    /// it is immutable, and it outlives every name. There is nothing to
+    /// disambiguate and nothing to invalidate, so a field that said *which* would
+    /// be a field with one possible value — and a second one could then exist.
+    ///
+    /// It authorizes a read of a fact and nothing else: it selects no commit,
+    /// mutates no identity, reads no capsule file and launches nothing.
+    BootIdentity,
 }
 
 impl Object {
@@ -188,6 +199,7 @@ impl Object {
             Object::MmioRegion { .. } => tos_launch::OBJECT_MMIO_REGION,
             Object::IrqSource { .. } => tos_launch::OBJECT_IRQ_SOURCE,
             Object::DmaRegion { .. } => tos_launch::OBJECT_DMA_REGION,
+            Object::BootIdentity => tos_launch::OBJECT_BOOT_IDENTITY,
         }
     }
 
@@ -240,6 +252,26 @@ impl Object {
     /// handle cannot cross a task boundary while a device is writing through it.
     pub fn is_delegable(&self) -> bool {
         !self.is_region() && !matches!(self, Object::DmaRegion { .. })
+    }
+
+    /// Whether a **message** may carry a name for this object.
+    ///
+    /// **A different question from [`Object::is_delegable`], and the boot identity
+    /// is what made it a different question.** Delegability asks whether a second
+    /// holder may be given a name by copying — which is what an endowment and a
+    /// launch plan's entry do. This asks whether one of the copying paths, the
+    /// generic transfer table of `IPC_V1` §3, is open to this kind. A region
+    /// answers no to both. The boot identity answers **yes to the first and no to
+    /// the second**: ADR-0102 §3e gives this slice exactly one delegation path,
+    /// bootstrap or launch-plan endowment, and adds no generic
+    /// arbitrary-capability IPC surface for a problem it does not have.
+    ///
+    /// Canonical text cannot reach the message path with one anyway — the carrying
+    /// rows are nominally typed for `system.ipc.Endpoint` — so this is where the
+    /// decision is enforced rather than left to a schema table, and a later
+    /// decision that wants message transfer changes this predicate on purpose.
+    pub fn travels_in_a_message(&self) -> bool {
+        self.is_delegable() && !matches!(self, Object::BootIdentity)
     }
 
     /// The plan this names, in either state.
@@ -463,7 +495,10 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
         | Object::Reply { .. }
         // A bus object is a table slot for the life of the boot, exactly as an
         // endpoint is: nothing destroys it, so nothing has to count its names.
-        | Object::PciBus(_) => Ok(()),
+        | Object::PciBus(_)
+        // And the boot's identity is one immutable fact for the life of the boot:
+        // nothing destroys it, so names of it are not counted either (ADR-0102 §3a).
+        | Object::BootIdentity => Ok(()),
         Object::MemoryAuthority { index, generation } => {
             // SAFETY: single-context nucleus; nothing else holds the tree.
             unsafe { crate::memory::authority() }
@@ -526,7 +561,13 @@ pub(crate) fn release_for_plan(object: Object) {
 /// Drops the reference a destroyed capability entry held.
 fn release_capability(object: Object) {
     match object {
-        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
+        Object::None
+        | Object::Endpoint(_)
+        | Object::Process { .. }
+        | Object::Reply { .. }
+        // Releasing a name for the boot identity releases a *name*: the object is
+        // the boot's and outlives every one of them (ADR-0102 §3a).
+        | Object::BootIdentity => {}
         // One capability naming a region goes, which is one of the three
         // ways a region can become unreachable (ADR-0075 §6).
         Object::Region { index, generation } | Object::SharedRegion { index, generation } => {
@@ -611,6 +652,9 @@ fn object_is_live(object: Object) -> bool {
         Object::None => false,
         // An endpoint is a table slot for the life of the boot.
         Object::Endpoint(_) => true,
+        // And so is the boot's identity, which is established before the first
+        // process and never ends while the machine is up.
+        Object::BootIdentity => true,
         Object::Process { slot, generation } => {
             crate::process::generation(slot as usize) == Some(generation)
         }
@@ -1037,10 +1081,17 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         // release of every reference its entries took.
         // And a DMA region for a third reason on top of both: it is affine by
         // ADR-0037, and its backing is mapped in exactly one address space.
+        // And the boot identity for a reason that is a decision rather than a
+        // property (ADR-0102 §3e). Like the region above it, the real refusal
+        // happens earlier — `travels_in_a_message` answers no and the send is
+        // refused with `E_NO_CAPABILITY` — and this arm is the backstop that stops
+        // a future path reaching here by mistake, rather than quietly counting
+        // nothing and letting the identity become one more delegated capability.
         Object::Region { .. }
         | Object::SharedRegion { .. }
         | Object::LaunchPlanBuilder { .. }
         | Object::LaunchPlan { .. }
+        | Object::BootIdentity
         | Object::DmaRegion { .. } => Err(NotGranted::NoRoom),
     }
 }
@@ -1058,7 +1109,8 @@ fn release_transit(object: Object) {
         | Object::MmioRegion { .. }
         | Object::IrqSource { .. } => release_capability(object),
         // As above: never taken, so never given back.
-        Object::Region { .. }
+        Object::BootIdentity
+        | Object::Region { .. }
         | Object::DmaRegion { .. }
         | Object::SharedRegion { .. }
         | Object::LaunchPlanBuilder { .. }
@@ -1282,6 +1334,20 @@ pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
         // hand it one.
         if object.plan().is_some() {
             return Err(NotGranted::ReceiverExists);
+        }
+        // **The boot identity has no scope, and an entry claiming one is refused**
+        // rather than having the field ignored (ADR-0102 §3a1). `scope` is "the
+        // scope the rights apply to, where the object has one"; this object has
+        // none, so the only admissible value is zero. An ignored field is a field
+        // that later means something nobody decided, and this is the one kind whose
+        // encoding says in advance that it never will.
+        if matches!(object, Object::BootIdentity) {
+            let Endowment::Existing { scope, .. } = *entry else {
+                continue;
+            };
+            if scope != 0 {
+                return Err(NotGranted::NoRoom);
+            }
         }
         if let Object::MemoryAuthority { index, generation } = object {
             let names = endowment

@@ -208,6 +208,13 @@ pub enum ObjectKind {
     /// builder would be answering a request for something that has been decided
     /// with something that has not.
     LaunchPlan,
+    /// The boot's own verified source identity (ADR-0102 §3).
+    ///
+    /// **A singleton with no index and no generation**, because there is exactly
+    /// one for the boot and it is immutable: nothing to disambiguate and nothing
+    /// to invalidate. Its launch scope is always zero, and an endowment naming it
+    /// with a non-zero scope is refused rather than having the field ignored.
+    BootIdentity,
     /// A PCI bus scope (`PLATFORM_INTERFACE_V1` §4).
     PciBus,
     /// One assignment of one PCI function (`PLATFORM_INTERFACE_V1` §4).
@@ -431,6 +438,66 @@ pub const RECORDS: &[Record] = &[
             },
             Field {
                 name: "ended_tick",
+                ty: "u64",
+            },
+        ],
+    },
+    // The boot's verified source identity (ADR-0102 §4b, §4c).
+    //
+    // **Eleven `u64` and no byte array**, because this schema has no array field
+    // type and ADR-0102 declined to invent one so that one record could look
+    // tidy. The two 32-byte values are four chunks each, and the rule is
+    // normative: chunk `i` holds bytes `[8i, 8i+8)` in ascending address order as
+    // a little-endian `u64`.
+    //
+    // **No pathname and no system commit.** Both spellings of the boot-canonical
+    // path are already normative elsewhere, and the system commit id is
+    // `PROCESS_IDENTITY_V1` §5's — absent until Stage 5.
+    Record {
+        path: "system.boot.IdentityRecord",
+        fields: &[
+            Field {
+                name: "source_kind",
+                ty: "u64",
+            },
+            Field {
+                name: "oid_algorithm",
+                ty: "u64",
+            },
+            Field {
+                name: "oid_length",
+                ty: "u64",
+            },
+            Field {
+                name: "oid_0",
+                ty: "u64",
+            },
+            Field {
+                name: "oid_1",
+                ty: "u64",
+            },
+            Field {
+                name: "oid_2",
+                ty: "u64",
+            },
+            Field {
+                name: "oid_3",
+                ty: "u64",
+            },
+            Field {
+                name: "boot_content_0",
+                ty: "u64",
+            },
+            Field {
+                name: "boot_content_1",
+                ty: "u64",
+            },
+            Field {
+                name: "boot_content_2",
+                ty: "u64",
+            },
+            Field {
+                name: "boot_content_3",
                 ty: "u64",
             },
         ],
@@ -1218,6 +1285,58 @@ pub const ACCEPTED: &[Interface] = &[
                 name: "capability_release",
                 capabilities: &[Requirement::held("platform.dma.Region")],
                 parameters: &[],
+                result: "i64",
+            },
+        ],
+    },
+    // The boot's own verified source identity (ADR-0102 §3, §4).
+    //
+    // **It authorizes a read and nothing mutable.** Holding it does not select a
+    // commit, modify an identity, read a capsule file, enumerate the capsule,
+    // launch anything, control a process, allocate memory or change boot policy.
+    // It is still authority: a process that holds it learns what the machine
+    // booted from, and one that does not, does not.
+    //
+    // **Four rows, and a message is not one of them.** The carrying rows are
+    // nominally typed for `system.ipc.Endpoint`, so canonical text cannot put one
+    // into a message; the supported delegation is bootstrap or launch-plan
+    // endowment. Operations 5, 6 and 22 are generic and already worked for every
+    // other kind — what is added here is the naming, which is exactly what
+    // ADR-0100 exists to have taught.
+    Interface {
+        path: "system.boot.Identity",
+        object: ObjectKind::BootIdentity,
+        representation: Representation::AsInterface,
+        operations: &[
+            // The one question, and it takes no argument: a caller that could
+            // name a commit, a file or an algorithm would be asking about
+            // something other than the boot that actually happened.
+            Operation {
+                name: "boot_identity_read",
+                capabilities: &[Requirement::of("system.boot.Identity", "read")],
+                parameters: &[],
+                result: "Result<system.boot.IdentityRecord, i64>",
+            },
+            Operation {
+                name: "capability_attenuate",
+                capabilities: &[Requirement::held("system.boot.Identity")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<system.boot.Identity, i64>",
+            },
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("system.boot.Identity")],
+                parameters: &[],
+                result: "i64",
+            },
+            Operation {
+                name: "endow_for_launch",
+                capabilities: &[Requirement::held("system.boot.Identity")],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlanBuilder"),
+                    Parameter::fixed("u64"),
+                    Parameter::bounded("string", 64),
+                ],
                 result: "i64",
             },
         ],

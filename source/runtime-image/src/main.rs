@@ -106,6 +106,8 @@ const DMA_REGION_ALLOCATE: u64 = 30;
 /// (ADR-0084 §6b). The caller presents a capability and an offset, never an
 /// address; the nucleus does the arithmetic against the region's own extent.
 const DMA_DEVICE_ADDRESS: u64 = 31;
+/// The boot's verified source identity, read (ADR-0102 §4).
+const BOOT_IDENTITY_READ: u64 = 32;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -1255,6 +1257,15 @@ enum Produced {
     /// type, and the translation happens here, once, rather than in every
     /// supervisor that reads one.
     ChildEnding,
+    /// `Result<system.boot.IdentityRecord, i64>`: the record operation 32 wrote
+    /// at `BOOT_IDENTITY_RECORD`, as the value it describes (ADR-0102 §4).
+    ///
+    /// **Eleven `u64` and no reinterpretation.** The two 32-byte values arrive as
+    /// four little-endian chunks each and are passed on as they are: this edge
+    /// does not decide what the bytes mean, any more than `Answer` decides what a
+    /// reply word means. Reassembling them is the module's business, under the
+    /// rule the contract states.
+    BootIdentity,
 }
 
 /// Where one of an operation's capabilities goes.
@@ -1399,6 +1410,57 @@ const PERFORMED: &[Performed] = &[
             Slot::Fixed(Reg::R10, 1),
         ],
         result: Produced::Answer,
+    },
+    // The boot's own verified source identity (ADR-0102 §4). One capability in
+    // `rdi`, no values at all, and a record at a fixed offset of this process's
+    // own argument region — the shape operations 14, 17, 27 and 30 already use.
+    //
+    // **The only row of this schema whose answer was fixed before any process
+    // existed.** It reports and never selects: there is no argument by which a
+    // caller could name a commit, a file or an algorithm, because each would be a
+    // question about something other than the boot that happened.
+    Performed {
+        interface: "system.boot.Identity",
+        name: "boot_identity_read",
+        operation: BOOT_IDENTITY_READ,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::BootIdentity,
+    },
+    // And the three generic rows, which add no mechanism: 5, 6 and 22 already did
+    // this for every other object kind. What they add here is the naming, without
+    // which canonical text could not reach them at all (ADR-0100, ADR-0102 §3e).
+    Performed {
+        interface: "system.boot.Identity",
+        name: "capability_attenuate",
+        operation: CAPABILITY_ATTENUATE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "system.boot.Identity",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.boot.Identity",
+        name: "endow_for_launch",
+        operation: LAUNCH_PLAN_ENDOW,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[
+            Slot::Held(Reg::Rsi),
+            Slot::Number(Reg::R10),
+            Slot::Text {
+                length: Reg::Rdx,
+                at: tos_launch::LAUNCH_ENDOW_BINDING,
+                maximum: tos_launch::MAX_BINDING as usize,
+            },
+        ],
+        result: Produced::Status,
     },
     // A send that moves one immutable ordinary region through the message's
     // **region** area. `Placed::Region(0)` writes `MESSAGE_REGIONS[0]` and the
@@ -2352,6 +2414,10 @@ impl System for Endowment<'_> {
                 // omitting it keeps "which object does this interface name" a
                 // total function, which is what the object-kind check is.
                 interfaces::ObjectKind::DmaRegion => tos_launch::OBJECT_DMA_REGION,
+                // Importable, unlike the one above it: a module asks for the boot
+                // identity by an ordinary `import capability`, and the launcher
+                // answers with an endowment or refuses (ADR-0102 §3d).
+                interfaces::ObjectKind::BootIdentity => tos_launch::OBJECT_BOOT_IDENTITY,
             })?;
         let capability = answer?;
         self.report.line(&alloc::format!(
@@ -2900,6 +2966,28 @@ impl System for Endowment<'_> {
                     Value::Int(IntKind::U64, u128::from(value) as i128),
                     Value::Int(IntKind::U64, u128::from(word) as i128),
                 ])
+            }
+            Produced::BootIdentity => {
+                // SAFETY: as above, for the record operation 32 writes at its own
+                // fixed offset of the same region.
+                let record = unsafe {
+                    core::ptr::with_exposed_provenance::<tos_launch::BootIdentityRecord>(
+                        (self.arguments + tos_launch::BOOT_IDENTITY_RECORD) as usize,
+                    )
+                    .read_unaligned()
+                };
+                // Eleven fields in the order `SYSTEM_INTERFACE_V1` §4.2 declares
+                // them, because a record's field positions are how its parts are
+                // matched to their names.
+                let mut fields = alloc::vec![
+                    Value::Int(IntKind::U64, u128::from(record.source_kind) as i128),
+                    Value::Int(IntKind::U64, u128::from(record.oid_algorithm) as i128),
+                    Value::Int(IntKind::U64, u128::from(record.oid_length) as i128),
+                ];
+                for chunk in record.oid.iter().chain(record.boot_content_sha256.iter()) {
+                    fields.push(Value::Int(IntKind::U64, u128::from(*chunk) as i128));
+                }
+                Value::Aggregate(fields)
             }
             Produced::ChildEnding => {
                 // SAFETY: as above, for the record operation 14 writes at its
