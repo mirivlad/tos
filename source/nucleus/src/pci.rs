@@ -553,7 +553,8 @@ unsafe fn table() -> &'static mut [Assignment; MAX_ASSIGNMENTS] {
     feature = "test-block-service",
     feature = "test-block-lifecycle",
     feature = "test-block-protocol",
-    feature = "test-state-store"
+    feature = "test-state-store",
+    feature = "test-repository-linkage"
 ))]
 pub const STAGE4_TARGET: (u16, u8, u8, u8) = (0, 1, 0, 0);
 

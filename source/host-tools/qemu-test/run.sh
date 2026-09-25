@@ -23,6 +23,7 @@
 #                                    [--require "EV ..."] [--forbid "EV ..."]
 #                                    [--timeout SECONDS] [--event-timestamps FILE] [--accel tcg|kvm]
 #                                    [--stage4-block-device]
+#                                    [--stage4-block-overlay SECTOR:FILE]
 #                                    [--stage4-block-sectors N]
 #                                    [--await-line REGEX --then-qmp JSON ...]
 #                                    [--interactive --display gtk|sdl] [--no-framebuffer]
@@ -79,6 +80,7 @@ STAGE4_BLOCK=0
 # other caller gets the 16 MiB image with its seeded sectors, byte for byte as
 # before. The Stage 4 profile itself is unchanged (ADR-0084 revision 5).
 STAGE4_BLOCK_SECTORS=""
+STAGE4_BLOCK_OVERLAY=()
 # A *legacy*-transport VirtIO block device, for the negative that shows the
 # textual parser reports absence rather than inventing defaults. It is not part
 # of the Stage 4 reference profile: ADR-0079 §7 fixes that as modern transport.
@@ -111,6 +113,7 @@ while [ $# -gt 0 ]; do
         --no-framebuffer) NO_FRAMEBUFFER=1; shift ;;
         --stage4-block-device) STAGE4_BLOCK=1; shift ;;
         --stage4-block-sectors) STAGE4_BLOCK_SECTORS="$2"; shift 2 ;;
+        --stage4-block-overlay) STAGE4_BLOCK_OVERLAY+=("$2"); shift 2 ;;
         --stage4-block-device-legacy) STAGE4_BLOCK=1; STAGE4_BLOCK_LEGACY=1; shift ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
@@ -359,6 +362,19 @@ if [ "$STAGE4_BLOCK" -eq 1 ]; then
         stage4_sector=$((stage4_sector + 1))
     done
     fi
+    # **Content the reference profile does not decide, placed where a gate says.**
+    # The seeded sectors above are the profile's contract with every Stage-4
+    # fixture; an extent a gate provisions is that gate's, and it is written on
+    # top at a stated sector rather than by a second image builder. The offset is
+    # the caller's because the layout it belongs to is an accepted contract
+    # (ADR-0102 §6a), not something this harness gets to know.
+    for stage4_overlay in ${STAGE4_BLOCK_OVERLAY+"${STAGE4_BLOCK_OVERLAY[@]}"}; do
+        overlay_sector=${stage4_overlay%%:*}
+        overlay_file=${stage4_overlay#*:}
+        [ -f "$overlay_file" ] || { echo "no such overlay: $overlay_file" >&2; exit 2; }
+        dd if="$overlay_file" of="$STAGE4_IMAGE" bs=512 seek="$overlay_sector" \
+            conv=notrunc status=none
+    done
     QEMU_ARGS+=(
         -drive "if=none,id=stage4blk,format=raw,file=$STAGE4_IMAGE"
     )

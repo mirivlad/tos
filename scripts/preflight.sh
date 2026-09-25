@@ -564,6 +564,9 @@ qemu_carried_call_answer() {
 qemu_state_store() {
     bash "$ROOT/source/host-tools/qemu-test/state-store.sh"
 }
+qemu_repository_linkage() {
+    bash "$ROOT/source/host-tools/qemu-test/repository-linkage.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -803,6 +806,7 @@ gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_bloc
 gate qemu       full-only "QEMU a send-only name for an endpoint"    qemu_endpoint_attenuation
 gate qemu       full-only "QEMU a carried call reads its reply"       qemu_carried_call_answer
 gate qemu       full-only "QEMU a persistent object store"             qemu_state_store
+gate qemu       full-only "QEMU capsule-to-repository linkage"         qemu_repository_linkage
 gate qemu       full-only "QEMU a device answer reaches a bare client"  qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch

@@ -1,0 +1,332 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The supervisor of the capsule-to-repository boot: two plans, three children,
+// two endpoints, one bus and one immutable boot fact.
+//
+// ADR-0102 §11. The order is the claim:
+//
+//   block service            created first, ends last: everything above it
+//                            reaches the device only by asking
+//   repository reader A      reads the extent from sector 65 up, verifies every
+//                            object against the id it was located by, and proves
+//                            the boot text is the commit's `init.tos`
+//   A ends and is collected
+//   repository reader B      the same canonical module from the same sealed
+//                            plan, re-reading the same device, reaching the same
+//                            witness (§11d)
+//
+// **This module is the boot-canonical text, and that is the point.** What the
+// reader proves is that `SHA-256` of the repository's
+// `source/system/boot/init.tos` at the commit the capsule names is the digest
+// the nucleus computed over the file it booted — which is *this* file. A fixture
+// whose launcher was not the landing blob could prove the refusal and never the
+// positive.
+//
+// **The reader holds no part of the machine.** Its plan carries a budget,
+// `send | call` on the block service, an inbox of its own and the boot identity
+// with `read`: four endowments, which is `MAX_ENDOWMENT`. No PCI bus, no
+// function, no window, no interrupt source, no DMA region — asserted from the
+// journal's capability records rather than from this text.
+//
+// **The boot identity is endowed and never sent.** ADR-0102 §3e makes launch-plan
+// endowment the only delegation path it claims; the carrying rows of
+// `SYSTEM_INTERFACE_V1` are nominally typed for `system.ipc.Endpoint`, so there
+// is no source form that could put one in a message.
+//
+// **Two processes at the peak plus this one**, which is under `MAX_PROCESSES`:
+// each reader is collected before the next is created, and the block service is
+// live throughout because every repository read goes through it.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability platform.pci.Bus as device;
+import capability system.ipc.Endpoint as block_serve_full;
+import capability system.ipc.Endpoint as reader_inbox_full;
+import capability system.boot.Identity as boot_identity_full;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 16
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn endow_for_launch(
+    held: platform.pci.Bus,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [device];
+
+extern fn endow_for_launch(
+    held: system.boot.Identity,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [boot_identity_full];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn process_wait_child(
+    cap: system.process.Control, flags: u64
+) -> Result<system.process.ChildEnding, i64> uses [process];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_CALL: u64 = 4u64;
+const RIGHT_READ: u64 = 256u64;
+const RIGHT_CLAIM: u64 = 2048u64;
+const RIGHT_SPEND: u64 = 128u64;
+const BLOCKING: u64 = 0u64;
+const E_CANCELLED: i64 = -5i64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+// The block service maps a device window and a DMA region; nothing else here
+// does. The reader's grant is larger than a state-store client's because it
+// holds the whole of an object at the bound ADR-0102 §8 declares.
+const SERVICE_GRANT: u64 = 25165824u64;
+const READER_GRANT: u64 = 16777216u64;
+
+const ENDING_EXITED: u64 = 1u64;
+const EXIT_COMPLETED: u64 = 0u64;
+
+const CREATED_BLOCK: i64 = 1i64;
+const CREATED_READER_A: i64 = 2i64;
+const FIRST_COLLECTED: i64 = 4i64;
+const CREATED_READER_B: i64 = 8i64;
+const REST_COLLECTED: i64 = 16i64;
+
+// The block service: the request endpoint it receives on, and the bus it claims.
+fn block_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, device, block_serve_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-2001i64);
+            }
+            if (endow_for_launch(block_serve_full, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2002i64);
+            }
+            if (endow_for_launch(device, builder, RIGHT_CLAIM, "device") != OK) {
+                return Err(-2003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2100i64); }
+    }
+}
+
+// The repository reader, both generations: four endowments, which is
+// `MAX_ENDOWMENT`.
+//
+// **`send | receive` on its own inbox**, because a `READ` of the layer below is
+// answered with a region on a channel this reader delegates — so it needs
+// `receive` to take the region and `send` to have something to attenuate. One
+// name carrying both, and the alias is made and released per request.
+//
+// **`read` and nothing else on the boot identity.** ADR-0102 §3 gives the object
+// one right; an attenuation asking for more still yields `read`, because
+// attenuation is intersection.
+fn reader_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, block_serve_full, reader_inbox_full, boot_identity_full,
+          system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-3001i64);
+            }
+            if (endow_for_launch(block_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
+                return Err(-3002i64);
+            }
+            if (endow_for_launch(reader_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-3003i64);
+            }
+            if (endow_for_launch(boot_identity_full, builder, RIGHT_READ, "identity") != OK) {
+                return Err(-3004i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 3100i64); }
+    }
+}
+
+// Creates one child and lets go of the handle. The handle is not kept: this
+// process waits on its own child relation rather than on a name for any one
+// child (ADR-0067).
+fn start(plan: system.process.LaunchPlan, entry: string, grant: u64) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(process, memory, plan, entry, grant, NO_SELF_RIGHTS)) {
+        Ok(child) => {
+            if (capability_release(child.control) != OK) { return -9001i64; }
+            return OK;
+        }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+// Collects one ending, and requires it to be a clean one.
+//
+// A faulted, terminated or deadlocked child carries no status at all, and a
+// supervisor that read an absent status as a number would turn a trap into an
+// account. What each reader's account *was* is in the journal, where the gate
+// reads it — a refusal is a positive number here and a clean exit either way.
+fn collect() -> i64
+    uses [process]
+{
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(ending) => {
+            if (ending.ending_kind != ENDING_EXITED) { return -8001i64; }
+            match (ending.self_reported_status) {
+                Some(status) => {
+                    if (status != EXIT_COMPLETED) { return -8002i64; }
+                    return OK;
+                }
+                None => { return -8003i64; }
+            }
+        }
+        Err(uncollected) => { return uncollected - 8100i64; }
+    }
+}
+
+// The last collection, which may be cancelled once and then succeed.
+//
+// **Both waits are ended in the same census, and that is correct.** When the only
+// things left are this supervisor waiting on its child relation and the block
+// service waiting for a message, nothing can satisfy either — so `SYSTEM_ABI_V1`
+// §6's liveness rule ends both. The block service reads its cancellation for what
+// it is and exits; this wait is then one there *is* an answer for, so it is made
+// again. Exactly once: a second cancellation would mean the child had not ended
+// after all, which is a different fact and is reported rather than waited out.
+fn collect_after_the_census() -> i64
+    uses [process]
+{
+    match (process_wait_child(process, BLOCKING)) {
+        Ok(ending) => {
+            if (ending.ending_kind != ENDING_EXITED) { return -8001i64; }
+            match (ending.self_reported_status) {
+                Some(status) => {
+                    if (status != EXIT_COMPLETED) { return -8002i64; }
+                    return OK;
+                }
+                None => { return -8003i64; }
+            }
+        }
+        Err(uncollected) => {
+            if (uncollected != E_CANCELLED) { return uncollected - 8100i64; }
+            return collect();
+        }
+    }
+}
+
+pub fn main() -> i64
+    uses [process, memory, device, block_serve_full, reader_inbox_full,
+          boot_identity_full, system.ipc.Endpoint]
+{
+    match (block_plan()) {
+        Ok(block) => {
+            match (reader_plan()) {
+                Ok(reader) => { return run(block, reader); }
+                Err(unplanned) => { return unplanned; }
+            }
+        }
+        Err(unplanned) => { return unplanned; }
+    }
+}
+
+// The boot, once both plans are sealed.
+//
+// **Sealed first and released second.** A plan takes what it asks for
+// intersected with what the creator holds, so every endowment is drawn before
+// any name is let go; and every name carrying `receive` is let go before the
+// child that receives on it exists.
+fn run(
+    block: system.process.LaunchPlan,
+    reader: system.process.LaunchPlan
+) -> i64
+    uses [process, memory, block_serve_full, reader_inbox_full, system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    if (capability_release(block_serve_full) != OK) { return -6001i64; }
+    if (capability_release(reader_inbox_full) != OK) { return -6002i64; }
+
+    if (start(block, "system/service/block.tos", SERVICE_GRANT) != OK) { return -6101i64; }
+    found = found + CREATED_BLOCK;
+
+    if (start(reader, "system/repository/reader.tos", READER_GRANT) != OK) {
+        return -6102i64;
+    }
+    found = found + CREATED_READER_A;
+    let first: i64 = collect();
+    if (first != OK) { return first - 6201i64; }
+    found = found + FIRST_COLLECTED;
+
+    // **The same plan, the same entry, the same device.** Nothing crossed from
+    // A: its address space and its capabilities are gone, and what B reads is
+    // what is on the disk. Cross-*reboot* persistence is a different claim and
+    // this boot does not make it — the harness re-creates the image for every
+    // run (§11d).
+    if (start(reader, "system/repository/reader.tos", READER_GRANT) != OK) {
+        return -6103i64;
+    }
+    found = found + CREATED_READER_B;
+
+    let second: i64 = collect();
+    if (second != OK) { return second - 6202i64; }
+    let third: i64 = collect_after_the_census();
+    if (third != OK) { return third - 6203i64; }
+    found = found + REST_COLLECTED;
+
+    return found;
+}
