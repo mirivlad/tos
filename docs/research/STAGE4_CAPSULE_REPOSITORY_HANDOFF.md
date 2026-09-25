@@ -6,13 +6,36 @@
   explanatory material, incorporated by no ADR. Nothing here is accepted, and
   nothing here is implemented.
 - Date: 2026-09-25, **extended 2026-09-25** after Project Architect review of the
-  first revision (commit `681ad45`). §17–§20 are the extension; §8 and §15 carry
-  the corrections it forced, marked where they apply
+  first revision (commit `681ad45`); **five conclusions superseded 2026-09-26** by
+  the draft of **ADR-0102**, which is where the decisions now live. §0b lists what
+  was superseded and by what. §17–§20 are the extension; §8 and §15 carry the
+  corrections the extension forced, marked where they apply
+- **This note is a record of the boundary, not a guide to the design.** Where it and
+  ADR-0102 disagree, ADR-0102 is the proposal and this note is history — and
+  ADR-0102 is **proposed, not accepted**, so neither is architecture yet
 - Audience: the Project Architect, before any repository implementation is begun
   and before the decision surface in §15 is ruled on.
 - Scope: the last `docs/16` Stage 4 deliverable before the performance report.
   `docs/08_GIT_NATIVE_SYSTEM.md` already exists and is not restated here; this
   note is about **where Stage 4 stops**.
+
+## 0b. What ADR-0102 supersedes, and what replaces it
+
+Five conclusions of this note were carried into the drafting round and **five were
+corrected there**. They are listed here so a reader of the note meets the correction
+before the claim, and every replacement is **proposed by ADR-0102 and not accepted**.
+
+| This note said | ADR-0102 proposes instead |
+|---|---|
+| §18b **C**: the landing point should be the **caller's own** module identity, exposed as a path and a content digest | The landing point is `/system/boot/init.tos`, which `CAPSULE_FORMAT_V1` §5 already fixes as the **one** boot-canonical file, and which `docs/04` already names as the component that discovers and verifies repository storage. **No caller-module identity is exposed**, and no capsule catalog, capsule-file lookup or source-set enumeration either. The note's version was unnecessarily general and would have become unstable the moment a second canonical module existed (ADR-0102 §2d, §4b) |
+| §20 **D1 amended**: a ruling was needed on whether the claim is per-module or over the source set, *"because at Stage 4 the source set is one module, so they coincide"* | That coincidence is **not an acceptable basis for a claim**. ADR-0102 §2a states the claim over the **boot-canonical** source specifically — a claim that is true because a contract fixes it, not because a fixture is currently small (ADR-0102 §2d) |
+| §19c: `launch::Template` must gain `oid_algorithm` and `oid_length`, because the nucleus drops them at `source_set_identity()` | **`Template` already retains `pub bi: &'static BootInfo`**, which already carries all four validated identity fields. Adding them again would be a second copy of a fact already there. `Template` gains **one** field — the boot-canonical file's already-validated 32-byte SHA-256, retained rather than recomputed, so the nucleus does no cryptographic work (ADR-0102 §4f) |
+| §19a and §20 D5: the identity capability **"authorizes nothing"** | It authorizes exactly **READ of the immutable verified boot source identity**, and nothing mutable. It is authority, and it is a **new boot-root capability minted at the trusted boot boundary**. Calling it harmless is the kind of description that makes a boundary stop being examined (ADR-0102 §3c) |
+| §20 D5: *"Level 2, not 3"*, with a note that Level 3 would be the safe reading | ADR-0102 covers D1–D5 **together** and introduces a persistent repository extent, so the combined decision is **Level 3**. Whether D5 in isolation might have been Level 2 is not a question worth spending time on (ADR-0102 header, §15) |
+
+**§17 stands unchanged**, and is the reason ADR-0102 exists: no accepted operation
+lets canonical text read the boot's source identity, and every substitute carrying a
+constant would prove the answer it was compiled with.
 
 ## 0. What this is, and the one question it answers
 
@@ -1068,7 +1091,8 @@ traverses to the path, hashes the blob payload with SHA-256 and compares.
   allocate, with lifetime and mutability questions `SYSTEM_INTERFACE_V1` §`Region`
   does not currently answer for anything but an allocation. Probably unnecessary.
 
-**C — expose only the running module's own path and content digest.** *(recommended)*
+**C — expose only the running module's own path and content digest.**
+*(recommended here; **superseded** — see §0b and ADR-0102 §2d)*
 
 ```text
 ModuleSourceIdentity {
@@ -1096,6 +1120,12 @@ repository path → hashes the blob payload → compares with **its own** digest
   (`source/system/boot/init.tos`; §2.1), so the distinction is currently empty — but
   it will not stay empty, and the note says so rather than letting the fixture's
   size pass for a general claim.
+
+> **Superseded (§0b).** Leaning on that coincidence was the error. ADR-0102 §2d takes
+> the landing point from `CAPSULE_FORMAT_V1` §5 instead, where exactly one file may be
+> boot-canonical and it is `/system/boot/init.tos` — so the claim is fixed by contract
+> and does not become general-looking by accident, and no caller-module identity is
+> exposed at all.
 
 **Recommendation: A1 (§18a) + C.** One immutable boot record and one module
 identity. Do not expose the capsule catalog if one record about the caller is
@@ -1135,9 +1165,16 @@ type — `system.boot.Identity`, or whatever the decision names it — endowed b
 launcher like every other capability, carrying no authority over anything, with two
 read-only operations and no others.
 
-**B is the only honest shape.** It is also the smaller one: a capability that
-authorizes nothing cannot be misused for anything, and a module that does not need
-identity is not given one, which is `ADR-0055`'s rule working normally.
+> **Corrected (§0b).** *"Carrying no authority over anything"* is wrong. It authorizes
+> READ of the verified boot source identity and nothing mutable — which is authority,
+> and it is minted at the trusted boot boundary. ADR-0102 §3c states what it does and
+> does not permit, item by item. ADR-0102 also settles on **one** operation, not two
+> (§4a).
+
+**B is the only honest shape.** A module that does not need identity is not given
+one, which is `ADR-0055`'s rule working normally — and a capability whose only
+operation is a read of an immutable fact is the smallest authority that can answer the
+question at all.
 
 ### 19b. It cannot avoid a `SYSTEM_ABI_V1` operation either, and this is the correction
 
@@ -1174,6 +1211,10 @@ never an argument about identity, and keeping it there by inventing an exception
   `main` and dropped at `source_set_identity()` (§17b). Retaining them is additive.
   The raw 32-byte value is already retained inside the flattened string and would be
   better kept as bytes.
+  > **Wrong, and superseded (§0b).** `Template` already holds
+  > `pub bi: &'static BootInfo`, which already carries all four validated fields. What
+  > it actually needs is **one** new field — the boot-canonical SHA-256, retained from
+  > the parse rather than recomputed (ADR-0102 §4f).
 - **The answer shape already exists.** `SYSTEM_ABI_V1` already has *"the nucleus
   writes a record at a fixed offset of the caller's own argument region"* —
   `WAIT_CHILD_RECORD`, `CREATE_INSTANCE_ID`, `MMIO_MAP_RECORD`,
@@ -1214,13 +1255,16 @@ What the decision fixes:
    over it (§19b);
 6. the two additive `Template` fields (§19c).
 
-**Level 2, not 3**, on `docs/21`'s test: it extends a versioned contract surface —
-a capability type, a schema row, an ABI operation — and it moves no trust boundary,
-changes no persistent format, introduces no runtime dependency, changes no source
-identity and touches no owner control. It makes an already-verified fact readable;
-it does not create a fact. If the Project Architect reads *"a new capability kind
-and a new ABI operation"* as moving the trusted base, Level 3 is the safe reading
-and this note does not argue against it.
+> **Superseded (§0b).** D5 is not drafted separately. **ADR-0102 covers D1–D5
+> together and is Level 3**, because it introduces a persistent repository extent —
+> `docs/21`'s explicit test. The paragraph below argued for Level 2 in isolation and is
+> kept only as the record of what was considered.
+
+*Historical:* Level 2, not 3, on `docs/21`'s test: it extends a versioned contract
+surface — a capability type, a schema row, an ABI operation — and it moves no trust
+boundary, changes no persistent format, introduces no runtime dependency, changes no
+source identity and touches no owner control. It makes an already-verified fact
+readable; it does not create a fact.
 
 **It is also independently useful**, and that is worth saying rather than hiding:
 `PROCESS_IDENTITY_V1` §5 has the system commit id becoming present at Stage 5, and
@@ -1228,12 +1272,17 @@ a process that can read its own boot identity is the mechanism that will carry i
 But **this note proposes it only for what Stage 4 needs** — the field stays absent,
 and D5 must not be written so that Stage 5's change becomes automatic.
 
-### D1 — amended
+### D1 — amended, then superseded
 
-D1's ruling now also has to say whether the Stage-4 linkage claim is **per-module**
-(§18b C) or **over the source set**. At Stage 4 the canonical source set is one
-module, so the two coincide today; they will not later, and a claim written as if
-they always coincide would be a claim that stops being true without anyone editing
+> **Superseded (§0b).** ADR-0102 §2a answers D1 without needing this ruling: the claim
+> is over the **boot-canonical** source, which `CAPSULE_FORMAT_V1` §5 fixes to exactly
+> one file. Resting anything on "they coincide today" was the error the paragraph below
+> was trying to warn about and then committed.
+
+*Historical:* D1's ruling now also has to say whether the Stage-4 linkage claim is
+**per-module** (§18b C) or **over the source set**. At Stage 4 the canonical source set
+is one module, so the two coincide today; they will not later, and a claim written as
+if they always coincide would be a claim that stops being true without anyone editing
 it.
 
 ### The ordering this implies
