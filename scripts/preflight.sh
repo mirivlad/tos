@@ -669,6 +669,9 @@ selftest_open_decisions() {
 selftest_stage4_data_path_claims() {
     bash "$ROOT/scripts/tests/check-stage4-data-path-claims-selftest.sh"
 }
+selftest_repository_extent() {
+    bash "$ROOT/scripts/tests/check-repository-extent.sh"
+}
 selftest_measurement_observer() {
     python3 "$ROOT/source/host-tools/qemu-test/test-measure-channel.py"
     python3 "$ROOT/source/host-tools/qemu-test/test-qualify-observer.py"
@@ -730,6 +733,7 @@ gate selftest   default   "SPDX JSON classification self-test"         selftest_
 gate selftest   default   "gate parity self-test"                      selftest_gate_parity
 gate selftest   default   "open-decision gate self-test"               selftest_open_decisions
 gate selftest   default   "Stage 4 data-path claim gate self-test"     selftest_stage4_data_path_claims
+gate selftest   default   "repository extent tool self-test"           selftest_repository_extent
 gate selftest   default   "measurement observer self-test"             selftest_measurement_observer
 gate selftest   default   "run-tos launcher self-test"                 run_tos_launcher
 gate selftest   default   "interactive QEMU mode self-test"            qemu_interactive_mode
