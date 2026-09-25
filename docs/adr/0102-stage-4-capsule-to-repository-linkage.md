@@ -3,14 +3,20 @@
 # ADR-0102: Stage-4 capsule-to-repository linkage
 
 - Status: **Proposed** (**not accepted, and nothing in the tree implements it**)
-- Date: 2026-09-26
+- Date: 2026-09-26, **corrected 2026-09-26** after Project Architect review of the
+  first draft (commit `497ebf9`): the public object-kind encoding (§3a1), the rows
+  canonical text may actually use and the withdrawal of the false "delegable normally"
+  claim (§3e), the capacity precondition (§6a1), the object sector padding (§7e), the
+  normative end of the zlib stream (§5c), the minimum Git parser (§5d), and the refusal
+  vocabulary the evidence section had been promising without defining (§10a). The
+  design is otherwise unchanged
+- Project Architect approval: **not yet granted**
 - Decision level: **3** — architectural, **requiring Project Architect approval**.
   It creates a **second persistent format** on the reference block device, which is
   `docs/21`'s explicit Level-3 test and the same one that made ADR-0099 Level 3. It
   also mints a **new capability kind at the trusted boot boundary** and adds one
   `SYSTEM_ABI_V1` operation. §15 is the architecture impact statement `docs/21`
   requires
-- Project Architect approval: **not granted; this is a draft for review**
 - Research basis: `docs/research/STAGE4_CAPSULE_REPOSITORY_HANDOFF.md`, whose §17–§20
   established that no accepted operation lets canonical text read the boot's source
   identity. That note's §18b-C recommendation, its D1 wording, its `Template` field
@@ -44,6 +50,7 @@ everything that portion needs in order to exist:
 | §8 | the bounds the reader refuses past |
 | §9 | object location and the one traversal |
 | §10 | who provisions the extent |
+| §10a | the reader's nine refusal classes, so "by exact code" is a promise the document keeps |
 | §11 | the conformance evidence acceptance carries |
 
 **One decision rather than five.** A repository extent with no object-location format
@@ -172,12 +179,37 @@ minted      only at the trusted boot boundary, by the launcher
   endowment (`ADR-0055`: an endowment is what a launcher decided).
 - **Non-affine.** It is not consumed by use, and `capability_attenuate` may refine a
   name for it exactly as it does for an endpoint (ADR-0100).
-- **Delegable and attenuable normally.** A helper receives it only through explicit
-  delegation or endowment; nothing about it is ambient.
 - **Lifetime is the boot.** `capability_release` releases a *name*, as it does for
   every non-affine object; the object outlives every name.
 - **Representation `AsInterface`** (ADR-0085), so `LANGUAGE_VERSION` does not move
   and no representation-family member is added.
+- **It reaches a process only by endowment** — §3e says exactly which path, and why
+  "delegable normally" would have been a false claim.
+
+### 3a1. The public object-kind encoding
+
+**A new capability kind has a number, and the number is part of the versioned
+launch/capability contract** (I-09). It is fixed here rather than chosen by whoever
+implements first:
+
+```text
+OBJECT_BOOT_IDENTITY = 14        the next free kind; OBJECT_DMA_REGION = 13 is the
+                                 highest assigned in tos-launch today
+ObjectKind::BootIdentity         the frontend-facing kind
+Object::BootIdentity             the nucleus object variant
+```
+
+**It carries no index and no generation.** Every other object kind names one of many —
+an endpoint among endpoints, a region among regions — so a handle to it must say
+*which*, and a generation must say *which incarnation*. This one is the boot's single
+immutable identity; there is nothing to disambiguate and nothing to invalidate while
+the machine is up. A variant with an index would invite a second one.
+
+**Its launch scope is `scope = 0`, and no other value is valid.** `LaunchCapability`
+already documents `scope` as *"the scope the rights apply to, where the object has one;
+zero where it does not"*, and this object has none. **A launch or endowment description
+carrying object kind 14 with a non-zero scope is refused**, rather than having the
+scope ignored — an ignored field is a field that later means something nobody decided.
 
 ### 3b. The right
 
@@ -207,8 +239,51 @@ boundary stop being examined.
 ### 3d. Who gets one
 
 The bootstrap launch policy may endow the boot-canonical init with it. Every other
-process receives it, if at all, through explicit endowment or delegation. A module
-that does not ask for it is not given one, which is `ADR-0055` working normally.
+process receives it, if at all, through **bootstrap endowment or explicit launch-plan
+endowment** (§3e). A module that does not ask for it is not given one, which is
+`ADR-0055` working normally.
+
+### 3e. What canonical text can actually do with it
+
+**The lesson ADR-0100 already taught, applied before it has to be learned twice.** A
+capability the nucleus would accept for a generic operation is not thereby usable from
+canonical text: what canonical text can do is exactly what a schema row lets it do.
+ADR-0100 existed because `capability::attenuate` had always accepted an endpoint and no
+row named it.
+
+So this decision **declares the rows**, and the whole of what canonical text may do with
+a `system.boot.Identity` is these four:
+
+| Operation | Capabilities | Values | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `boot_identity_read` | `system.boot.Identity` with `read` | *(none)* | `Result<system.boot.IdentityRecord, i64>` | **32** |
+| `capability_attenuate` | `system.boot.Identity` with `none` | `rights: u64` | `Result<system.boot.Identity, i64>` | 5 |
+| `capability_release` | `system.boot.Identity` with `none` | *(none)* | `i64` | 6 |
+| `endow_for_launch` | `system.boot.Identity` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+
+**No new mechanism exists below the last three rows.** Operations 5, 6 and 22 are
+generic over a capability's object and already do this for every other kind; what this
+decision adds there is the *naming*, which is the thing that was missing.
+
+**And a correction to what the drafting round first claimed.** An earlier revision of
+this section said the capability is *"delegable and attenuable normally"*. The second
+half is true; **the first half was false**. The rows that carry a capability in a
+message — `endpoint_send_carrying`, `endpoint_call_carrying`,
+`endpoint_call_word_carrying` — are nominally typed for `system.ipc.Endpoint`, so
+canonical text **cannot** put an arbitrary `system.boot.Identity` into an IPC message.
+
+**The supported Stage-4 delegation path is therefore:**
+
+```text
+bootstrap holder
+    -> launch-plan endowment (operation 22, then a sealed plan)
+    -> repository reader
+```
+
+and that is sufficient for everything this slice does. **No generic
+arbitrary-capability IPC surface is added to solve a problem this slice does not
+have.** If a later stage needs one, it is that stage's decision, with its own reasons
+and its own evidence; until then this ADR claims only the path it actually uses.
 
 ## 4. One read operation
 
@@ -329,6 +404,11 @@ unsupported   tag objects; refs of any kind; object writing; packfiles;
               network; merge and diff; garbage collection; activation
 ```
 
+**Naming three object kinds is not a profile**, and §5d defines what a conforming
+reader actually parses. `docs/36` §Purpose exists because *"TOS supports Git is too
+vague to be honest"*; a subset that leaves two implementations free to parse different
+things and both claim conformance is the same failure one level down.
+
 **No refs**, and that is not a shortcut. The starting object id comes from the capsule
 through `system.boot.Identity`; a ref is a *name for an object id*, and this slice
 already has the id from a source the accepted boot chain verified. Refs arrive with
@@ -400,6 +480,111 @@ claim about Git: the host provisioner (§10) must emit the supported representat
 
 `BTYPE = 11` is reserved and is refused as malformed.
 
+#### Where the stream ends, which is normative
+
+A rule that says which blocks are accepted but not where the stream stops is a rule two
+implementations can satisfy differently. So:
+
+```text
+every DEFLATE block has BTYPE = 00
+BFINAL = 0 on every non-final block
+exactly one block has BFINAL = 1, and it is the last
+exactly one Adler-32 trailer follows that final block
+the trailer ends exactly at stored_length
+no byte exists inside [0, stored_length) after the trailer
+bytes at or after stored_length are only the zero sector padding of §7e
+```
+
+Therefore all of these are refused, and none of them is a reading a conforming reader
+may choose to allow:
+
+- no `BFINAL` block before `stored_length` is reached;
+- another DEFLATE block after the one carrying `BFINAL = 1`;
+- trailing bytes after the Adler-32 trailer but still inside `stored_length`;
+- two zlib streams concatenated inside one table entry's `stored_length`.
+
+**One mutation is required rather than four** (§11c): trailing data after an otherwise
+valid zlib stream must be refused. The other three are the same rule read from different
+sides, and a gate with four near-identical negatives buys less than one negative whose
+rule is stated.
+
+### 5d. The minimum Git parser
+
+Exactly what a conforming Stage-4 reader parses, and nothing beyond it. Anything not
+required here is not interpreted, which is how the parser stays bounded without
+implementing Git.
+
+#### The object envelope
+
+Every inflated object is exactly:
+
+```text
+<kind> SP <decimal-size> NUL <payload>
+```
+
+- `kind` is exactly `commit`, `tree` or `blob` — no other byte sequence, and no `tag`;
+- the size is at least one decimal digit, with **no** leading `+`, `-`, whitespace,
+  leading zero run that is not the value itself, or non-decimal byte;
+- its value equals the payload length **exactly**;
+- **no bytes exist after the declared payload**.
+
+#### Commit — one line consumed, the rest opaque
+
+The root object's `kind` is `commit`, and its payload **must begin with exactly**:
+
+```text
+tree <40 lowercase hex SHA-1>\n
+```
+
+**That first `tree` line is the only commit semantic Stage 4 consumes.** The rest of the
+payload is opaque: it is neither traversed nor interpreted.
+
+- **parents are not followed** — no `parent` line has any meaning here;
+- author, committer, message, encoding headers and signatures have **no Stage-4
+  meaning**, and a reader that validated them would be implementing a general commit
+  parser this slice does not need and cannot justify.
+
+#### Tree — ordinary binary entries, bounded
+
+A tree payload is the ordinary SHA-1 Git binary entry sequence, repeated to the end of
+the payload:
+
+```text
+<ascii-octal-mode> SP <name> NUL <20 raw oid bytes>
+```
+
+Rules, every violation refusing the **whole object** rather than skipping an entry:
+
+- the name is non-empty and contains neither `NUL` nor `/`;
+- one entry name is bounded by `MAX_PATH_BYTES`;
+- every entry carries all 20 OID bytes — a truncated final entry is malformed;
+- the total number of entries is at most `MAX_TREE_ENTRIES`;
+- the mode is a non-empty ASCII octal run.
+
+#### Which entry is followed, and what mode it must have
+
+```text
+intermediate component   mode must be the canonical Git tree mode 040000
+final init.tos           mode is 100644 or 100755, and the object it names
+                         must be a blob
+```
+
+Entries with other modes — symlinks, gitlinks, or anything else — **may be skipped once
+their framing is valid**. They are not traversed and their targets are never read.
+
+**The path component being followed must appear exactly once in that tree.**
+
+| Matches | Result |
+|---|---|
+| zero | missing path |
+| exactly one | followed |
+| more than one | **ambiguous, and the object is malformed** |
+
+**"First one wins" is not accepted.** A tree with two entries of one name is not a tree
+any Git implementation should have produced, and a reader that picked one would be
+choosing which of two answers the system believes — which is the same class of mistake
+as letting the extent name its own root commit (§7a).
+
 ## 6. The repository extent
 
 ### 6a. The decision
@@ -419,6 +604,34 @@ values are constants is that argument again with a parser and a threat surface
 attached. **No filesystem, no allocator, no second device**: a second device would need
 enumeration, a multi-device registry and discovery, all three of which `ADR-0093` §3a
 names as what Stage 4 does not get.
+
+### 6a1. The extent must be shown to exist before it is read
+
+**A reserved extent is a claim about the device, and the reader establishes it rather
+than discovering it.** Before any repository sector is read:
+
+```text
+CAPACITY                                    through block.device.v1
+require capacity >= REPOSITORY_FIRST_SECTOR + REPOSITORY_SECTORS   = 2113
+```
+
+If the device reports fewer than 2113 sectors, **the repository is unavailable and no
+repository-sector `READ` is issued at all** — not one, not the header's.
+
+**This is `STATE_STORE_V1` §9's opening rule at the layer above**, and for the same
+reason: a store that validated sector 0 and stopped would have opened on a device that
+cannot hold the layout its header describes. Here the failure would be worse, because
+it is silent: without the check, *"the extent exists"* would be established by the
+first read happening not to fail, which is not a contract but a coincidence of how a
+particular device answers an out-of-range request.
+
+**The `CAPACITY` request itself is permitted and expected** — it is how the fact is
+established. What the negative forbids is a *repository-sector* device read on a device
+too small to hold the extent (§11c).
+
+A lower `CAPACITY` that refuses, or that answers with something this profile cannot
+use, follows `STATE_STORE_V1` §2a's distinction and not a fabricated repository
+refusal: see §11e.
 
 ### 6b. How overlap is prevented
 
@@ -541,6 +754,29 @@ is unsorted, has a duplicate id, or has a non-zero entry past `object_count`; a
 `stored_length` of zero; an `uncompressed_length` past the bound; and a placement total
 past `extent_sectors`.
 
+### 7e. Object bytes are sector-exact, and the padding is defined
+
+`stored_length` does not normally end on a sector boundary, and §7c rounds it up to
+place the next object. **The bytes between are part of the persistent format and are
+defined here**, because an undefined byte in a persistent format is a byte something
+will eventually put meaning into.
+
+For each object at its derived first sector:
+
+```text
+the zlib stream      bytes [0, stored_length)
+sector padding       bytes [stored_length, ceil(stored_length / 512) * 512)
+                     MUST all be zero
+```
+
+**A non-zero padding byte is a format refusal**, exactly as a non-zero reserved byte in
+the header or the table is. That keeps the derived artifact canonical — two
+provisioners given the same commit produce the same extent, byte for byte — and it
+removes unchecked hidden bytes from a format that a host writes and TOS trusts only
+after verifying.
+
+§11c carries the negative.
+
 ## 8. Bounds
 
 Declared, not measured. A bound set to what today happens to need is a bound that
@@ -564,6 +800,8 @@ before matching. A bound checked afterwards is a bound an attacker has already s
 
 The reader, in order:
 
+0. asks `CAPACITY` and requires `capacity >= 2113`; **below that it issues no
+   repository-sector `READ` at all** (§6a1);
 1. reads and validates the repository header (§7a, §7d);
 2. reads the bounded object table (§7b);
 3. looks up the commit OID **from `system.boot.Identity`**, never a compiled constant;
@@ -623,6 +861,11 @@ the object chain without reusing the writer's code; ordinary Git used as an orac
 which `docs/08` §External implementations permits; and the generated object streams
 readable by ordinary Git (§5c).
 
+It must also emit exactly what §5c and §7e require: one zlib stream per object ending
+at `stored_length` with a single `BFINAL` block and one Adler-32 trailer, and **zero
+bytes from there to the sector boundary**. Those are the two places where a
+provisioner could leave bytes nobody checks, and the reader refuses both.
+
 ### 10c. The host-path discipline
 
 **After QEMU boot begins, no host Git command and no host file path participates in the
@@ -644,9 +887,60 @@ Stage 5.
 reading of the capsule: no device, no persistence, no second representation, nothing the
 block driver did — and it would push the capsule toward `ADR-0021`'s bounds for no gain.
 
+## 10a. The refusal vocabulary
+
+An earlier revision of §11 promised that each negative is refused *"by exact refusal
+code"* while defining no codes. **That is a promise a document cannot keep by leaving
+the codes to implementation**: nine reviewers and one implementer would invent nine
+vocabularies, and the gate would assert whichever one happened to be written.
+
+So the codes are fixed here — **nine result classes, not nineteen one-off numbers**.
+They are the canonical reader's own result vocabulary and **not** a new
+`SYSTEM_ABI_V1` error namespace: the ABI's statuses are unchanged and untouched.
+
+```text
+REPO_OK          = 0
+REPO_FORMAT      = 1
+REPO_BOUNDS      = 2
+REPO_MISSING     = 3
+REPO_KIND        = 4
+REPO_OID         = 5
+REPO_LINKAGE     = 6
+REPO_UNSUPPORTED = 7
+REPO_BLOCK       = 8
+```
+
+The mapping is normative:
+
+| Class | What it means |
+|---|---|
+| `REPO_FORMAT` | the repository header, the table, the zlib stream or the Git object syntax is malformed; a duplicate or unsorted table entry; a non-zero reserved byte or a non-zero object sector padding byte (§7e); malformed tree framing; a tree in which the traversed component appears more than once |
+| `REPO_BOUNDS` | an object, count, depth, path or extent bound exceeded — **and a device capacity below 2113 sectors** (§6a1) |
+| `REPO_MISSING` | a required object id or a path component is absent |
+| `REPO_KIND` | the wrong Git object kind, or a tree entry mode the traversal may not follow |
+| `REPO_OID` | Git SHA-1 recomputation disagrees with the id the object was located by |
+| `REPO_LINKAGE` | the repository boot blob's SHA-256 is not the capsule's `boot_content_sha256` — **the one class that means the claim itself failed** |
+| `REPO_UNSUPPORTED` | an unsupported source OID algorithm or profile feature; an unsupported DEFLATE block kind |
+| `REPO_BLOCK` | the lower block operation **answered** and its answer was a refusal, or a reply this profile cannot use |
+
+**Why the classes and not one code per condition.** A reader's caller needs to know
+what *kind* of thing went wrong in order to do anything different — a bound exceeded and
+a hash mismatch are different situations; two different bounds are not. Nineteen codes
+would be nineteen numbers to keep in step with nineteen tests, and the first edit that
+added a condition would have to invent a twentieth.
+
+**And one boundary is inherited rather than re-decided.** `STATE_STORE_V1` §2a and
+ADR-0101 already separate *"the layer below refused"* from *"the layer below never
+answered"*. `REPO_BLOCK` is the first of those. **A lower IPC operation that never
+completes is not a repository refusal at all**: it remains an incomplete operation of
+this process under the existing liveness semantics, and no semantic repository code is
+fabricated from an operation that produced no result. That rule is not new here; it is
+the one this repository corrected `state.tos` to obey.
+
 ## 11. Conformance evidence this decision requires
 
-Acceptance carries these obligations, and none is met today.
+Acceptance carries these obligations, and none is met today. Every refusal named below
+is one of §10a's classes, and the gate asserts the class.
 
 ### 11a. Boot identity
 
@@ -657,11 +951,20 @@ Acceptance carries these obligations, and none is met today.
    separately for the OID and for the boot-content digest, so neither is carried by the
    other.
 3. **A process not endowed with `system.boot.Identity` cannot read the record**, refused
-   by exact status.
+   by exact status — a module declaring the import and not being granted it fails at
+   startup with the named binding, as `PROCESS_IDENTITY_V1` §7.3 already requires.
+4. **A launch or endowment description with object kind 14 and a non-zero scope is
+   refused** (§3a1), so an ignored field cannot become a silently meaningful one.
+5. **Launch-plan endowment of the identity works**: the bootstrap holder endows it into
+   a sealed plan through operation 22, and the reader created from that plan reads the
+   record. That is the only delegation path this slice claims (§3e).
+6. **Attenuation cannot widen.** A name attenuated to `RIGHT_READ` asked for more still
+   yields `RIGHT_READ` — intersection, not validation, exactly as ADR-0100 proved for an
+   endpoint — and a name attenuated to no rights cannot call `boot_identity_read`.
 
 ### 11b. Positive linkage
 
-4. The repository reader holds only what it needs:
+7. The repository reader holds only what it needs:
 
    ```text
    system.boot.Identity   with read
@@ -670,39 +973,47 @@ Acceptance carries these obligations, and none is met today.
 
    and **no PCI, MMIO, IRQ or DMA authority** — asserted from the boot journal's
    capability records, as `state-store.sh` asserts topology today.
-5. It starts from the OID the identity operation returned, **not a compiled constant**.
-6. It reaches `source/system/boot/init.tos`, verifies every object against its own OID,
+8. It starts from the OID the identity operation returned, **not a compiled constant**.
+9. It reaches `source/system/boot/init.tos`, verifies every object against its own OID,
    and proves `SHA-256(repository blob payload) == boot_content_sha256`.
 
 ### 11c. Required negatives
 
-Each by exact refusal code, and each its own case:
+Each refused with the §10a class named beside it, and each its own case:
 
-| | |
-|---|---|
-| substituted object byte | the OID no longer matches its bytes |
-| malformed zlib header | bad `CM`, bad check, or `FDICT = 1` |
-| malformed stored-block `LEN`/`NLEN` | not one's complements |
-| bad Adler-32 | trailer disagrees with the inflated bytes |
-| object SHA-1 mismatch | recomputation differs from the table id |
-| missing OID | an id the traversal needs is not in the table |
-| duplicate OID table entry | two entries name one object |
-| unsorted table | entries not strictly ascending |
-| object count past bound | `object_count > MAX_OBJECTS` |
-| object length past bound | `uncompressed_length > MAX_OBJECT_UNCOMPRESSED_BYTES` |
-| traversal depth past bound | a path deeper than `MAX_TREE_DEPTH` |
-| malformed Git object header | not `"<kind> <decimal>\0"`, or a size disagreeing with the payload |
-| wrong object kind | a blob where a tree must be, or the reverse |
-| missing path component | `source/system/boot/init.tos` does not resolve |
-| a request that would cross the extent | an address below 65 or at/above 2113 |
-| unsupported OID algorithm | a capsule declaring an algorithm this profile does not verify |
-| a **different valid commit** than the capsule's | the extent holds a well-formed commit the capsule does not name: refused, not preferred |
-| the correct commit but the **wrong boot blob** | traversal succeeds, the SHA-256 comparison fails |
-| the state store is unaffected | a `GET` of an object the state store holds still succeeds after the repository reads, in the same boot |
+| Negative | Class | |
+|---|---|---|
+| substituted object byte | `REPO_OID` | the OID no longer matches its bytes |
+| malformed zlib header | `REPO_FORMAT` | bad `CM`, bad check, or `FDICT = 1` |
+| malformed stored-block `LEN`/`NLEN` | `REPO_FORMAT` | not one's complements |
+| bad Adler-32 | `REPO_FORMAT` | trailer disagrees with the inflated bytes |
+| **trailing bytes after the zlib stream** | `REPO_FORMAT` | a valid stream followed by more bytes inside `stored_length` (§5c) |
+| **non-zero object sector padding** | `REPO_FORMAT` | a byte between `stored_length` and the sector boundary is not zero (§7e) |
+| object SHA-1 mismatch | `REPO_OID` | recomputation differs from the table id |
+| missing OID | `REPO_MISSING` | an id the traversal needs is not in the table |
+| duplicate OID table entry | `REPO_FORMAT` | two entries name one object |
+| unsorted table | `REPO_FORMAT` | entries not strictly ascending |
+| object count past bound | `REPO_BOUNDS` | `object_count > MAX_OBJECTS` |
+| object length past bound | `REPO_BOUNDS` | `uncompressed_length > MAX_OBJECT_UNCOMPRESSED_BYTES` |
+| traversal depth past bound | `REPO_BOUNDS` | a path deeper than `MAX_TREE_DEPTH` |
+| **device capacity below 2113 sectors** | `REPO_BOUNDS` | and **no repository-sector `READ` is issued** (§6a1) |
+| malformed Git object header | `REPO_FORMAT` | not `"<kind> <decimal>\0"`, or a size disagreeing with the payload |
+| **malformed or truncated tree entry** | `REPO_FORMAT` | an entry missing OID bytes, an empty name, or a name containing `NUL` or `/` (§5d) |
+| **the traversed component appears twice** | `REPO_FORMAT` | two entries of one name: ambiguous, and never "first one wins" (§5d) |
+| wrong object kind or entry mode | `REPO_KIND` | a blob where a tree must be, the reverse, or a final entry whose mode is not `100644`/`100755` |
+| missing path component | `REPO_MISSING` | `source/system/boot/init.tos` does not resolve |
+| a request that would cross the extent | `REPO_BOUNDS` | an address below 65 or at/above 2113 |
+| unsupported OID algorithm | `REPO_UNSUPPORTED` | a capsule declaring an algorithm this profile does not verify |
+| unsupported DEFLATE block kind | `REPO_UNSUPPORTED` | `BTYPE` of `01`, `10` or `11` |
+| a **different valid commit** than the capsule's | `REPO_MISSING` | the extent holds a well-formed commit the capsule does not name: its OID is simply not in the table, and the reader does not go looking for a substitute |
+| the correct commit but the **wrong boot blob** | `REPO_LINKAGE` | traversal succeeds, the SHA-256 comparison fails |
+| the state store is unaffected | — | a `GET` of an object the state store holds still succeeds after the repository reads, in the same boot |
 
 **Where "no lower block request" is part of a refusal, it is proved from the real block
 service's journal**, not from the reader's own assertion — the derived-count discipline
-`block-protocol.sh` and `state-store.sh` already use.
+`block-protocol.sh` and `state-store.sh` already use. That applies in particular to the
+capacity negative: the gate must show the `CAPACITY` exchange happening and **no
+repository-sector exchange at all**.
 
 ### 11d. The restart shape
 
@@ -714,6 +1025,16 @@ service's journal**, not from the reader's own assertion — the derived-count d
    for every `run.sh` invocation, so no gate in this repository has ever shown a byte
    surviving a reboot. The evidence says the in-boot re-read and says plainly that the
    other claim is unproved, rather than implying it.
+
+### 11e. Where a class is not the answer
+
+`REPO_BLOCK` covers a lower operation that **answered** and whose answer was a refusal
+or was unusable. **A lower operation that never completed is not any of these classes**:
+it stays an incomplete operation under the existing liveness semantics, the reader
+reports the fault rather than a repository refusal, and no reply is fabricated. That is
+`STATE_STORE_V1` §2a and ADR-0101's rule, inherited rather than re-decided — and it is
+the rule this repository had to correct `state.tos` to obey, which is why it is written
+down here before anything is implemented.
 
 ## 12. Threat statement
 
@@ -741,7 +1062,11 @@ Stated explicitly:
   *before* inflating — is what makes a decompression bomb unreachable rather than
   survivable.
 - **Every size, depth and count bound fails closed**, with no fallback and no partial
-  answer.
+  answer, and §10a fixes the class each one refuses with so that a gate asserts a
+  decided vocabulary rather than an invented one.
+- **The extent is established, not assumed.** §6a1 requires the device's capacity to be
+  asked for before a repository sector is read, so *"the extent exists"* is never
+  concluded from a read happening not to fail.
 - **Repository reading can never address a sector below 65 or at or above 2113**, and
   §11c proves it from the block service's journal rather than from the reader's word.
 - **Repository linkage does not create system commit identity.** The X3.9 control
@@ -801,9 +1126,11 @@ On acceptance, and not before:
   the permanently binary trusted base may contain what is required to *"verify
   repository state"*, and this adds the smallest readable form of an already-verified
   fact — not repository verification itself, which stays in canonical text. **I-07** is
-  served: the new authority is explicit, endowed, and refusable. **I-09** is served: a
+  served: the new authority is explicit, endowed, and refusable. **I-09** is served twice over: a
   new persistent format is versioned from its first implementation (`format_version`),
-  and so is the record. **I-15** is the reason §5b states the SHA-1 limitation instead
+  and the new object kind's **public number is fixed by this decision** (§3a1) rather
+  than by whoever implements first — a launch/capability encoding is a versioned
+  boundary and 14 is part of it. **I-15** is the reason §5b states the SHA-1 limitation instead
   of calling the profile "Git-compatible".
 - **What becomes canonical after the change?** That a process may learn, through an
   explicit capability, which source the machine booted from; and that sectors

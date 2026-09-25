@@ -30,7 +30,8 @@ before the claim, and every replacement is **proposed by ADR-0102 and not accept
 | §18b **C**: the landing point should be the **caller's own** module identity, exposed as a path and a content digest | The landing point is `/system/boot/init.tos`, which `CAPSULE_FORMAT_V1` §5 already fixes as the **one** boot-canonical file, and which `docs/04` already names as the component that discovers and verifies repository storage. **No caller-module identity is exposed**, and no capsule catalog, capsule-file lookup or source-set enumeration either. The note's version was unnecessarily general and would have become unstable the moment a second canonical module existed (ADR-0102 §2d, §4b) |
 | §20 **D1 amended**: a ruling was needed on whether the claim is per-module or over the source set, *"because at Stage 4 the source set is one module, so they coincide"* | That coincidence is **not an acceptable basis for a claim**. ADR-0102 §2a states the claim over the **boot-canonical** source specifically — a claim that is true because a contract fixes it, not because a fixture is currently small (ADR-0102 §2d) |
 | §19c: `launch::Template` must gain `oid_algorithm` and `oid_length`, because the nucleus drops them at `source_set_identity()` | **`Template` already retains `pub bi: &'static BootInfo`**, which already carries all four validated identity fields. Adding them again would be a second copy of a fact already there. `Template` gains **one** field — the boot-canonical file's already-validated 32-byte SHA-256, retained rather than recomputed, so the nucleus does no cryptographic work (ADR-0102 §4f) |
-| §19a and §20 D5: the identity capability **"authorizes nothing"** | It authorizes exactly **READ of the immutable verified boot source identity**, and nothing mutable. It is authority, and it is a **new boot-root capability minted at the trusted boot boundary**. Calling it harmless is the kind of description that makes a boundary stop being examined (ADR-0102 §3c) |
+| §19a and §20 D5: the identity capability **"authorizes nothing"** | It authorizes exactly **READ of the immutable verified boot source identity**, and nothing mutable. It is authority, and it is a **new boot-root capability minted at the trusted boot boundary** with a public kind number of its own, `OBJECT_BOOT_IDENTITY = 14`, fixed by the decision rather than by implementation. Calling it harmless is the kind of description that makes a boundary stop being examined (ADR-0102 §3a1, §3c) |
+| §19a: the capability is **"delegable"** through ordinary means | **False, and the same lesson ADR-0100 already taught.** The rows that carry a capability in a message are nominally typed for `system.ipc.Endpoint`, so canonical text cannot put an Identity into one. The supported Stage-4 path is **bootstrap endowment or explicit launch-plan endowment**, and no generic arbitrary-capability IPC surface is added for a problem this slice does not have (ADR-0102 §3e) |
 | §20 D5: *"Level 2, not 3"*, with a note that Level 3 would be the safe reading | ADR-0102 covers D1–D5 **together** and introduces a persistent repository extent, so the combined decision is **Level 3**. Whether D5 in isolation might have been Level 2 is not a question worth spending time on (ADR-0102 header, §15) |
 
 **§17 stands unchanged**, and is the reason ADR-0102 exists: no accepted operation
@@ -1168,8 +1169,11 @@ read-only operations and no others.
 > **Corrected (§0b).** *"Carrying no authority over anything"* is wrong. It authorizes
 > READ of the verified boot source identity and nothing mutable — which is authority,
 > and it is minted at the trusted boot boundary. ADR-0102 §3c states what it does and
-> does not permit, item by item. ADR-0102 also settles on **one** operation, not two
-> (§4a).
+> does not permit, item by item. ADR-0102 also settles on **one** read operation, not
+> two (§4a), fixes the public kind number `OBJECT_BOOT_IDENTITY = 14` and `scope = 0`
+> (§3a1), and declares all four rows canonical text may use — because a capability the
+> nucleus would accept is not usable from canonical text until a row names it, which is
+> what ADR-0100 existed to fix (§3e).
 
 **B is the only honest shape.** A module that does not need identity is not given
 one, which is `ADR-0055`'s rule working normally — and a capability whose only
