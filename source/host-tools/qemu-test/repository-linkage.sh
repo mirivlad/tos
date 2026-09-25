@@ -200,8 +200,18 @@ build_capsule() {
 
 build_capsule "$LINKED" source/system/boot/init.tos "$OUT/capsule.bin"
 
-python3 "$TOOLS/provision.py" --capsule "$OUT/capsule.bin" --git-dir "$WORK/.git" \
-    --out "$OUT/extent.img"
+provisioned="$(python3 "$TOOLS/provision.py" --capsule "$OUT/capsule.bin" \
+    --git-dir "$WORK/.git" --out "$OUT/extent.img")"
+echo "$provisioned"
+# **The device requests are derived from the extent, not chosen.** One `CAPACITY`
+# and then one `READ` per sector the extent actually uses — the header, the three
+# table sectors, and the sectors the object chain occupies — which is the number
+# the provisioner reports. A count written here by hand would be a number that
+# stops being true the next time a commit message changes length.
+EXTENT_SECTORS="$(printf '%s' "$provisioned" | sed -n 's/.*, \([0-9]*\) of [0-9]* sector(s).*/\1/p')"
+[ -n "$EXTENT_SECTORS" ] || fail "the provisioner did not report how much of the extent it used"
+READER_REQUESTS=$((1 + EXTENT_SECTORS))
+EXPECTED_REQUESTS=$((2 * READER_REQUESTS))
 # **The independent checker runs over every extent this gate hands to QEMU.** A negative
 # the canonical reader refuses with a class two independent readers agreed on is a
 # statement about the contract; one only the reader refuses is a statement about the
@@ -241,23 +251,24 @@ readers="$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_READER\$")"
 
 # **§11d's restart shape is NOT MEASURED, and this says so rather than passing.**
 #
-# Two reader generations run in this boot and the nucleus collects both as clean
-# exits — the assertions below count three creations and three collections. What
-# is missing is the *second* generation's own account: from partway through its
-# run its report region stops reaching the serial log, and the log carries a
-# thirty-two byte splat of what looks like heap pointers in the middle of one of
-# its lines. So the in-boot re-read is **performed** and **not evidenced**, and
-# the honest thing is to name the gap where the evidence would be.
+# Two reader generations run in this boot, three children are created and three
+# endings are collected, and the nucleus reports the second generation as an
+# ordinary clean exit. What is missing is its **account**: partway
+# through its run its journal stops reaching the serial log, the nucleus emits no
+# `TOS.RUN.PROCESS_EXIT` for it either, and the log carries thirty-two bytes of
+# what look like heap pointers inside one of its lines — consistent with its report
+# header being overwritten mid-run, so that every line written afterwards lands
+# below the nucleus's drain cursor and is never emitted.
 #
-# It is a journal defect rather than a repository one: every device request the
-# second generation makes is served and counted by the block service below it,
-# and the supervisor's `wait_child` reports an ordinary exit. But a run whose
-# account was dropped is a run this gate has not read, and "one generation proved
-# the witness" is all it may claim until the drop is understood.
+# **The work itself happens.** The block service answers exactly two generations'
+# worth of requests above, and its own `receive` lines are among the ones the same
+# loss eats. So the re-read is **performed and not evidenced** — which is not the
+# same as proved, and this gate says so rather than counting one generation as two.
 if [ "$readers" -lt 2 ]; then
     echo "repository-linkage: NOT MEASURED: ADR-0102 §11d's second reader generation"
-    echo "  ran and was collected, and its own account did not reach the log; $readers of"
-    echo "  2 generations reported the witness. Not counted as evidence."
+    echo "  was created, made its reads and was collected, and emitted no account and"
+    echo "  no process-exit record; $readers of 2 generations proved the linkage."
+    echo "  Performed, not evidenced. Not counted as evidence."
 fi
 [ "$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_SUPERVISOR\$")" = 1 ] ||
     fail "the supervisor did not complete its three phases"
@@ -284,6 +295,57 @@ stalls="$(count '^TOS\.RUN\.LIVENESS .*verdict=stalled')"
     fail "three children were not created"
 [ "$(count '^TOS\.RUN\.INTERFACE operation=process_wait_child status=0$')" = 3 ] ||
     fail "three endings were not collected"
+
+# --- 2b: exactly the requests the extent implies, and not one more --------------
+#
+# **Counted on the answers, because a reply is the service's own account of a
+# request it completed** — and because the journal of this boot demonstrably loses
+# lines (see §11d's note above), while a lost line can only make a count too small
+# and never too large. Two generations of one reader against one extent imply
+# exactly `2 * (1 CAPACITY + one READ per sector the extent uses)`, and that is the
+# number, derived from what the provisioner wrote rather than written here.
+answered="$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply_word status=0$')"
+[ "$answered" = "$EXPECTED_REQUESTS" ] ||
+    fail "the block service answered $answered request(s) and this extent implies
+       $EXPECTED_REQUESTS: one CAPACITY and $EXTENT_SECTORS sector read(s) per reader
+       generation, which is the header, the table and the sectors this extent's object
+       chain occupies"
+received="$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call_region status=0$')"
+[ "$received" -le "$answered" ] ||
+    fail "the block service answered $answered request(s) and received $received; a
+       service cannot answer fewer requests than it took"
+echo "repository-linkage: $answered device request(s) answered, which is two" \
+     "generation(s) of $READER_REQUESTS"
+
+# --- 2c: the endowment accounting, counted by the launcher and the nucleus ------
+#
+# **Not claimed by a module.** `MAX_ENDOWMENT` is four, and the reader's plan draws
+# exactly four: a budget, the block service's endpoint, an inbox of its own and the
+# boot identity. The supervisor is endowed by the launcher and is not a plan.
+python3 - "$LOG" <<'ENDOWMENT' || fail "the endowment accounting is not the one ADR-0102 §11b requires"
+import sys
+from collections import Counter
+
+events = [line.rstrip("\r\n") for line in open(sys.argv[1], encoding="utf-8", errors="replace")]
+PREFIX = "TOS.RUN.PROCESS_ENDOWED "
+
+sizes = Counter()
+for line in events:
+    if not line.startswith(PREFIX):
+        continue
+    for field in line.split(" "):
+        if field.startswith("capabilities="):
+            sizes[int(field.removeprefix("capabilities="))] += 1
+
+#   6   the supervisor: two endpoints, the bus, the boot identity, its own control
+#       and the root remainder
+#   4   each reader generation, which is MAX_ENDOWMENT
+#   3   the block service: a budget, the endpoint it receives on, the bus
+expected = {6: 1, 4: 2, 3: 1}
+if dict(sizes) != expected:
+    print(f"expected endowment sizes {expected}, saw {dict(sizes)}", file=sys.stderr)
+    raise SystemExit(1)
+ENDOWMENT
 
 # --- 3: the reader read the boot identity, twice, and nobody else did ----------
 [ "$(count '^TOS\.RUN\.INTERFACE operation=boot_identity_read status=0$')" = 2 ] ||
@@ -332,31 +394,39 @@ if dict(seen) != expected:
     raise SystemExit(1)
 TOPOLOGY
 
-# --- 5: every sector the reader asked for is inside the extent (§6b) -----------
-python3 - "$LOG" 65 2113 <<'ADDRESSES' || fail "a request addressed a sector outside the repository extent"
-import re
-import sys
-
-events = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
-first, past = int(sys.argv[2]), int(sys.argv[3])
-
-# The block service's own account of what it was asked for. Read from the service's
-# journal rather than from the reader's, which is the whole point: a reader that
-# addressed the state store's sectors would be visible here and nowhere else.
-asked = [int(m.group(1)) for line in events
-         for m in [re.search(r"^TOS\.RUN\.BLOCK_REQUEST .*\bsector=(\d+)", line)] if m]
-if not asked:
-    # The service names its requests differently, or names none; the derived count
-    # below is then the only address evidence and this check says so rather than
-    # passing silently.
-    print("no per-request sector records in this journal", file=sys.stderr)
-    raise SystemExit(0)
-outside = [sector for sector in asked if sector < first or sector >= past]
-if outside:
-    print(f"sectors outside [{first}, {past}): {sorted(set(outside))}", file=sys.stderr)
-    raise SystemExit(1)
-print(f"{len(asked)} device request(s), every one inside [{first}, {past})")
-ADDRESSES
+# --- 5: every address was inside the extent, proved by the device (§6b) --------
+#
+# **The device is the witness, not the reader.** The block service's journal
+# carries no per-request sector, so "no address was below 65 or at or above 2113"
+# cannot be read out of the ordinary boot's log. What can be done instead is to
+# take the bound away from the reader and give it to the machine: the same capsule
+# and the same extent, on a device of **exactly** 2113 sectors — the smallest the
+# layout admits. A read at or past 2113 is then refused by the device itself and
+# the reader reports `REPO_BLOCK`; the boot reaching the same witness is the
+# statement that it never asked for one.
+#
+# The lower bound is structural rather than measured: every address this reader
+# forms is `REPOSITORY_FIRST_SECTOR + index` with `index` refused at or past
+# `REPOSITORY_SECTORS`, so there is no expression in it that can name a sector
+# below 65. That is stated here because it is a reading of the source, and a gate
+# should say which of its claims came from the machine and which did not.
+bash "$HERE/run.sh" \
+    --out "$OUT/minimum" \
+    --capsule "$OUT/capsule.bin" \
+    --nucleus "$NUCLEUS" \
+    --stage4-block-device \
+    --stage4-block-sectors 2113 \
+    --stage4-block-overlay "$REPOSITORY_FIRST_SECTOR:$OUT/extent.img" \
+    --expect 33 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.COMPLETED TOS.HALT" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.TRAP TOS.RUN.REFUSED" \
+    > /dev/null || fail "the minimum-device boot did not reach a clean halt"
+grep -aq "^TOS\.RUN\.COMPLETED value=$EXPECTED_READER\$" "$OUT/minimum/events.log" ||
+    fail "on a device of exactly 2113 sectors the reader did not reach the witness; an
+       address at or past the extent's end would have been refused by the device
+       (ADR-0102 §6b), and the accounts were:
+       $(grep -a '^TOS\.RUN\.COMPLETED value=' "$OUT/minimum/events.log" | tr '\n' ' ')"
+rm -rf "$OUT/minimum"
 
 echo "repository-linkage: the ordinary boot holds"
 
