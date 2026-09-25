@@ -117,7 +117,7 @@ while [ $# -gt 0 ]; do
         --stage4-block-device-legacy) STAGE4_BLOCK=1; STAGE4_BLOCK_LEGACY=1; shift ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
-        -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '3,29p' "$0"; exit 0 ;;
         --*)        echo "unknown option: $1" >&2; exit 2 ;;
         *)
             # positional: OUT_DIR then CAPSULE_FILE
