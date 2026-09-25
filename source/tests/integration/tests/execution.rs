@@ -222,6 +222,38 @@ fn a_checked_conversion_reports_its_outcome_as_a_result() {
 }
 
 #[test]
+fn a_size_converts_because_docs_40_says_it_does() {
+    // `docs/40` §3: the checked conversions *"accept any fixed-width integer or
+    // `size`"*, and `tos-predeclared` types them that way. This engine accepted
+    // only `Value::Int`, so source every static stage had agreed on trapped at
+    // the call — the one shape of disagreement a reference implementation may
+    // not have, because the refusal came from the runtime after the checker,
+    // the lowerer and the independent verifier had all said yes.
+    //
+    // It bites on any program that computes with an index and then needs its
+    // number: a region offset shifted into a word, a length put into a header.
+    let body = "pub fn width(at: size) -> Result<u64, ConversionError> { return to_u64(at); }";
+    assert_eq!(
+        evaluate(body, "width", vec![Value::Size(4096)]),
+        Value::Variant {
+            index: 0,
+            payload: vec![Value::Int(IntKind::U64, 4096)]
+        }
+    );
+    // And it is still *checked*: a size that does not fit the destination is a
+    // `Result` rather than a truncation, exactly as an integer's is.
+    let narrowed = evaluate(
+        "pub fn narrow(at: size) -> Result<u8, ConversionError> { return to_u8(at); }",
+        "narrow",
+        vec![Value::Size(300)],
+    );
+    let Value::Variant { index, .. } = narrowed else {
+        panic!("a checked conversion produces a Result");
+    };
+    assert_eq!(index, 1);
+}
+
+#[test]
 fn checked_overflow_traps_at_the_declared_width() {
     // The host could hold this in an i128; the program said i32, and that is
     // what bounds it.

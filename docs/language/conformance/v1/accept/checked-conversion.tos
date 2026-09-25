@@ -9,3 +9,10 @@ resource [
 pub fn narrow(value: i32) -> Result<u8, ConversionError> {
     return to_u8(value);
 }
+
+// A `size` is one of the operand types docs/40 section 3 admits: "any
+// fixed-width integer or `size`". A program that computes with an index and
+// then needs its number goes through here.
+pub fn width(at: size) -> Result<u64, ConversionError> {
+    return to_u64(at);
+}

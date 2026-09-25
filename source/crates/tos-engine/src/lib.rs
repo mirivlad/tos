@@ -2756,12 +2756,37 @@ impl Engine<'_> {
                     source,
                 ));
             };
-            let Some(Value::Int(_, magnitude)) = arguments.first().cloned() else {
-                return Err(Trap::new(
-                    "RUNTIME_TYPE_CONFUSION",
-                    "a checked conversion applied to a non-integer",
-                    source,
-                ));
+            // **A `size` converts, because `docs/40` §3 says it does**: the
+            // checked conversions *"accept any fixed-width integer or `size`"*,
+            // and `tos-predeclared` types them that way. This engine used to
+            // accept only `Value::Int`, so source the checker had admitted
+            // trapped at the call — which is the one shape of disagreement a
+            // reference implementation may not have, since the refusal came
+            // from the runtime after every static stage had agreed.
+            //
+            // A size is a magnitude and never negative, so the range check
+            // below is the whole of what it needs.
+            let magnitude = match arguments.first() {
+                Some(Value::Int(_, magnitude)) => *magnitude,
+                Some(Value::Size(magnitude)) => match i128::try_from(*magnitude) {
+                    Ok(magnitude) => magnitude,
+                    // A size past `i128` cannot be produced by a bounded run on
+                    // any target this profile admits; refusing it as an
+                    // out-of-range conversion keeps the total function total.
+                    Err(_) => {
+                        return Ok(Value::Variant {
+                            index: 1,
+                            payload: alloc::vec![Value::Unit],
+                        })
+                    }
+                },
+                _ => {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "a checked conversion applied to a non-integer",
+                        source,
+                    ))
+                }
             };
             // docs/40 section 3: a checked narrowing is `Result<T,
             // ConversionError>`, never a silent truncation.
