@@ -5,7 +5,9 @@
 - Status: **note, not a decision.** Tier 4 under `docs/38`: research and
   explanatory material, incorporated by no ADR. Nothing here is accepted, and
   nothing here is implemented.
-- Date: 2026-09-25
+- Date: 2026-09-25, **extended 2026-09-25** after Project Architect review of the
+  first revision (commit `681ad45`). §17–§20 are the extension; §8 and §15 carry
+  the corrections it forced, marked where they apply
 - Audience: the Project Architect, before any repository implementation is begun
   and before the decision surface in §15 is ruled on.
 - Scope: the last `docs/16` Stage 4 deliverable before the performance report.
@@ -22,6 +24,15 @@ clause, the clause is cited. Where it is a choice, the alternatives are given
 with a recommendation and the reasons on both sides. Four places are **gaps in
 the accepted text** rather than choices this note may make; they are named as
 gaps in §7 and §15 instead of being filled in by intuition.
+
+**§17 is the one that changes a conclusion.** The first revision established that
+the capsule's raw commit OID reaches the nucleus, and treated that as enough. It is
+not: the nucleus *prints* the value, and printing is not an input channel for a
+textual process. §17 traces four values through every layer and finds that **not one
+of them is readable by canonical text through any accepted operation**. §18 finds the
+smallest sufficient exposure, §19 finds where it belongs, and §20 restates the
+decision surface. §8's *"nothing enters the nucleus"* survives for the **repository
+reading** and fails for the **boot identity**; the correction is marked there.
 
 **One finding shapes everything else.** The capsule header already carries the
 **raw Git commit object id** of the source it was built from (`ADR-0016`,
@@ -567,9 +578,18 @@ that it can read *a* repository, not that it can read *this system's*.
 
 ## 8. Trust-boundary alternatives
 
+> **Corrected 2026-09-25 (§19).** This section's answer holds for the **repository
+> reading** — parsing, verifying and traversing objects — and only for that. It does
+> **not** hold for putting the boot's source identity where canonical text can read
+> it: §17 shows no operation exposes it, and §19 shows that exposing it needs a
+> `SYSTEM_ABI_V1` operation, because `SYSTEM_INTERFACE_V1` §8 says the target ABI is
+> *"`SYSTEM_ABI_V1` and nothing else"*. The sentence below was written about the
+> repository and is true about the repository; it was not an argument about identity,
+> and it is not preserved as one.
+
 ### Which Stage-4 handoff operations must enter the nucleus?
 
-**None.** For each nucleus responsibility `docs/08` lists, the clause that would
+**None of `docs/08`'s repository list.** For each nucleus responsibility `docs/08` lists, the clause that would
 require it and why it does not fire at Stage 4:
 
 | `docs/08` nucleus item | Required at Stage 4? |
@@ -585,9 +605,10 @@ And the clauses that push the other way: `docs/36` §Nucleus boundary (*"only th
 minimum … justified by the active stage"*), I-02 (*"features must not move into
 the nucleus merely for convenience"*), I-08, and `docs/34` X3.10.
 
-**So the whole of this slice is canonical text.** That is not a preference chosen
-for elegance; it is what the scoping clause produces when the stage has no
-trusted-boot dependency on the repository. The moment a later stage makes a
+**So the whole of the repository half of this slice is canonical text.** That is not
+a preference chosen for elegance; it is what the scoping clause produces when the
+stage has no trusted-boot dependency on the repository. **The identity half is
+different, and §19 is where it is settled.** The moment a later stage makes a
 repository object boot-critical — Stage 5's mount — the nucleus gets the minimum
 that stage justifies, and the textual reader of this slice becomes the thing
 whose behaviour the nucleus's minimum is checked against.
@@ -805,6 +826,9 @@ and is untouched here.
 
 ## 15. Decisions that require Project Architect approval
 
+> **Extended 2026-09-25.** §20 adds **D5** — the boot-identity surface — and revises
+> D1's evidence obligation. The four below stand as written.
+
 Four questions are genuinely undecided. Three need an ADR; one is a naming
 ruling. Nothing else here does: everything in §4, §8 and §7d is settled by
 clauses already accepted.
@@ -861,8 +885,10 @@ Stage 4's identity exit turns on.
 
 ### Explicitly **not** requiring an ADR
 
-- **Nucleus responsibility.** §8 answers *none* from accepted clauses. There is
-  nothing to decide; if a later stage needs a minimum, that stage decides it.
+- **Nucleus responsibility for the repository.** §8 answers *none* from accepted
+  clauses. There is nothing to decide; if a later stage needs a minimum, that stage
+  decides it. **Nucleus responsibility for the boot identity is a different question
+  and is D5** (§20).
 - **Refs.** §7d shows the slice needs none, because the capsule already carries
   the object id. A ref profile is G2's decision.
 - **Packfiles, remotes, G2 promotion, `/system` mount, activation, rollback.**
@@ -890,3 +916,335 @@ And between them, `docs/16` Stage 4E — the interactive console — which this 
 touches not at all.
 
 **Nothing in this note closes Stage 4C, Stage 4D or Stage 4.**
+
+## 17. The gap: what canonical text can actually read
+
+Added 2026-09-25. The first revision treated *"the OID reaches the nucleus"* as
+enough for the Stage-4 evidence. It is not. **The nucleus prints the value; the
+module does not thereby possess it.** A serial line is evidence for the host gate,
+not an input channel for a textual process, and IR or source-map metadata is not a
+TOS value unless an accepted operation exposes it.
+
+### 17a. The whole surface, first
+
+**All thirty-six operations** a TOS Core module can name today, taken from
+`source/crates/tos-core/src/interfaces.rs` — the frontend's own table, which is what
+an `extern fn` is matched against, and the same 36 the interface-schema gate counts:
+
+```text
+capability_attenuate        endpoint_receive_call_region   pci_bar_map_read
+capability_attenuate_scoped endpoint_receive_region        pci_bar_map_write
+capability_release          endpoint_reply                 pci_config_read
+dma_device_address          endpoint_reply_receive         pci_config_write
+dma_region_allocate         endpoint_reply_word            pci_function_claim
+endow_for_launch            endpoint_send                  pci_interrupt_claim
+endpoint_call               endpoint_send_carrying         process_create_funded
+endpoint_call_carrying      endpoint_send_region           process_terminate
+endpoint_call_word          endpoint_send_text             process_wait_child
+endpoint_call_word_carrying irq_wait                       region_allocate
+endpoint_call_word_region   launch_plan_create             region_freeze
+endpoint_receive            launch_plan_seal
+endpoint_receive_call
+```
+
+**There is no identity operation of any kind** — no `source_identity`, no
+`capsule_*`, no `boot_*`, no digest, no module metadata, no way to obtain a region
+over memory the module did not allocate. And **not one of the thirty-six has an
+empty capability list**, which §19a turns out to depend on.
+
+The eleven capability types are `system.ipc.Endpoint`, `system.ipc.Reply`,
+`system.memory.Authority`, `system.memory.Region`, `system.process.Control`,
+`system.process.LaunchPlanBuilder`, `system.process.LaunchPlan`,
+`platform.pci.Bus`, `platform.pci.FunctionConfig`, `platform.irq.Source` and
+`platform.dma.Region`. **None of them is about the boot, the capsule or the module
+itself.** The five remaining schema names — `system.ipc.Answer`,
+`system.ipc.ReceivedCall`, `system.ipc.ReceivedCallRegion`,
+`system.process.ChildEnding`, `system.process.CreatedProcess` — are records an
+operation produces, and none carries an identity either.
+
+And the only channel by which a *runtime* value reaches a module is
+`import capability` (`docs/42`): `import a.b as c` imports another module's
+exported types, functions and constants, which are compiled-in text — i.e. exactly
+the hard-coded constant §2 of the review forbids.
+
+### 17b. Trace 1 — the capsule's source identity
+
+| Layer | What exists there | Owner | Canonical text can read it? |
+|---|---|---|---|
+| capsule header | `source_identity_kind`, `source_oid_alg`, `source_oid_length`, `source_identity_value` (raw OID in a 32-byte field) | builder writes; parser validates | **no** |
+| BootInfo (`BOOT_ABI_V1` §6) | the same four, at offsets 136, 137, 138, 144 | loader writes; nucleus re-verifies against the capsule header | **no** |
+| nucleus `main` | reads all four; emits `TOS.IDENTITY source_kind=… source_digest=…`; then calls `source_set_identity()` | nucleus | **no** — serial is an output |
+| `launch::Template` | `source_set: [u8; 96]` = `"git:" + hex(all 32 bytes)` | nucleus, retained for the whole boot | **no** |
+| `Launch` record | `source_set: [u8; 96]`, **in the process's own address space, read-only** | nucleus writes it at creation | **no operation reads it** |
+| runtime image | reads it as a `&str` into `SetRequest.source_set` | runtime image | — |
+| IR `Header.source_set`, every `SourceMapEntry.source_set` | present, and hashed into the module digest | frontend | **no** — metadata *about* the module, not a value *in* it |
+| `SYSTEM_INTERFACE_V1` | **nothing** | — | **no** |
+
+**Through exactly which operation: none.**
+
+**And one field is destroyed on the way.** `source_set_identity(kind, value, out)`
+emits `kind || ":" || hex(value[0..32])`. `source_oid_alg` and `source_oid_length`
+are **not** carried into the Template. For this repository — SHA-1 — the OID is 20
+bytes left-aligned and zero-padded to 32 (`ADR-0016`), so the flattened string is 64
+hex characters of which the last 24 are padding, **and nothing in the string says
+so**. Even a module that could read `source_set` could not tell a 20-byte OID from a
+32-byte one. Any exposure must carry the algorithm and the length, not just the
+value.
+
+### 17c. Trace 2 — the capsule's file path and content digest
+
+| Layer | What exists there | Owner | Canonical text can read it? |
+|---|---|---|---|
+| capsule file table (`CAPSULE_FORMAT_V1` §4.2) | canonical path bytes + a validated 32-byte SHA-256 content digest, per file | builder writes; parser validates the digest against the bytes | **no** |
+| BootInfo | **not carried** — only `capsule_phys` and `capsule_length` | loader | **no** |
+| nucleus | parses the capsule, validates every file digest, builds `Unit { path, span }` — **and does not retain the digest** | nucleus | **no** |
+| `Launch.units` → `LaunchUnit` | `path`, `path_length`, `bytes`, `bytes_length` — **the path and the source bytes are in the process's own address space** | nucleus writes them at creation | **no operation reads them, and no operation produces a region over memory the module did not allocate** |
+| pipeline | **recomputes** `content_id = "sha256:" + hex(sha256(bytes))` | pipeline | it goes into the IR header and the source map |
+| `SYSTEM_INTERFACE_V1` | **nothing** | — | **no** |
+
+So the module's own content digest exists twice — validated once in the capsule,
+recomputed once in the pipeline — and is reachable neither time. Its own source
+bytes are a few kilobytes away in its own address space and there is no row that
+names them.
+
+### 17d. Traces 3 and 4 — process source-set metadata, and module content identity
+
+Trace 3 is trace 1's tail: `Launch.source_set`, owned by the nucleus, read by the
+runtime image, never a value. Trace 4 is `content_id` in the IR header, in every
+source-map entry and in the verifier receipt the engine is handed — all consumed
+**above** the module, none of it reachable **from** it.
+
+`PROCESS_IDENTITY_V1` §6 makes this explicit in the other direction: process
+identity is *"reported through the existing delegated runtime vocabulary"* —
+`TOS.RUN.*` events. Reporting is the contract. Reading was never part of it.
+
+### 17e. What this costs the proposed evidence
+
+The §10 design and the §11 evidence list both assume a reader that starts from the
+capsule's commit OID and lands on something the capsule carried. **Neither half is
+implementable today**, and the substitutes are the ones the review named:
+
+- a hard-coded OID in the reader's text proves the answer it was compiled with;
+- a host-generated reader carrying the current commit is the same thing with an
+  extra step, and it makes the host the source of the claim;
+- a gate that tells the reader what to expect moves the claim out of TOS entirely.
+
+So **the boot-identity surface is a precondition of the Stage-4 deliverable**, not
+an implementation detail of it.
+
+## 18. The minimum sufficient information
+
+Two things, and the second is smaller than the first revision implied.
+
+### 18a. The starting point — a boot source identity record
+
+```text
+BootSourceIdentity {
+    kind            1 = git commit, 2 = detached source set
+    oid_algorithm   0 = none, 1 = SHA-1, 2 = SHA-256
+    oid_length      0, 20 or 32
+    oid             the raw value, as the capsule header holds it
+}
+```
+
+Exactly the four fields `BOOT_ABI_V1` §6 already carries and `CAPSULE_FORMAT_V1` §6
+already defines. **No new fact enters the system**; a fact that is already verified
+becomes readable. The algorithm and the length are not optional (§17b).
+
+### 18b. The landing point — three alternatives
+
+**A — expose the capsule's file path and SHA-256 content digest.** The reader
+traverses to the path, hashes the blob payload with SHA-256 and compares.
+
+- Needs: a capsule catalog surface, or at least one `(path, digest)` pair.
+- Against: it exposes the whole file table, or forces a choice of *which* file, and
+  the reader must then be told which one — another input.
+
+**B — expose the capsule's file bytes.** The reader compares bytes directly.
+
+- For: the strongest possible comparison, and it needs only the Git hash, because
+  the digest comparison disappears.
+- Against: the largest surface by far — a region over memory the module did not
+  allocate, with lifetime and mutability questions `SYSTEM_INTERFACE_V1` §`Region`
+  does not currently answer for anything but an allocation. Probably unnecessary.
+
+**C — expose only the running module's own path and content digest.** *(recommended)*
+
+```text
+ModuleSourceIdentity {
+    path            the module-root-relative canonical path, as the capsule holds it
+    content_digest  SHA-256 of this module's own source bytes
+}
+```
+
+The reader then: starts at the boot OID → traverses `commit → tree → …` to the
+repository path → hashes the blob payload → compares with **its own** digest.
+
+- **It is self-referential, and that is its strength.** What gets proved is not
+  *"the repository contains some file the capsule also has"* but *"the repository,
+  at the commit the capsule names, contains a blob whose bytes are the bytes of the
+  process asking the question."* A reader cannot be given the wrong file to look
+  for, because the file is itself.
+- **The path mapping is documented, not guessed.** `ADR-0031` §2 and `docs/45`:
+  *"The repository subtree `source/system/` is the canonical input for the runtime
+  `/system` tree, mapped directly and without renaming or generation."* So capsule
+  `/system/X` ↔ repository `source/system/X` is a constant prefix fixed by an
+  accepted decision.
+- **It exposes no catalog.** One record about the caller, not a view of the capsule.
+- Against: it proves linkage for one module rather than for the source set. At
+  Stage 4 the capsule's canonical source set **is** one module
+  (`source/system/boot/init.tos`; §2.1), so the distinction is currently empty — but
+  it will not stay empty, and the note says so rather than letting the fixture's
+  size pass for a general claim.
+
+**Recommendation: A1 (§18a) + C.** One immutable boot record and one module
+identity. Do not expose the capsule catalog if one record about the caller is
+enough.
+
+### 18c. A consequence for D3 that was not visible before
+
+The reader must implement the **Git** hash anyway, to verify each object against
+its id. Under C it must *also* compare against a **SHA-256** content digest. If
+D3 chooses SHA-256 Git objects, those are the same function over two different
+inputs — **one hash implementation in canonical text instead of two.** If D3
+chooses SHA-1, canonical text needs both. That is a real cost on one side of a
+decision this note previously presented as balanced, and it belongs in D3's record.
+
+## 19. Where the surface belongs
+
+### 19a. It cannot avoid a new capability type
+
+Every row in the schema is *on* an interface: `interfaces.rs` documents the first
+requirement as *"the operation's own interface — the one the instruction records
+and `Signature.effects` names"*, and no row anywhere has an empty capability list.
+That is not an accident of the table; I-07 makes the capability the thing that
+authorizes, and `docs/42` §2 requires the capability type, right and `uses` effect
+all to match a declared contract.
+
+So the two realistic shapes are:
+
+**A — hang the rows on an existing capability.** The candidates are
+`system.process.Control` and `system.memory.Authority`. Both are wrong: a module
+would need `create | wait_child | terminate`, or the right to spend memory, in order
+to read an identity. That is authority inflation of exactly the kind I-07 exists to
+prevent, and it would make *"what commit am I from"* a question only a supervisor
+may ask.
+
+**B — a narrow read-only boot-identity capability.** A new `AsInterface` capability
+type — `system.boot.Identity`, or whatever the decision names it — endowed by the
+launcher like every other capability, carrying no authority over anything, with two
+read-only operations and no others.
+
+**B is the only honest shape.** It is also the smaller one: a capability that
+authorizes nothing cannot be misused for anything, and a module that does not need
+identity is not given one, which is `ADR-0055`'s rule working normally.
+
+### 19b. It cannot avoid a `SYSTEM_ABI_V1` operation either, and this is the correction
+
+The tempting answer was: the data is *already* in the process's own `Launch` record,
+read-only, placed there by the nucleus — so the runtime image could answer the row
+from memory it already has, with no syscall, the way `Produced::Answer` reads the
+argument region. That would have been a schema-and-runtime-image change of exactly
+the shape ADR-0100 and ADR-0101 had: no ABI operation, no nucleus change.
+
+**`SYSTEM_INTERFACE_V1` §8 forbids it in as many words:**
+
+> The target ABI is `SYSTEM_ABI_V1` and nothing else: one mechanism, one path to
+> audit. This schema adds no calling convention of its own — it names which of that
+> ABI's operations a module may reach and under what authority.
+
+And the runtime image's row shape agrees: every `Performed` row carries an
+`operation: u64` that is a `SYSTEM_ABI_V1` number, and there is no variant for a row
+answered without crossing the boundary. A row the runtime image answered from its
+own memory would be a second mechanism and a second path to audit — which is the
+thing §8 exists to refuse.
+
+**So the honest answer is: yes, this needs a new nucleus mechanism** — one read-only
+`SYSTEM_ABI_V1` operation and one capability kind. The earlier *"nothing enters the
+nucleus"* was an argument about **repository** work, where it still holds; it was
+never an argument about identity, and keeping it there by inventing an exception to
+§8 would be exactly the artificial rule the review warned against.
+
+### 19c. How small it actually is
+
+- **The nucleus already holds the data for the whole boot.** `launch::TEMPLATE` is a
+  `static` holding `source_set` and the unit table (path + span per unit), and
+  `template()` returns it. The syscall needs no new storage and no new lifetime.
+- **`Template` needs two more fields.** `oid_algorithm` and `oid_length` are read in
+  `main` and dropped at `source_set_identity()` (§17b). Retaining them is additive.
+  The raw 32-byte value is already retained inside the flattened string and would be
+  better kept as bytes.
+- **The answer shape already exists.** `SYSTEM_ABI_V1` already has *"the nucleus
+  writes a record at a fixed offset of the caller's own argument region"* —
+  `WAIT_CHILD_RECORD`, `CREATE_INSTANCE_ID`, `MMIO_MAP_RECORD`,
+  `REGION_ALLOCATE_RECORD`. A boot-identity record is that pattern again, and the
+  nucleus walks no pointer a caller supplied.
+- **No language move.** A new `AsInterface` capability type is `ADR-0085`'s existing
+  family; `LANGUAGE_VERSION` does not move.
+- **The per-module identity (§18b C) is the same shape**: the nucleus knows which
+  unit the caller's entry is, and the digest is either retained from the capsule
+  parse or recomputed once at launch.
+
+### 19d. What it must not become
+
+A capsule catalog, a file-reading interface, a query language, a second
+observability vocabulary, or anything writable. Two read-only records about facts
+the boot already verified. `ADR-0093` §3a's discipline — *"a name service that can
+answer one question about one interface is the whole of it"* — is the right
+standard here too.
+
+## 20. The corrected decision surface
+
+D1–D4 stand as written in §15. One is added, and one is amended.
+
+### D5 — the boot-identity surface (**ADR, Level 2**) — new
+
+**Without it the Stage-4 deliverable is not implementable**, and no alternative
+route exists: §17 shows the value is readable through no operation, and §2 of the
+review rules out every constant-bearing substitute.
+
+What the decision fixes:
+
+1. that a boot source identity is readable by canonical text at all;
+2. its record: `kind`, `oid_algorithm`, `oid_length`, `oid` (§18a);
+3. whether a module identity is exposed with it, and in which of §18b's three
+   shapes — **C recommended**;
+4. the capability type it hangs on, and that it authorizes nothing (§19a);
+5. one new read-only `SYSTEM_ABI_V1` operation, and the `SYSTEM_INTERFACE_V1` rows
+   over it (§19b);
+6. the two additive `Template` fields (§19c).
+
+**Level 2, not 3**, on `docs/21`'s test: it extends a versioned contract surface —
+a capability type, a schema row, an ABI operation — and it moves no trust boundary,
+changes no persistent format, introduces no runtime dependency, changes no source
+identity and touches no owner control. It makes an already-verified fact readable;
+it does not create a fact. If the Project Architect reads *"a new capability kind
+and a new ABI operation"* as moving the trusted base, Level 3 is the safe reading
+and this note does not argue against it.
+
+**It is also independently useful**, and that is worth saying rather than hiding:
+`PROCESS_IDENTITY_V1` §5 has the system commit id becoming present at Stage 5, and
+a process that can read its own boot identity is the mechanism that will carry it.
+But **this note proposes it only for what Stage 4 needs** — the field stays absent,
+and D5 must not be written so that Stage 5's change becomes automatic.
+
+### D1 — amended
+
+D1's ruling now also has to say whether the Stage-4 linkage claim is **per-module**
+(§18b C) or **over the source set**. At Stage 4 the canonical source set is one
+module, so the two coincide today; they will not later, and a claim written as if
+they always coincide would be a claim that stops being true without anyone editing
+it.
+
+### The ordering this implies
+
+D5 is a **precondition** of implementing D1–D4, not a consequence of them: without
+it, no repository reader can start from the capsule's commit or land on anything the
+capsule carried. It is also the cheapest of the five and the one whose shape is most
+constrained by existing contracts, so it is the natural first decision.
+
+### Still explicitly not requiring an ADR
+
+Unchanged from §15, with one correction already applied there: nucleus
+responsibility **for the repository** is settled at *none*; nucleus responsibility
+for the **boot identity** is D5.
