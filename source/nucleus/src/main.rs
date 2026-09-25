@@ -42,6 +42,7 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-endpoint-attenuation") as usize
     + cfg!(feature = "test-carried-call-answer") as usize
     + cfg!(feature = "test-state-store") as usize
+    + cfg!(feature = "test-repository-linkage") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -2016,6 +2017,76 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             },
         ]
     };
+    // ADR-0102's evidence build: the capsule-to-repository linkage, with the boot
+    // identity minted here and nowhere else.
+    //
+    // **Six endowments, and the fifth is the new one.** The supervisor holds its own
+    // control and the root's remainder, the block service's endpoint and the reader's
+    // inbox carrying every right the two plans draw from them, the bus the block
+    // service claims from — and a `system.boot.Identity` with `read`, which it endows
+    // into the reader's sealed plan (§3e's only delegation path).
+    //
+    // **The object is minted by the launcher because only a launcher can.** Every
+    // fact it reports — the source kind, the object-id algorithm and length, the
+    // commit id, the boot-canonical file's SHA-256 — was validated by the boot chain
+    // before this line runs, and the nucleus answers with what it already holds. It
+    // parses nothing, hashes nothing and reaches no device: ADR-0102 §2 keeps Git,
+    // inflate and repository traversal out of the trusted base entirely.
+    #[cfg(feature = "test-repository-linkage")]
+    let first_endowment = {
+        let (Some(block_serve), Some(reader_inbox)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let Some(bus) = pci::endow_root(0, 0, 255) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-pci-root\r\n");
+            mem_fail();
+        };
+        tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
+        tos_serial::puts(b" asserted_by=launcher\r\n");
+        pci::qualify_dma(
+            pci::STAGE4_TARGET.0,
+            pci::STAGE4_TARGET.1,
+            pci::STAGE4_TARGET.2,
+            pci::STAGE4_TARGET.3,
+        );
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE
+                    | tos_launch::RIGHT_WAIT_CHILD
+                    | tos_launch::RIGHT_TERMINATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"block_serve_full"),
+                object: capability::Object::Endpoint(block_serve),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"reader_inbox_full"),
+                object: capability::Object::Endpoint(reader_inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"boot_identity_full"),
+                object: capability::Object::BootIdentity,
+                rights: tos_launch::RIGHT_READ,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"device"),
+                object: capability::Object::PciBus(bus),
+                rights: tos_launch::RIGHT_CLAIM,
+                scope: 0,
+            },
+        ]
+    };
     #[cfg(feature = "test-block-protocol")]
     let first_endowment = {
         let (Some(serve), Some(inbox)) = (ipc::create(), ipc::create()) else {
@@ -2504,6 +2575,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-endpoint-attenuation",
         feature = "test-carried-call-answer",
         feature = "test-state-store",
+        feature = "test-repository-linkage",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -2544,6 +2616,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-endpoint-attenuation",
         feature = "test-carried-call-answer",
         feature = "test-state-store",
+        feature = "test-repository-linkage",
         feature = "test-region-transfer-text",
         feature = "test-block-lifecycle",
         feature = "test-build-topology",

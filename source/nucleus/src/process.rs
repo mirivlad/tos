@@ -2084,9 +2084,19 @@ pub fn write_argument_record<T: Copy>(index: usize, offset: u64, record: &T) -> 
     if base == 0 {
         return false;
     }
+    // **The bound is checked here and not left to the caller's constant.** Every
+    // offset this is called with today is a `tos-launch` constant with a const
+    // assertion behind it, which is the right place for the *layout* to be
+    // settled — but a helper generic over `T` that trusted its arguments would
+    // be one edit away from writing past the mapping the process reads, and a
+    // nucleus does not have a caller it may trust with that.
+    if offset + size_of::<T>() as u64 > ARGUMENT_FRAMES * FRAME_SIZE {
+        return false;
+    }
     let at = base + offset;
     // SAFETY: the region is one frame the nucleus mapped for this process and
-    // reaches through its own identity map, and the record is inside it.
+    // reaches through its own identity map, and the bound above proves the
+    // record lies inside it.
     unsafe { core::ptr::with_exposed_provenance_mut::<T>(at as usize).write_unaligned(*record) };
     true
 }

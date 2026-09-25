@@ -65,6 +65,12 @@ test-carried-call-answer = []
 # with an initializer that formats once and refuses twice, two generations of the store
 # from one sealed plan, and a reader that gets back what a writer that has ended wrote.
 test-state-store = []
+# ADR-0102: the capsule-to-repository linkage boot. The supervisor holds the bus,
+# the block service's endpoint, the reader's inbox and — the only constant that does
+# — a `system.boot.Identity`, which it endows into the reader's sealed plan. The
+# nucleus mints the object; every fact it reports was validated by the boot chain
+# before the first process existed.
+test-repository-linkage = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after
