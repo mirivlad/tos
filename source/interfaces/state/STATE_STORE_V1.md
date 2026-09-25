@@ -148,6 +148,13 @@ free, not reserved and not this store's: they are undecided. The
 capsule-to-repository handoff is a separate decision and must not overlap this
 extent without explicitly revisiting the layout.
 
+**That separate decision is `ADR-0102`, accepted 2026-09-26**, and the boundary is
+now stated from both sides: this store owns `[0, 65)` and the Stage-4 repository
+extent begins at sector **65** and ends at **2113**. Nothing above 2113 is owned by
+either. A repository read addressed below 65 is refused by the reader before the
+block service sees it, and the counted device requests of `state-store.sh` and
+`repository-linkage.sh` are where the two extents are shown not to meet.
+
 There are no partitions at Stage 4 and **no partition abstraction is
 introduced**; a base-offset field would have exactly one possible value, so there
 is none.

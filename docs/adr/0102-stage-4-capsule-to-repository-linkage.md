@@ -2,15 +2,15 @@
 
 # ADR-0102: Stage-4 capsule-to-repository linkage
 
-- Status: **Proposed** (**not accepted, and nothing in the tree implements it**)
+- Status: **Accepted**
 - Date: 2026-09-26, **corrected 2026-09-26** after Project Architect review of the
   first draft (commit `497ebf9`): the public object-kind encoding (§3a1), the rows
   canonical text may actually use and the withdrawal of the false "delegable normally"
   claim (§3e), the capacity precondition (§6a1), the object sector padding (§7e), the
   normative end of the zlib stream (§5c), the minimum Git parser (§5d), and the refusal
   vocabulary the evidence section had been promising without defining (§10a). The
-  design is otherwise unchanged
-- Project Architect approval: **not yet granted**
+  design is otherwise unchanged, and it was **accepted 2026-09-26** in that form
+- Project Architect approval: **2026-09-26**, at Level 3
 - Decision level: **3** — architectural, **requiring Project Architect approval**.
   It creates a **second persistent format** on the reference block device, which is
   `docs/21`'s explicit Level-3 test and the same one that made ADR-0099 Level 3. It
@@ -178,7 +178,9 @@ minted      only at the trusted boot boundary, by the launcher
   exists because the nucleus established the boot, and it reaches a process only by
   endowment (`ADR-0055`: an endowment is what a launcher decided).
 - **Non-affine.** It is not consumed by use, and `capability_attenuate` may refine a
-  name for it exactly as it does for an endpoint (ADR-0100).
+  name for it exactly as it does for an endpoint (ADR-0100): the result is the
+  **intersection** of what was asked for with what the name already held, and an
+  intersection that is empty is a refusal rather than a rightless handle.
 - **Lifetime is the boot.** `capability_release` releases a *name*, as it does for
   every non-affine object; the object outlives every name.
 - **Representation `AsInterface`** (ADR-0085), so `LANGUAGE_VERSION` does not move
@@ -958,9 +960,12 @@ is one of §10a's classes, and the gate asserts the class.
 5. **Launch-plan endowment of the identity works**: the bootstrap holder endows it into
    a sealed plan through operation 22, and the reader created from that plan reads the
    record. That is the only delegation path this slice claims (§3e).
-6. **Attenuation cannot widen.** A name attenuated to `RIGHT_READ` asked for more still
-   yields `RIGHT_READ` — intersection, not validation, exactly as ADR-0100 proved for an
-   endpoint — and a name attenuated to no rights cannot call `boot_identity_read`.
+6. **Attenuation is intersection, and an empty intersection is a refusal.** A name
+   attenuated to `RIGHT_READ` asked for more still yields `RIGHT_READ` — intersection,
+   not validation, exactly as ADR-0100 proved for an endpoint. Asking for a right set
+   that intersects to nothing is **refused**, as `CAPABILITY_V1` §4 has it; this
+   decision does not invent a zero-right handle, and there is therefore no such thing
+   as an identity capability that resolves but may not read.
 
 ### 11b. Positive linkage
 
@@ -1155,8 +1160,10 @@ On acceptance, and not before:
   interoperability implementation of a published format; `docs/08` §Licence boundaries
   permits Apache-2.0 for independent readers and test vectors, and the activation
   services this decision does not build remain GPL-3.0-or-later.
-- **How is the behavior tested?** §11's obligations: three identity, three positive and
-  nineteen negative, plus the in-boot restart shape.
+- **How is the behavior tested?** §11's obligations, counted from the tables rather
+  than remembered: **six** on the boot identity and its endowment, **three** on the
+  positive linkage, **twenty-four** negatives, one assertion that the state store is
+  unaffected, and the in-boot restart shape.
 
 ## 16. What this does not decide
 

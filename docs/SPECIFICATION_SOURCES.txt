@@ -169,3 +169,4 @@ docs/adr/0098-the-block-device-v1-wire-protocol.md
 docs/adr/0099-stage-4-persistent-object-state-storage.md
 docs/adr/0100-attenuating-an-endpoint-from-canonical-text.md
 docs/adr/0101-a-carried-call-must-expose-its-reply.md
+docs/adr/0102-stage-4-capsule-to-repository-linkage.md

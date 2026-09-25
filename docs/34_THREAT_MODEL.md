@@ -345,6 +345,41 @@ This is the Stage 3 form of the failure Stage 1 was built to prevent — an
 invented official commit. It is cheap to introduce by accident and expensive to
 detect later.
 
+### X4.1 — A boot identity that selects rather than reports (T2, T6 → A1, A5)
+
+`system.boot.Identity` (`ADR-0102` §3) makes the verified boot source identity
+readable by canonical text. The threat is that a readable fact becomes a selectable
+one: a capability that could choose which commit the system believes in would move
+boot selection out of boot control.
+
+Controls: the operation is **read-only and the object is immutable for the boot**;
+it is minted only at the trusted boot boundary and reaches a process only by
+bootstrap or launch-plan endowment; `RIGHT_READ` is the only right, attenuation is
+intersection and an empty intersection is refused; and the repository extent
+deliberately carries **no root commit field**, so the extent cannot name the commit
+a reader trusts (`ADR-0102` §7a). **E2**.
+
+### X4.2 — Attacker-controlled repository bytes (T4 → A5, S2)
+
+The Stage-4 repository extent is raw bytes a host wrote, parsed by canonical text:
+a zlib stream, a Git object graph and a bounded object table are all
+attacker-controlled input to a parser under `docs/34` S2's bounded-parsing rule.
+
+Controls: every size, depth and count bound is declared and **checked before the
+work it bounds** — the inflate bound comes from the table entry before any byte is
+produced; the object id is **recomputed** over the object's own bytes rather than
+trusted from where it was found; the extent's own capacity is established through
+`CAPACITY` before any repository sector is read; reserved bytes and object sector
+padding must be zero; and every refusal is one of `ADR-0102` §10a's nine classes,
+failing closed with no fallback. **E2**.
+
+**And one limitation stated rather than implied.** The Stage-4 profile verifies
+**SHA-1** Git object ids, because that is what the repository and the capsule OID
+are. Recomputation proves corruption and substitution under this conformance
+profile; it is **not** claimed as collision resistance against an adversary who can
+produce a collision, which is the T4 case this profile does not defend against. A
+hash-family migration is a later decision, not a property of this one.
+
 ### X3.10 — Privileged policy migrating into the nucleus (T0 → A1, A8)
 
 Service logic moves into the nucleus because IPC is inconvenient, and the system
@@ -463,7 +498,9 @@ Release notes state the evidence level for security claims.
 - Stage 1: boot/capsule boundaries and source identity;
 - Stage 1.5–2: parser, language, verifier, resource and source-map threats;
 - Stage 3: capability, IPC and process isolation threats;
-- Stage 4: interrupt, MMIO, DMA and storage-corruption threats;
+- Stage 4: interrupt, MMIO, DMA and storage-corruption threats, and — from
+  `ADR-0102` — the verified boot identity a process may read and the raw repository
+  bytes a canonical textual parser consumes (X4.1, X4.2);
 - Stage 5: repository, refs, protected candidate/current/last-known-good/recovery
   selection, rollback, garbage collection and state migration threats;
 - Stage 7: remote, network, credential and time threats.

@@ -41,7 +41,11 @@ Mitigation:
 - explicit G0–G6 compatibility profiles rather than an all-or-nothing promise;
 - compatibility tests and possible repository extensions that preserve ordinary Git visibility.
 
-Open question: exact initial object/hash/ref profile and the evidence required to promote from G1 to G2/G3.
+Open question: the evidence required to promote from G1 to G2/G3, and the object,
+hash and ref profile of that promotion. **The Stage-4 half is answered**: `ADR-0102`
+fixes a specialized read-only subset — SHA-1 object identity, stored-block loose
+objects, commit/tree/blob and no refs — for the capsule-to-repository linkage, and
+says nothing about what G2 will need.
 
 ## R4 — Kernel/repository chicken-and-egg
 
