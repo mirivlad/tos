@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `88368b24c1e966d3dd330370ecb31d29ddbebfa75e3849b88656bad278ad3604`\
+Source-manifest SHA-256: `6df7191ca980c25096058f1b320c715c01c60a90cf9f671775e42ee1a295b4cc`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -203,9 +203,25 @@ that cannot name that endpoint cannot publish.
 one client, one service, and reading only. Writing through this path, more than one
 sector in flight, request framing and zero-copy are none of them designed — and
 ADR-0037 makes zero-copy unreachable by decision rather than by omission. Nothing
-here is the capsule-to-repository handoff, which is `docs/16`'s own separate Stage 4
-deliverable; **persistent object storage is a separate deliverable and is now built**
-— `state-store.sh`, described further down.
+here is the capsule-to-repository handoff *in full*; **persistent object storage is a
+separate deliverable and is now built** — `state-store.sh`, described further down.
+
+**The first half of the capsule-to-repository handoff is built** (ADR-0102,
+`repository-linkage.sh`). Canonical TOS Core holding SHA-1, SHA-256, a bounded
+stored-block inflater and the minimum Git parser reads a repository extent from the
+same device the state store lives on, verifies every object against the id it was
+located by, and proves that `SHA-256` of the repository's
+`source/system/boot/init.tos` at the commit the capsule names is the digest the
+nucleus computed over the file it booted. The commit id and that digest reach it
+through one new nucleus operation that *reports* an already-verified boot fact; the
+nucleus gains no Git, no hashes, no inflate and no repository traversal.
+
+**What that is not**: a repository-backed `/system`. The system commit id is still
+absent and the existing test still says so. No refs, no writes, no packfiles, no
+history traversal, no activation, no rollback — and no cross-reboot persistence,
+because the harness re-creates the disk image for every run and no gate in this
+repository has ever shown a byte surviving a reboot. `docs/36` G2 owns the second
+half.
 
 TOS is not yet a user shell, application environment, or desktop operating
 system. What it does with a disk is single sector reads and one write, reached
@@ -483,6 +499,17 @@ device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
 It does **not** prove queue multiplexing, scheduling, filesystem integration or a
 generic driver subsystem. None of those is designed.
+
+Above that boundary two Stage-4 deliverables are built and neither closes the
+stage: **persistent object storage** (ADR-0099, `STATE_STORE_V1`,
+`qemu_state_store`) and **the first half of the capsule-to-repository handoff**
+(ADR-0102, `qemu_repository_linkage`) — the linkage, which is the statement that
+the canonical text this machine booted is the `source/system/boot/init.tos` of the
+commit the boot chain verified. Its evidence is twenty-three boots: one that proves
+the witness and twenty-two that are each refused with the exact class ADR-0102 §10a
+fixes. ADR-0102 §11d's in-boot re-read by a second reader generation is **NOT
+MEASURED** — it runs and is collected, and its own account does not reach the
+journal; the gate prints the gap rather than counting one generation as two.
 
 **And since 2026-09-23 a service can die and be replaced without losing data.** A
 block service serves a write and ends still holding the function, the mapped
