@@ -1,0 +1,1470 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The canonical textual repository reader: the half of the capsule-to-repository
+// handoff Stage 4 owes (ADR-0102).
+//
+// It answers one question and nothing else: **is the boot text this machine is
+// running the `source/system/boot/init.tos` of the commit its capsule names?**
+// Everything it needs to ask that comes from two places and neither of them is
+// this file — the commit id and the boot content digest come from
+// `system.boot.Identity`, and the repository bytes come from a device it
+// reaches only through `block.device.v1`. A reader that carried a commit id, an
+// expected blob id or an expected digest in its own text would prove the answer
+// it was compiled with.
+//
+//   capacity()                             the extent must be shown to exist
+//   header, table                          the format, before any object
+//   the commit named by system.boot.Identity
+//   source / system / boot / init.tos      one path, one entry at each level
+//   SHA-1 over every object                against the id it was located by
+//   SHA-256 over the blob payload          against boot_content_sha256
+//
+// **What it holds**: a budget, `send | call` on the block service, an inbox of
+// its own, and the boot identity with `read`. No PCI bus, no function, no
+// window, no interrupt source, no DMA region — and no authority to write
+// anything anywhere.
+//
+// **What it refuses with** is ADR-0102 §10a's vocabulary, nine classes and no
+// invented codes. A negative return is something else entirely: a lower IPC
+// operation that never completed is not a repository refusal (§11e), it is an
+// incomplete operation of this process, and no class is fabricated from it.
+
+module system.repository.reader version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as block;
+import capability system.ipc.Endpoint as inbox;
+import capability system.boot.Identity as identity;
+
+resource [
+    fuel: 67108864,
+    stack: 32KiB,
+    allocation: 16KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 12,
+    imports: 16
+]
+
+const OK: i64 = 0i64;
+const MASK32: u64 = 4294967295u64;
+const RIGHT_SEND: u64 = 1u64;
+
+// --- `BLOCK_DEVICE_V1` §3, §4, §5 ---------------------------------------------
+const OP_READ: u64 = 0u64;
+const OP_CAPACITY: u64 = 2u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const BLOCK_REFUSED: u64 = 9223372036854775808u64;
+const SECTOR_BYTES: size = 512B;
+
+// --- ADR-0102 §6a, §7, §8 ------------------------------------------------------
+const REPOSITORY_FIRST_SECTOR: u64 = 65u64;
+const REPOSITORY_SECTORS: u64 = 2048u64;
+const REQUIRED_CAPACITY: u64 = 2113u64;
+const FORMAT_VERSION: u64 = 1u64;
+const OID_ALGORITHM_SHA1: u64 = 1u64;
+const OID_LENGTH: size = 20B;
+const MAX_OBJECTS: u64 = 32u64;
+const ENTRY_SIZE: size = 48B;
+const TABLE_SECTORS: u64 = 3u64;
+const DATA_START: u64 = 4u64;
+const MAX_OBJECT_UNCOMPRESSED_BYTES: size = 131072B;
+const MAX_TREE_DEPTH: size = 16B;
+const MAX_TREE_ENTRIES: size = 256B;
+const MAX_PATH_BYTES: size = 256B;
+
+// The working buffers, sized from the bounds above rather than from what this
+// commit happens to need. `MAX_OBJECT_UNCOMPRESSED_BYTES` bytes of content
+// occupy at most three stored blocks of framing plus a zlib header and an
+// Adler-32 trailer, and the bytes are read a whole sector at a time.
+const STREAM_BYTES: size = 132096B;
+const HEAD_BYTES: size = 2048B;
+
+// --- ADR-0102 §10a, the refusal vocabulary ------------------------------------
+const REPO_OK: i64 = 0i64;
+const REPO_FORMAT: i64 = 1i64;
+const REPO_BOUNDS: i64 = 2i64;
+const REPO_MISSING: i64 = 3i64;
+const REPO_KIND: i64 = 4i64;
+const REPO_OID: i64 = 5i64;
+const REPO_LINKAGE: i64 = 6i64;
+const REPO_UNSUPPORTED: i64 = 7i64;
+const REPO_BLOCK: i64 = 8i64;
+
+// --- what this module proves, one bit each ------------------------------------
+// The account is `class + 16 * proved`: the verdict in the low four bits and
+// what was established on the way to it above them. A **negative** account is
+// not a verdict at all — it is an incomplete lower operation (§11e).
+const PROVED_IDENTITY_READ: i64 = 1i64;
+const PROVED_IDENTITY_IS_GIT: i64 = 2i64;
+const PROVED_CAPACITY_FITS: i64 = 4i64;
+const PROVED_HEADER_VALID: i64 = 8i64;
+const PROVED_TABLE_VALID: i64 = 16i64;
+const PROVED_COMMIT_VERIFIED: i64 = 32i64;
+const PROVED_TREES_VERIFIED: i64 = 64i64;
+const PROVED_BLOB_VERIFIED: i64 = 128i64;
+const PROVED_LINKAGE: i64 = 256i64;
+
+extern fn boot_identity_read(
+    cap: system.boot.Identity
+) -> Result<system.boot.IdentityRecord, i64> uses [identity];
+
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [block];
+
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [system.ipc.Endpoint, block];
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+extern fn capability_attenuate(
+    cap: system.ipc.Endpoint, rights: u64
+) -> Result<system.ipc.Endpoint, i64> uses [inbox];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [budget];
+
+// --- the two hashes this profile needs (ADR-0102 §5b) -------------------------
+//
+// **Two, because the repository and the capsule are identified differently.**
+// Git object identity here is SHA-1, which is what `git rev-parse
+// --show-object-format` reports for this repository and what every capsule it
+// builds therefore carries; the capsule's boot-content digest is SHA-256. A
+// repository migrated to Git's SHA-256 object format to save one hash would
+// change every capsule identity and every published provenance record, which is
+// a far larger price than a second hash in canonical text.
+//
+// **Mod-2^32 arithmetic, written as a mask rather than assumed.** Ordinary `+`
+// and `*` are checked in TOS Core and trap on overflow (`docs/40` §3), so a
+// hash that leaned on wrapping would not run at all. Every addition here is
+// `(a + b) & MASK32` over `u64`, and every rotation is composed from two shifts
+// and the same mask.
+//
+// **The message schedule is sixteen words and not eighty.** The standards
+// define `w[t]` for every round; a sixteen-word window computes the same
+// sequence in place, which is what keeps a hash of a 128 KiB object inside a
+// declared allocation that a reader can look at.
+//
+// **The padding is computed where it is needed rather than assembled.** There
+// is no scratch block: `padded_byte` answers for any position of the padded
+// message, and a block that lies wholly inside the content skips it entirely
+// and reads the region directly, which is what makes the cost of a long object
+// the cost of its content.
+
+pub record Hash5 [a: u64, b: u64, c: u64, d: u64, e: u64]
+
+fn add32(a: u64, b: u64) -> u64 { return (a + b) & MASK32; }
+fn rotl32(x: u64, n: u64) -> u64 { return ((x << n) | (x >> (32u64 - n))) & MASK32; }
+fn not32(x: u64) -> u64 { return x ^ MASK32; }
+
+// How many bytes the padded message occupies: the content, one `0x80`, a zero
+// run, and eight bytes of big-endian bit length, rounded up to a whole block.
+fn padded_length(length: size) -> size {
+    return ((length + 8B) / 64B + 1B) * 64B;
+}
+
+// One byte of the padded message, with no buffer: the padding is computed where
+// it is needed rather than assembled somewhere first.
+fn padded_byte(borrow data: Region<mut u8>, from: size, length: size, total: size, at: size) -> u64 {
+    if (at < length) {
+        match (to_u64(data[from + at])) {
+            Ok(byte) => { return byte; }
+            Err(impossible) => { return 0u64; }
+        }
+    }
+    if (at == length) { return 128u64; }
+    if (at + 8B < total) { return 0u64; }
+    match (to_u64(length)) {
+        Ok(bytes) => {
+            match (to_u64(7B - (at - (total - 8B)))) {
+                Ok(place) => { return ((bytes * 8u64) >> (place * 8u64)) % 256u64; }
+                Err(impossible) => { return 0u64; }
+            }
+        }
+        Err(impossible) => { return 0u64; }
+    }
+}
+
+fn padded_word(borrow data: Region<mut u8>, from: size, length: size, total: size, at: size) -> u64 {
+    return (padded_byte(borrow data, from, length, total, at) << 24u64)
+        | (padded_byte(borrow data, from, length, total, at + 1B) << 16u64)
+        | (padded_byte(borrow data, from, length, total, at + 2B) << 8u64)
+        | padded_byte(borrow data, from, length, total, at + 3B);
+}
+
+// A whole block that lies inside the content, read straight out of the region.
+fn plain_word(borrow data: Region<mut u8>, at: size) -> u64 {
+    match (to_u64(data[at])) {
+        Ok(b0) => {
+            match (to_u64(data[at + 1B])) {
+                Ok(b1) => {
+                    match (to_u64(data[at + 2B])) {
+                        Ok(b2) => {
+                            match (to_u64(data[at + 3B])) {
+                                Ok(b3) => {
+                                    return (b0 << 24u64) | (b1 << 16u64) | (b2 << 8u64) | b3;
+                                }
+                                Err(impossible) => { return 0u64; }
+                            }
+                        }
+                        Err(impossible) => { return 0u64; }
+                    }
+                }
+                Err(impossible) => { return 0u64; }
+            }
+        }
+        Err(impossible) => { return 0u64; }
+    }
+}
+
+pub fn sha1_region(borrow data: Region<mut u8>, from: size, length: size) -> Hash5 {
+    let total: size = padded_length(length);
+
+    let mut h0: u64 = 1732584193u64;
+    let mut h1: u64 = 4023233417u64;
+    let mut h2: u64 = 2562383102u64;
+    let mut h3: u64 = 271733878u64;
+    let mut h4: u64 = 3285377520u64;
+
+    let mut w: array<u64, 16> = [
+        0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+        0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64
+    ];
+
+    let mut base: size = 0B;
+    while (base < total) {
+        let whole: bool = base + 64B <= length;
+        let mut i: size = 0B;
+        while (i < 16B) {
+            if (whole) {
+                w[i] = plain_word(borrow data, from + base + i * 4B);
+            } else {
+                w[i] = padded_word(borrow data, from, length, total, base + i * 4B);
+            }
+            i = i + 1B;
+        }
+
+        let mut a: u64 = h0;
+        let mut b: u64 = h1;
+        let mut c: u64 = h2;
+        let mut d: u64 = h3;
+        let mut e: u64 = h4;
+
+        let mut t: size = 0B;
+        while (t < 80B) {
+            let slot: size = t % 16B;
+            if (t >= 16B) {
+                w[slot] = rotl32(
+                    w[(t + 13B) % 16B] ^ w[(t + 8B) % 16B] ^ w[(t + 2B) % 16B] ^ w[slot], 1u64);
+            }
+            let mixed: u64 = w[slot];
+
+            let mut f: u64 = 0u64;
+            let mut k: u64 = 0u64;
+            if (t < 20B) {
+                f = (b & c) | (not32(b) & d);
+                k = 1518500249u64;
+            } else {
+                if (t < 40B) {
+                    f = b ^ c ^ d;
+                    k = 1859775393u64;
+                } else {
+                    if (t < 60B) {
+                        f = (b & c) | (b & d) | (c & d);
+                        k = 2400959708u64;
+                    } else {
+                        f = b ^ c ^ d;
+                        k = 3395469782u64;
+                    }
+                }
+            }
+
+            let temp: u64 = add32(add32(add32(add32(rotl32(a, 5u64), f), e), k), mixed);
+            e = d;
+            d = c;
+            c = rotl32(b, 30u64);
+            b = a;
+            a = temp;
+            t = t + 1B;
+        }
+
+        h0 = add32(h0, a);
+        h1 = add32(h1, b);
+        h2 = add32(h2, c);
+        h3 = add32(h3, d);
+        h4 = add32(h4, e);
+        base = base + 64B;
+    }
+
+    return Hash5(a: h0, b: h1, c: h2, d: h3, e: h4);
+}
+
+pub record Hash8 [
+    a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64
+]
+
+fn rotr32(x: u64, n: u64) -> u64 { return ((x >> n) | (x << (32u64 - n))) & MASK32; }
+
+// FIPS 180-4's sixty-four round constants: the fractional parts of the cube
+// roots of the first sixty-four primes, as the standard fixes them. Written out
+// rather than derived, because a table a program computes is a table a reader
+// cannot check against the standard by looking at it.
+fn sha256_constants() -> array<u64, 64> {
+    return [
+        1116352408u64, 1899447441u64, 3049323471u64, 3921009573u64,
+        961987163u64, 1508970993u64, 2453635748u64, 2870763221u64,
+        3624381080u64, 310598401u64, 607225278u64, 1426881987u64,
+        1925078388u64, 2162078206u64, 2614888103u64, 3248222580u64,
+        3835390401u64, 4022224774u64, 264347078u64, 604807628u64,
+        770255983u64, 1249150122u64, 1555081692u64, 1996064986u64,
+        2554220882u64, 2821834349u64, 2952996808u64, 3210313671u64,
+        3336571891u64, 3584528711u64, 113926993u64, 338241895u64,
+        666307205u64, 773529912u64, 1294757372u64, 1396182291u64,
+        1695183700u64, 1986661051u64, 2177026350u64, 2456956037u64,
+        2730485921u64, 2820302411u64, 3259730800u64, 3345764771u64,
+        3516065817u64, 3600352804u64, 4094571909u64, 275423344u64,
+        430227734u64, 506948616u64, 659060556u64, 883997877u64,
+        958139571u64, 1322822218u64, 1537002063u64, 1747873779u64,
+        1955562222u64, 2024104815u64, 2227730452u64, 2361852424u64,
+        2428436474u64, 2756734187u64, 3204031479u64, 3329325298u64
+    ];
+}
+
+pub fn sha256_region(borrow data: Region<mut u8>, from: size, length: size) -> Hash8 {
+    let total: size = padded_length(length);
+    let k: array<u64, 64> = sha256_constants();
+
+    // The fractional parts of the square roots of the first eight primes.
+    let mut h0: u64 = 1779033703u64;
+    let mut h1: u64 = 3144134277u64;
+    let mut h2: u64 = 1013904242u64;
+    let mut h3: u64 = 2773480762u64;
+    let mut h4: u64 = 1359893119u64;
+    let mut h5: u64 = 2600822924u64;
+    let mut h6: u64 = 528734635u64;
+    let mut h7: u64 = 1541459225u64;
+
+    let mut w: array<u64, 16> = [
+        0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+        0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64
+    ];
+
+    let mut base: size = 0B;
+    while (base < total) {
+        let whole: bool = base + 64B <= length;
+        let mut i: size = 0B;
+        while (i < 16B) {
+            if (whole) {
+                w[i] = plain_word(borrow data, from + base + i * 4B);
+            } else {
+                w[i] = padded_word(borrow data, from, length, total, base + i * 4B);
+            }
+            i = i + 1B;
+        }
+
+        let mut a: u64 = h0;
+        let mut b: u64 = h1;
+        let mut c: u64 = h2;
+        let mut d: u64 = h3;
+        let mut e: u64 = h4;
+        let mut f: u64 = h5;
+        let mut g: u64 = h6;
+        let mut hh: u64 = h7;
+
+        let mut t: size = 0B;
+        while (t < 64B) {
+            let slot: size = t % 16B;
+            if (t >= 16B) {
+                let near: u64 = w[(t + 1B) % 16B];
+                let far: u64 = w[(t + 14B) % 16B];
+                let s0: u64 = rotr32(near, 7u64) ^ rotr32(near, 18u64) ^ (near >> 3u64);
+                let s1: u64 = rotr32(far, 17u64) ^ rotr32(far, 19u64) ^ (far >> 10u64);
+                w[slot] = add32(add32(add32(w[slot], s0), w[(t + 9B) % 16B]), s1);
+            }
+
+            let big1: u64 = rotr32(e, 6u64) ^ rotr32(e, 11u64) ^ rotr32(e, 25u64);
+            let choice: u64 = (e & f) ^ (not32(e) & g);
+            let first: u64 = add32(add32(add32(add32(hh, big1), choice), k[t]), w[slot]);
+            let big0: u64 = rotr32(a, 2u64) ^ rotr32(a, 13u64) ^ rotr32(a, 22u64);
+            let majority: u64 = (a & b) ^ (a & c) ^ (b & c);
+            let second: u64 = add32(big0, majority);
+
+            hh = g;
+            g = f;
+            f = e;
+            e = add32(d, first);
+            d = c;
+            c = b;
+            b = a;
+            a = add32(first, second);
+            t = t + 1B;
+        }
+
+        h0 = add32(h0, a);
+        h1 = add32(h1, b);
+        h2 = add32(h2, c);
+        h3 = add32(h3, d);
+        h4 = add32(h4, e);
+        h5 = add32(h5, f);
+        h6 = add32(h6, g);
+        h7 = add32(h7, hh);
+        base = base + 64B;
+    }
+
+    return Hash8(a: h0, b: h1, c: h2, d: h3, e: h4, f: h5, g: h6, h: h7);
+}
+
+// --- object ids, as twenty bytes ----------------------------------------------
+//
+// Carried as an array rather than through a region, because an id is a value
+// this module compares and never a place it writes: the traversal holds the id
+// it is looking for while the buffer it would have lived in is being filled
+// with the object that answers to it.
+
+fn zero_oid() -> array<u64, 20> {
+    return [
+        0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+        0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64
+    ];
+}
+
+fn oid_at(borrow data: Region<mut u8>, at: size) -> array<u64, 20> {
+    let mut oid: array<u64, 20> = zero_oid();
+    let mut i: size = 0B;
+    while (i < OID_LENGTH) {
+        match (to_u64(data[at + i])) {
+            Ok(byte) => { oid[i] = byte; }
+            Err(impossible) => { oid[i] = 0u64; }
+        }
+        i = i + 1B;
+    }
+    return oid;
+}
+
+fn oid_same(left: array<u64, 20>, right: array<u64, 20>) -> bool {
+    let mut different: u64 = 0u64;
+    let mut i: size = 0B;
+    while (i < OID_LENGTH) {
+        if (left[i] != right[i]) { different = different + 1u64; }
+        i = i + 1B;
+    }
+    return different == 0u64;
+}
+
+// The SHA-1 state as the twenty bytes an object id is, big-endian per word.
+fn oid_of(digest: Hash5) -> array<u64, 20> {
+    let mut oid: array<u64, 20> = zero_oid();
+    let mut word: size = 0B;
+    while (word < 5B) {
+        let mut value: u64 = digest.a;
+        if (word == 1B) { value = digest.b; }
+        if (word == 2B) { value = digest.c; }
+        if (word == 3B) { value = digest.d; }
+        if (word == 4B) { value = digest.e; }
+        let mut byte: size = 0B;
+        while (byte < 4B) {
+            match (to_u64(3B - byte)) {
+                Ok(place) => { oid[word * 4B + byte] = (value >> (place * 8u64)) % 256u64; }
+                Err(impossible) => { oid[word * 4B + byte] = 0u64; }
+            }
+            byte = byte + 1B;
+        }
+        word = word + 1B;
+    }
+    return oid;
+}
+
+// One byte of a 32-byte identity value, as `SYSTEM_INTERFACE_V1` §4.2 carries
+// it: chunk `i` holds bytes `[8i, 8i+8)` as a little-endian `u64`.
+fn chunk_byte(c0: u64, c1: u64, c2: u64, c3: u64, at: size) -> u64 {
+    let mut chunk: u64 = c0;
+    if (at >= 24B) { chunk = c3; } else {
+        if (at >= 16B) { chunk = c2; } else {
+            if (at >= 8B) { chunk = c1; }
+        }
+    }
+    match (to_u64(at % 8B)) {
+        Ok(place) => { return (chunk >> (place * 8u64)) % 256u64; }
+        Err(impossible) => { return 0u64; }
+    }
+}
+
+fn oid_of_chunks(c0: u64, c1: u64, c2: u64, c3: u64) -> array<u64, 20> {
+    let mut oid: array<u64, 20> = zero_oid();
+    let mut i: size = 0B;
+    while (i < OID_LENGTH) {
+        oid[i] = chunk_byte(c0, c1, c2, c3, i);
+        i = i + 1B;
+    }
+    return oid;
+}
+
+// --- little-endian fields, built byte by byte ---------------------------------
+//
+// `docs/40` forbids serializing a `size` in a persistent form, so every number
+// this format holds is a fixed-width integer read a byte at a time and never a
+// host's idea of a word.
+
+fn byte_of(borrow data: Region<mut u8>, at: size) -> u64 {
+    match (to_u64(data[at])) {
+        Ok(byte) => { return byte; }
+        Err(impossible) => { return 0u64; }
+    }
+}
+
+fn le32(borrow data: Region<mut u8>, at: size) -> u64 {
+    return byte_of(borrow data, at)
+        | (byte_of(borrow data, at + 1B) << 8u64)
+        | (byte_of(borrow data, at + 2B) << 16u64)
+        | (byte_of(borrow data, at + 3B) << 24u64);
+}
+
+fn le16(borrow data: Region<mut u8>, at: size) -> u64 {
+    return byte_of(borrow data, at) | (byte_of(borrow data, at + 1B) << 8u64);
+}
+
+fn sectors_for(length: size) -> u64 {
+    match (to_u64((length + SECTOR_BYTES - 1B) / SECTOR_BYTES)) {
+        Ok(count) => { return count; }
+        Err(impossible) => { return 0u64; }
+    }
+}
+
+// --- the layer below: `block.device.v1` and nothing else ----------------------
+
+// One sector of the repository extent, into `into` at `at`.
+//
+// **The address is refused here, before the block service sees it** (§6b). An
+// extent index outside `[0, REPOSITORY_SECTORS)` is this reader's bound to keep,
+// and the counted device requests of the gate are what say it kept it.
+//
+// The answer is read rather than inferred (`STATE_STORE_V1` §2a, ADR-0101):
+// four outcomes, and only the third is a refusal by the layer below. A lower
+// operation that never completed stays an incomplete operation of this process
+// and is reported as a negative, never as a repository class.
+fn read_extent_sector(borrow mut into: Region<mut u8>, at: size, index: u64) -> i64
+    uses [block, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    if (index >= REPOSITORY_SECTORS) { return REPO_BOUNDS; }
+    let sector: u64 = REPOSITORY_FIRST_SECTOR + index;
+    match (capability_attenuate(inbox, RIGHT_SEND)) {
+        Ok(reply_to) => {
+            let asked: Result<system.ipc.Answer, i64> =
+                endpoint_call_word_carrying(reply_to, block, sector * OPCODE_SPAN + OP_READ);
+            if (capability_release(reply_to) != OK) { return -400i64; }
+            match (asked) {
+                Ok(answer) => {
+                    if (answer.length != REQUEST_BYTES) { return -401i64; }
+                    if (answer.word >= BLOCK_REFUSED) { return REPO_BLOCK; }
+                    if (answer.word != 0u64) { return REPO_BLOCK; }
+                    match (endpoint_receive_region(inbox)) {
+                        Ok(arrived) => {
+                            let mut i: size = 0B;
+                            while (i < SECTOR_BYTES) {
+                                into[at + i] = arrived[i];
+                                i = i + 1B;
+                            }
+                            if (capability_release(arrived) != OK) { return -420i64; }
+                            return REPO_OK;
+                        }
+                        Err(status) => { return status - 430i64; }
+                    }
+                }
+                Err(status) => { return status - 410i64; }
+            }
+        }
+        Err(status) => { return status - 440i64; }
+    }
+}
+
+// --- ADR-0102 §5c: DEFLATE stored blocks, and where the stream ends -----------
+//
+// Every rule in the order §5c states it, and the **end of the stream is
+// normative**: one `BFINAL` block, one Adler-32 trailer, and no byte inside
+// `stored_length` after it. A rule that said which blocks are accepted but not
+// where the stream stops is a rule two implementations can satisfy differently.
+//
+// The declared length is checked **before** the bytes are produced, from the
+// table entry, which is what makes a decompression bomb unreachable rather than
+// survivable (`docs/34` S2).
+
+fn adler32(borrow data: Region<mut u8>, length: size) -> u64 {
+    let mut low: u64 = 1u64;
+    let mut high: u64 = 0u64;
+    let mut at: size = 0B;
+    while (at < length) {
+        low = (low + byte_of(borrow data, at)) % 65521u64;
+        high = (high + low) % 65521u64;
+        at = at + 1B;
+    }
+    return (high << 16u64) | low;
+}
+
+// A `size` for a number this reader read out of a persistent structure.
+//
+// TOS Core's checked conversions go from `size` to an integer and **not back**:
+// `docs/39` §2's predeclared namespace is closed and holds no `to_size`. A byte
+// count that came out of a header is an integer, so the size is counted up to
+// it — in sector strides and then singly, bounded by the declared maximum the
+// number is bounded by anyway. The caller compares the result back to the value
+// and refuses if the bound cut it short, so a number past the bound is a
+// refusal rather than a loop.
+fn counted_size(value: u64, limit: size) -> size {
+    let mut target: u64 = value;
+    match (to_u64(limit)) {
+        Ok(cap) => { if (target > cap) { target = cap; } }
+        Err(impossible) => { return 0B; }
+    }
+    let mut counted: size = 0B;
+    let mut seen: u64 = 0u64;
+    while (seen + 512u64 <= target) {
+        counted = counted + 512B;
+        seen = seen + 512u64;
+    }
+    while (seen < target) {
+        counted = counted + 1B;
+        seen = seen + 1u64;
+    }
+    return counted;
+}
+
+fn inflate_stored(
+    borrow stream: Region<mut u8>,
+    stored: size,
+    borrow mut out: Region<mut u8>,
+    declared: size
+) -> i64 {
+    if (stored < 6B) { return REPO_FORMAT; }
+    let cmf: u64 = byte_of(borrow stream, 0B);
+    let flg: u64 = byte_of(borrow stream, 1B);
+    if (cmf % 16u64 != 8u64) { return REPO_FORMAT; }
+    if (cmf / 16u64 > 7u64) { return REPO_FORMAT; }
+    if ((cmf * 256u64 + flg) % 31u64 != 0u64) { return REPO_FORMAT; }
+    if ((flg / 32u64) % 2u64 != 0u64) { return REPO_FORMAT; }
+
+    let mut at: size = 2B;
+    let mut produced: size = 0B;
+    let mut ended: bool = false;
+    while (!ended) {
+        if (at >= stored) { return REPO_FORMAT; }
+        let head: u64 = byte_of(borrow stream, at);
+        let final_block: bool = head % 2u64 == 1u64;
+        let kind: u64 = (head / 2u64) % 4u64;
+        if (kind == 1u64) { return REPO_UNSUPPORTED; }
+        if (kind == 2u64) { return REPO_UNSUPPORTED; }
+        if (kind == 3u64) { return REPO_FORMAT; }
+        at = at + 1B;
+        if (at + 4B > stored) { return REPO_FORMAT; }
+        let length: u64 = le16(borrow stream, at);
+        let complement: u64 = le16(borrow stream, at + 2B);
+        if ((length ^ 65535u64) != complement) { return REPO_FORMAT; }
+        at = at + 4B;
+        // Copied a byte at a time with the count in the integer it arrived as,
+        // so no number the stream supplied has to become a `size` first.
+        let mut copied: u64 = 0u64;
+        while (copied < length) {
+            if (at >= stored) { return REPO_FORMAT; }
+            if (produced >= declared) { return REPO_BOUNDS; }
+            out[produced] = stream[at];
+            produced = produced + 1B;
+            at = at + 1B;
+            copied = copied + 1u64;
+        }
+        if (final_block) { ended = true; }
+    }
+    // **Exactly the trailer, and nothing after it.** Trailing bytes inside
+    // `stored_length`, a second stream, or a block after the final one all
+    // arrive here as the same statement about where the stream ended.
+    if (at + 4B != stored) { return REPO_FORMAT; }
+    let trailer: u64 = (byte_of(borrow stream, at) << 24u64)
+        | (byte_of(borrow stream, at + 1B) << 16u64)
+        | (byte_of(borrow stream, at + 2B) << 8u64)
+        | byte_of(borrow stream, at + 3B);
+    if (produced != declared) { return REPO_FORMAT; }
+    if (trailer != adler32(borrow out, produced)) { return REPO_FORMAT; }
+    return REPO_OK;
+}
+
+// --- ADR-0102 §5d, the minimum Git parser ------------------------------------
+//
+// Exactly what a conforming Stage-4 reader parses, and nothing beyond it.
+// Anything not required is not interpreted, which is how the parser stays
+// bounded without implementing Git.
+
+// The one path this profile traverses, as bytes. Four components, written out,
+// because a path assembled from a string this module could be handed would be a
+// path something other than the contract decided.
+fn path_length(which: size) -> size {
+    if (which == 0B) { return 6B; }
+    if (which == 1B) { return 6B; }
+    if (which == 2B) { return 4B; }
+    return 8B;
+}
+
+fn path_byte(which: size, at: size) -> u64 {
+    if (which == 0B) {
+        if (at == 0B) { return 115u64; }
+        if (at == 1B) { return 111u64; }
+        if (at == 2B) { return 117u64; }
+        if (at == 3B) { return 114u64; }
+        if (at == 4B) { return 99u64; }
+        return 101u64;
+    }
+    if (which == 1B) {
+        if (at == 0B) { return 115u64; }
+        if (at == 1B) { return 121u64; }
+        if (at == 2B) { return 115u64; }
+        if (at == 3B) { return 116u64; }
+        if (at == 4B) { return 101u64; }
+        return 109u64;
+    }
+    if (which == 2B) {
+        if (at == 0B) { return 98u64; }
+        if (at == 1B) { return 111u64; }
+        if (at == 2B) { return 111u64; }
+        return 116u64;
+    }
+    if (which == 3B) {
+        if (at == 0B) { return 105u64; }
+        if (at == 1B) { return 110u64; }
+        if (at == 2B) { return 105u64; }
+        if (at == 3B) { return 116u64; }
+        if (at == 4B) { return 46u64; }
+        if (at == 5B) { return 116u64; }
+        if (at == 6B) { return 111u64; }
+        return 115u64;
+    }
+    return 0u64;
+}
+
+// The three Git modes this traversal may meet, as the numbers their ascii octal
+// runs denote. `40000` is the canonical tree mode; the other two are the regular
+// file modes a final component may have.
+const MODE_TREE: u64 = 16384u64;
+const MODE_FILE: u64 = 33188u64;
+const MODE_EXECUTABLE: u64 = 33261u64;
+
+const KIND_NONE: u64 = 0u64;
+const KIND_COMMIT: u64 = 1u64;
+const KIND_TREE: u64 = 2u64;
+const KIND_BLOB: u64 = 3u64;
+
+// What an object's envelope said, or the class that refused it.
+pub record Envelope [
+    class: i64,
+    kind: u64,
+    at: size,
+    length: size
+]
+
+fn envelope_refused(class: i64) -> Envelope {
+    return Envelope(class: class, kind: KIND_NONE, at: 0B, length: 0B);
+}
+
+// `<kind> SP <decimal-size> NUL <payload>`, and nothing after the payload.
+//
+// The size is **exactly** decimal: no sign, no space, no leading zero run that
+// is not the value itself, and its value is the payload length exactly.
+fn parse_envelope(borrow object: Region<mut u8>, total: size) -> Envelope {
+    let mut at: size = 0B;
+    let mut kind: u64 = KIND_NONE;
+    // `commit`, `tree` or `blob`, and no other byte sequence — no `tag`.
+    if (byte_of(borrow object, 0B) == 99u64) { kind = KIND_COMMIT; at = 6B; }
+    if (byte_of(borrow object, 0B) == 116u64) { kind = KIND_TREE; at = 4B; }
+    if (byte_of(borrow object, 0B) == 98u64) { kind = KIND_BLOB; at = 4B; }
+    if (kind == KIND_NONE) { return envelope_refused(REPO_KIND); }
+    if (at + 2B > total) { return envelope_refused(REPO_FORMAT); }
+
+    let mut spelled: size = 0B;
+    let mut matches: u64 = 0u64;
+    while (spelled < at) {
+        let mut want: u64 = 0u64;
+        if (kind == KIND_COMMIT) {
+            if (spelled == 0B) { want = 99u64; }
+            if (spelled == 1B) { want = 111u64; }
+            if (spelled == 2B) { want = 109u64; }
+            if (spelled == 3B) { want = 109u64; }
+            if (spelled == 4B) { want = 105u64; }
+            if (spelled == 5B) { want = 116u64; }
+        }
+        if (kind == KIND_TREE) {
+            if (spelled == 0B) { want = 116u64; }
+            if (spelled == 1B) { want = 114u64; }
+            if (spelled == 2B) { want = 101u64; }
+            if (spelled == 3B) { want = 101u64; }
+        }
+        if (kind == KIND_BLOB) {
+            if (spelled == 0B) { want = 98u64; }
+            if (spelled == 1B) { want = 108u64; }
+            if (spelled == 2B) { want = 111u64; }
+            if (spelled == 3B) { want = 98u64; }
+        }
+        if (byte_of(borrow object, spelled) != want) { matches = matches + 1u64; }
+        spelled = spelled + 1B;
+    }
+    if (matches != 0u64) { return envelope_refused(REPO_KIND); }
+    if (byte_of(borrow object, at) != 32u64) { return envelope_refused(REPO_FORMAT); }
+    at = at + 1B;
+
+    let first: u64 = byte_of(borrow object, at);
+    if (first < 48u64) { return envelope_refused(REPO_FORMAT); }
+    if (first > 57u64) { return envelope_refused(REPO_FORMAT); }
+    let mut declared: u64 = 0u64;
+    let mut digits: size = 0B;
+    let mut ended: bool = false;
+    while (!ended) {
+        if (at >= total) { return envelope_refused(REPO_FORMAT); }
+        let byte: u64 = byte_of(borrow object, at);
+        if (byte == 0u64) {
+            ended = true;
+        } else {
+            if (byte < 48u64) { return envelope_refused(REPO_FORMAT); }
+            if (byte > 57u64) { return envelope_refused(REPO_FORMAT); }
+            if (digits >= 10B) { return envelope_refused(REPO_BOUNDS); }
+            declared = declared * 10u64 + (byte - 48u64);
+            digits = digits + 1B;
+            at = at + 1B;
+        }
+    }
+    if (digits == 0B) { return envelope_refused(REPO_FORMAT); }
+    // A leading zero run that is not the value itself.
+    if (first == 48u64) {
+        if (digits != 1B) { return envelope_refused(REPO_FORMAT); }
+    }
+    at = at + 1B;
+
+    let payload: size = total - at;
+    match (to_u64(payload)) {
+        Ok(length) => {
+            if (length != declared) { return envelope_refused(REPO_FORMAT); }
+        }
+        Err(impossible) => { return envelope_refused(REPO_FORMAT); }
+    }
+    return Envelope(class: REPO_OK, kind: kind, at: at, length: payload);
+}
+
+// What one traversal step found, or the class that refused it.
+pub record Found [
+    class: i64,
+    oid: array<u64, 20>
+]
+
+fn found_refused(class: i64) -> Found {
+    return Found(class: class, oid: zero_oid());
+}
+
+// **One component of one tree, and the other entries only far enough to skip.**
+//
+// Every framing violation refuses the whole object rather than skipping an
+// entry, and a component that appears twice is ambiguous: never "first one
+// wins", because a reader that picked one would be choosing which of two
+// answers the system believes.
+fn find_in_tree(
+    borrow object: Region<mut u8>,
+    from: size,
+    length: size,
+    which: size,
+    last: bool
+) -> Found {
+    let mut at: size = from;
+    let stop: size = from + length;
+    let mut entries: size = 0B;
+    let mut matched: size = 0B;
+    let mut answer: array<u64, 20> = zero_oid();
+    let mut wrong_mode: bool = false;
+
+    while (at < stop) {
+        if (entries >= MAX_TREE_ENTRIES) { return found_refused(REPO_BOUNDS); }
+        entries = entries + 1B;
+
+        // The mode: a non-empty ascii octal run, read as the number it denotes.
+        let mut mode: u64 = 0u64;
+        let mut digits: size = 0B;
+        let mut ended: bool = false;
+        while (!ended) {
+            if (at >= stop) { return found_refused(REPO_FORMAT); }
+            let byte: u64 = byte_of(borrow object, at);
+            if (byte == 32u64) {
+                ended = true;
+            } else {
+                if (byte < 48u64) { return found_refused(REPO_FORMAT); }
+                if (byte > 55u64) { return found_refused(REPO_FORMAT); }
+                if (digits >= 7B) { return found_refused(REPO_FORMAT); }
+                mode = mode * 8u64 + (byte - 48u64);
+                digits = digits + 1B;
+                at = at + 1B;
+            }
+        }
+        if (digits == 0B) { return found_refused(REPO_FORMAT); }
+        at = at + 1B;
+
+        // The name: non-empty, bounded, and holding no separator. It cannot
+        // hold a `NUL` because a `NUL` is what ends it.
+        let name: size = at;
+        ended = false;
+        while (!ended) {
+            if (at >= stop) { return found_refused(REPO_FORMAT); }
+            let byte: u64 = byte_of(borrow object, at);
+            if (byte == 0u64) {
+                ended = true;
+            } else {
+                if (byte == 47u64) { return found_refused(REPO_FORMAT); }
+                if (at - name >= MAX_PATH_BYTES) { return found_refused(REPO_BOUNDS); }
+                at = at + 1B;
+            }
+        }
+        let span: size = at - name;
+        if (span == 0B) { return found_refused(REPO_FORMAT); }
+        at = at + 1B;
+
+        if (at + OID_LENGTH > stop) { return found_refused(REPO_FORMAT); }
+
+        if (span == path_length(which)) {
+            let mut different: u64 = 0u64;
+            let mut i: size = 0B;
+            while (i < span) {
+                if (byte_of(borrow object, name + i) != path_byte(which, i)) {
+                    different = different + 1u64;
+                }
+                i = i + 1B;
+            }
+            if (different == 0u64) {
+                matched = matched + 1B;
+                answer = oid_at(borrow object, at);
+                // **The mode decides what may be followed** (§5d). An
+                // intermediate component must carry the canonical tree mode;
+                // a final one must be a regular file. Anything else — a
+                // symlink, a gitlink — is not traversed and its target is
+                // never read.
+                if (last) {
+                    if (mode != MODE_FILE) {
+                        if (mode != MODE_EXECUTABLE) { wrong_mode = true; }
+                    }
+                } else {
+                    if (mode != MODE_TREE) { wrong_mode = true; }
+                }
+            }
+        }
+        at = at + OID_LENGTH;
+    }
+
+    if (matched == 0B) { return found_refused(REPO_MISSING); }
+    if (matched > 1B) { return found_refused(REPO_FORMAT); }
+    if (wrong_mode) { return found_refused(REPO_KIND); }
+    return Found(class: REPO_OK, oid: answer);
+}
+
+// The commit's first line, which is the only commit semantic Stage 4 consumes.
+//
+// Parents are not followed; author, committer, message, encoding headers and
+// signatures have no Stage-4 meaning here and are never looked at.
+fn commit_tree(borrow object: Region<mut u8>, from: size, length: size) -> Found {
+    if (length < 46B) { return found_refused(REPO_FORMAT); }
+    if (byte_of(borrow object, from) != 116u64) { return found_refused(REPO_FORMAT); }
+    if (byte_of(borrow object, from + 1B) != 114u64) { return found_refused(REPO_FORMAT); }
+    if (byte_of(borrow object, from + 2B) != 101u64) { return found_refused(REPO_FORMAT); }
+    if (byte_of(borrow object, from + 3B) != 101u64) { return found_refused(REPO_FORMAT); }
+    if (byte_of(borrow object, from + 4B) != 32u64) { return found_refused(REPO_FORMAT); }
+    if (byte_of(borrow object, from + 45B) != 10u64) { return found_refused(REPO_FORMAT); }
+
+    let mut oid: array<u64, 20> = zero_oid();
+    let mut i: size = 0B;
+    while (i < OID_LENGTH) {
+        let mut value: u64 = 0u64;
+        let mut half: size = 0B;
+        while (half < 2B) {
+            let byte: u64 = byte_of(borrow object, from + 5B + i * 2B + half);
+            let mut digit: u64 = 16u64;
+            if (byte >= 48u64) {
+                if (byte <= 57u64) { digit = byte - 48u64; }
+            }
+            // **Lowercase only**: an upper-case run is a different spelling of
+            // the same id, and two spellings is two answers.
+            if (byte >= 97u64) {
+                if (byte <= 102u64) { digit = byte - 87u64; }
+            }
+            if (digit == 16u64) { return found_refused(REPO_FORMAT); }
+            value = value * 16u64 + digit;
+            half = half + 1B;
+        }
+        oid[i] = value;
+        i = i + 1B;
+    }
+    return Found(class: REPO_OK, oid: oid);
+}
+
+// --- ADR-0102 §7, the repository extent format --------------------------------
+
+const AT_MAGIC: size = 0B;
+const AT_FORMAT_VERSION: size = 8B;
+const AT_OID_ALGORITHM: size = 12B;
+const AT_OID_LENGTH: size = 16B;
+const AT_OBJECT_COUNT: size = 20B;
+const AT_ENTRY_SIZE: size = 24B;
+const AT_TABLE_SECTORS: size = 28B;
+const AT_DATA_START: size = 32B;
+const AT_EXTENT_SECTORS: size = 36B;
+const AT_RESERVED: size = 40B;
+const AT_TABLE: size = 512B;
+const AT_ENTRY_STORED: size = 32B;
+const AT_ENTRY_UNCOMPRESSED: size = 36B;
+const AT_ENTRY_RESERVED: size = 40B;
+
+// `TOSGITR1`, eight bytes in ascending address order, so no endianness applies.
+fn magic_byte(at: size) -> u64 {
+    if (at == 0B) { return 84u64; }
+    if (at == 1B) { return 79u64; }
+    if (at == 2B) { return 83u64; }
+    if (at == 3B) { return 71u64; }
+    if (at == 4B) { return 73u64; }
+    if (at == 5B) { return 84u64; }
+    if (at == 6B) { return 82u64; }
+    return 49u64;
+}
+
+fn entry_at(index: size) -> size {
+    return AT_TABLE + index * ENTRY_SIZE;
+}
+
+fn oid_after(left: array<u64, 20>, right: array<u64, 20>) -> bool {
+    let mut i: size = 0B;
+    while (i < OID_LENGTH) {
+        if (left[i] > right[i]) { return true; }
+        if (left[i] < right[i]) { return false; }
+        i = i + 1B;
+    }
+    return false;
+}
+
+// The header, whole, before anything is read past it (§7a, §7d).
+//
+// **A header that disagrees with the boot identity about the object-id
+// algorithm is a refusal, not a reinterpretation.**
+fn check_header(borrow head: Region<mut u8>, algorithm: u64, length: u64) -> i64 {
+    let mut at: size = 0B;
+    while (at < 8B) {
+        if (byte_of(borrow head, AT_MAGIC + at) != magic_byte(at)) { return REPO_FORMAT; }
+        at = at + 1B;
+    }
+    if (le32(borrow head, AT_FORMAT_VERSION) != FORMAT_VERSION) { return REPO_FORMAT; }
+    if (le32(borrow head, AT_OID_ALGORITHM) != OID_ALGORITHM_SHA1) { return REPO_UNSUPPORTED; }
+    match (to_u64(OID_LENGTH)) {
+        Ok(want) => {
+            if (le32(borrow head, AT_OID_LENGTH) != want) { return REPO_UNSUPPORTED; }
+        }
+        Err(impossible) => { return REPO_FORMAT; }
+    }
+    if (le32(borrow head, AT_OID_ALGORITHM) != algorithm) { return REPO_UNSUPPORTED; }
+    if (le32(borrow head, AT_OID_LENGTH) != length) { return REPO_UNSUPPORTED; }
+
+    let count: u64 = le32(borrow head, AT_OBJECT_COUNT);
+    if (count == 0u64) { return REPO_BOUNDS; }
+    if (count > MAX_OBJECTS) { return REPO_BOUNDS; }
+    match (to_u64(ENTRY_SIZE)) {
+        Ok(want) => {
+            if (le32(borrow head, AT_ENTRY_SIZE) != want) { return REPO_FORMAT; }
+        }
+        Err(impossible) => { return REPO_FORMAT; }
+    }
+    if (le32(borrow head, AT_TABLE_SECTORS) != TABLE_SECTORS) { return REPO_FORMAT; }
+    if (le32(borrow head, AT_DATA_START) != DATA_START) { return REPO_FORMAT; }
+    if (le32(borrow head, AT_EXTENT_SECTORS) != REPOSITORY_SECTORS) { return REPO_FORMAT; }
+
+    at = AT_RESERVED;
+    while (at < SECTOR_BYTES) {
+        if (byte_of(borrow head, at) != 0u64) { return REPO_FORMAT; }
+        at = at + 1B;
+    }
+    return REPO_OK;
+}
+
+// The table, whole, before any object is read (§7b, §7c, §7d).
+//
+// **Sorted and strictly increasing is what makes lookup bounded** and makes
+// "which entry names this object" have exactly one answer. The placement total
+// is checked here rather than per object, so an extent whose objects would run
+// past its own end is refused whole.
+fn check_table(borrow head: Region<mut u8>, count: u64) -> i64 {
+    let mut previous: array<u64, 20> = zero_oid();
+    let mut index: size = 0B;
+    let mut seen: u64 = 0u64;
+    let mut sector: u64 = DATA_START;
+    while (seen < MAX_OBJECTS) {
+        let entry: size = entry_at(index);
+        if (seen >= count) {
+            let mut at: size = 0B;
+            while (at < ENTRY_SIZE) {
+                if (byte_of(borrow head, entry + at) != 0u64) { return REPO_FORMAT; }
+                at = at + 1B;
+            }
+        } else {
+            let oid: array<u64, 20> = oid_at(borrow head, entry);
+            let mut at: size = OID_LENGTH;
+            while (at < 32B) {
+                if (byte_of(borrow head, entry + at) != 0u64) { return REPO_FORMAT; }
+                at = at + 1B;
+            }
+            at = AT_ENTRY_RESERVED;
+            while (at < ENTRY_SIZE) {
+                if (byte_of(borrow head, entry + at) != 0u64) { return REPO_FORMAT; }
+                at = at + 1B;
+            }
+            if (oid_same(oid, zero_oid())) { return REPO_FORMAT; }
+            if (seen > 0u64) {
+                if (!oid_after(oid, previous)) { return REPO_FORMAT; }
+            }
+            previous = oid;
+
+            let stored: u64 = le32(borrow head, entry + AT_ENTRY_STORED);
+            let uncompressed: u64 = le32(borrow head, entry + AT_ENTRY_UNCOMPRESSED);
+            if (stored == 0u64) { return REPO_FORMAT; }
+            match (to_u64(MAX_OBJECT_UNCOMPRESSED_BYTES)) {
+                Ok(bound) => {
+                    if (uncompressed > bound) { return REPO_BOUNDS; }
+                }
+                Err(impossible) => { return REPO_FORMAT; }
+            }
+            let held: size = counted_size(stored, STREAM_BYTES);
+            match (to_u64(held)) {
+                Ok(measured) => {
+                    if (measured != stored) { return REPO_BOUNDS; }
+                }
+                Err(impossible) => { return REPO_FORMAT; }
+            }
+            sector = sector + sectors_for(held);
+            if (sector > REPOSITORY_SECTORS) { return REPO_BOUNDS; }
+        }
+        index = index + 1B;
+        seen = seen + 1u64;
+    }
+    return REPO_OK;
+}
+
+// Where an object's bytes begin, derived and never stored (§7c), so two objects
+// cannot be placed on top of each other.
+fn first_sector_of(borrow head: Region<mut u8>, index: u64) -> u64 {
+    let mut sector: u64 = DATA_START;
+    let mut seen: u64 = 0u64;
+    let mut at: size = 0B;
+    while (seen < index) {
+        sector = sector + sectors_for(
+            counted_size(le32(borrow head, entry_at(at) + AT_ENTRY_STORED), STREAM_BYTES));
+        at = at + 1B;
+        seen = seen + 1u64;
+    }
+    return sector;
+}
+
+fn entry_for(borrow head: Region<mut u8>, count: u64, oid: array<u64, 20>) -> i64 {
+    let mut at: size = 0B;
+    let mut seen: u64 = 0u64;
+    while (seen < count) {
+        if (oid_same(oid_at(borrow head, entry_at(at)), oid)) {
+            match (to_i64(seen)) {
+                Ok(index) => { return index; }
+                Err(impossible) => { return -1i64; }
+            }
+        }
+        at = at + 1B;
+        seen = seen + 1u64;
+    }
+    return -1i64;
+}
+
+// What loading one object produced, or the class that refused it.
+pub record Loaded [
+    class: i64,
+    length: size
+]
+
+// One object, located by the id it is reached through, and **verified against
+// that id before it is parsed** (§9 steps 4 and 5).
+fn load_object(
+    borrow head: Region<mut u8>,
+    borrow mut stream: Region<mut u8>,
+    borrow mut object: Region<mut u8>,
+    count: u64,
+    oid: array<u64, 20>
+) -> Loaded
+    uses [block, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    let index: i64 = entry_for(borrow head, count, oid);
+    if (index < 0i64) { return Loaded(class: REPO_MISSING, length: 0B); }
+    let mut position: size = 0B;
+    let mut walked: i64 = 0i64;
+    while (walked < index) {
+        position = position + 1B;
+        walked = walked + 1i64;
+    }
+    let entry: size = entry_at(position);
+
+    let stored: size = counted_size(
+        le32(borrow head, entry + AT_ENTRY_STORED), STREAM_BYTES);
+    let declared: size = counted_size(
+        le32(borrow head, entry + AT_ENTRY_UNCOMPRESSED), MAX_OBJECT_UNCOMPRESSED_BYTES);
+    match (to_u64(declared)) {
+        Ok(measured) => {
+            if (measured != le32(borrow head, entry + AT_ENTRY_UNCOMPRESSED)) {
+                return Loaded(class: REPO_BOUNDS, length: 0B);
+            }
+        }
+        Err(impossible) => { return Loaded(class: REPO_FORMAT, length: 0B); }
+    }
+
+    let mut sector: u64 = 0u64;
+    let span: u64 = sectors_for(stored);
+    let mut into: size = 0B;
+    match (to_u64(index)) {
+        Ok(ordinal) => {
+            let first: u64 = first_sector_of(borrow head, ordinal);
+            while (sector < span) {
+                let read: i64 = read_extent_sector(borrow mut stream, into, first + sector);
+                if (read != REPO_OK) { return Loaded(class: read, length: 0B); }
+                into = into + SECTOR_BYTES;
+                sector = sector + 1u64;
+            }
+        }
+        Err(impossible) => { return Loaded(class: REPO_FORMAT, length: 0B); }
+    }
+
+    // **The sector padding is part of the format** (§7e). A byte between the
+    // stream's end and the sector boundary that is not zero is a refusal, so a
+    // provisioner cannot leave bytes nobody checks.
+    let mut pad: size = stored;
+    while (pad < into) {
+        if (byte_of(borrow stream, pad) != 0u64) {
+            return Loaded(class: REPO_FORMAT, length: 0B);
+        }
+        pad = pad + 1B;
+    }
+
+    let inflated: i64 = inflate_stored(borrow stream, stored, borrow mut object, declared);
+    if (inflated != REPO_OK) { return Loaded(class: inflated, length: 0B); }
+
+    if (!oid_same(oid_of(sha1_region(borrow object, 0B, declared)), oid)) {
+        return Loaded(class: REPO_OID, length: 0B);
+    }
+    return Loaded(class: REPO_OK, length: declared);
+}
+
+// --- ADR-0102 §9, the traversal ------------------------------------------------
+
+fn verdict(class: i64, proved: i64) -> i64 {
+    return class + 16i64 * proved;
+}
+
+pub fn main() -> i64
+    uses [budget, block, inbox, identity, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut proved: i64 = 0i64;
+
+    // --- what this machine booted, from the one operation that reports it ----
+    //
+    // **Not a compiled constant, and not inferred from anything this module
+    // could have been built with.** The commit id and the boot-content digest
+    // come from the nucleus's own validated capsule header (ADR-0102 §4); a
+    // reader carrying either in its text would prove the answer it was
+    // compiled with.
+    let mut root: array<u64, 20> = zero_oid();
+    let mut content0: u64 = 0u64;
+    let mut content1: u64 = 0u64;
+    let mut content2: u64 = 0u64;
+    let mut content3: u64 = 0u64;
+    let mut algorithm: u64 = 0u64;
+    let mut oid_length: u64 = 0u64;
+    match (boot_identity_read(identity)) {
+        Ok(facts) => {
+            proved = proved + PROVED_IDENTITY_READ;
+            // A detached capsule names no commit at all, so there is nothing to
+            // link to and the linkage is refused rather than attempted.
+            if (facts.source_kind != 1u64) { return verdict(REPO_UNSUPPORTED, proved); }
+            if (facts.oid_algorithm != OID_ALGORITHM_SHA1) {
+                return verdict(REPO_UNSUPPORTED, proved);
+            }
+            match (to_u64(OID_LENGTH)) {
+                Ok(want) => {
+                    if (facts.oid_length != want) { return verdict(REPO_UNSUPPORTED, proved); }
+                }
+                Err(impossible) => { return -1i64; }
+            }
+            proved = proved + PROVED_IDENTITY_IS_GIT;
+            algorithm = facts.oid_algorithm;
+            oid_length = facts.oid_length;
+            root = oid_of_chunks(facts.oid_0, facts.oid_1, facts.oid_2, facts.oid_3);
+            content0 = facts.boot_content_0;
+            content1 = facts.boot_content_1;
+            content2 = facts.boot_content_2;
+            content3 = facts.boot_content_3;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+
+    // --- the extent must be shown to exist before it is read (§6a1) ----------
+    //
+    // A device that cannot hold the layout is refused **before** a repository
+    // sector is read — not one, not the header's. Without this, "the extent
+    // exists" would be established by the first read happening not to fail,
+    // which is a coincidence of how a device answers rather than a contract.
+    match (endpoint_call_word(block, OP_CAPACITY)) {
+        Ok(answer) => {
+            if (answer.length != REQUEST_BYTES) { return -2i64; }
+            if (answer.word >= BLOCK_REFUSED) { return verdict(REPO_BLOCK, proved); }
+            if (answer.word < REQUIRED_CAPACITY) { return verdict(REPO_BOUNDS, proved); }
+            proved = proved + PROVED_CAPACITY_FITS;
+        }
+        Err(status) => { return status - 200i64; }
+    }
+
+    match (region_allocate(budget, HEAD_BYTES)) {
+        Ok(head) => {
+            match (region_allocate(budget, STREAM_BYTES)) {
+                Ok(stream) => {
+                    match (region_allocate(budget, MAX_OBJECT_UNCOMPRESSED_BYTES)) {
+                        Ok(object) => {
+                            let account: i64 = walk(
+                                borrow mut head, borrow mut stream, borrow mut object,
+                                root, algorithm, oid_length,
+                                content0, content1, content2, content3, proved);
+                            if (capability_release(object) != OK) { return -3i64; }
+                            if (capability_release(stream) != OK) { return -4i64; }
+                            if (capability_release(head) != OK) { return -5i64; }
+                            return account;
+                        }
+                        Err(status) => { return status - 310i64; }
+                    }
+                }
+                Err(status) => { return status - 320i64; }
+            }
+        }
+        Err(status) => { return status - 330i64; }
+    }
+}
+
+// The whole of §9 once the buffers exist, so that the three regions are
+// released on every path out of it rather than on the ones somebody remembered.
+fn walk(
+    borrow mut head: Region<mut u8>,
+    borrow mut stream: Region<mut u8>,
+    borrow mut object: Region<mut u8>,
+    root: array<u64, 20>,
+    algorithm: u64,
+    oid_length: u64,
+    content0: u64,
+    content1: u64,
+    content2: u64,
+    content3: u64,
+    established: i64
+) -> i64
+    uses [block, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut proved: i64 = established;
+
+    // --- the header, then the table, then nothing until both held ------------
+    let header: i64 = read_extent_sector(borrow mut head, 0B, 0u64);
+    if (header != REPO_OK) { return verdict(header, proved); }
+    let valid: i64 = check_header(borrow head, algorithm, oid_length);
+    if (valid != REPO_OK) { return verdict(valid, proved); }
+    proved = proved + PROVED_HEADER_VALID;
+
+    let count: u64 = le32(borrow head, AT_OBJECT_COUNT);
+    let mut sector: u64 = 1u64;
+    let mut into: size = SECTOR_BYTES;
+    while (sector <= TABLE_SECTORS) {
+        let read: i64 = read_extent_sector(borrow mut head, into, sector);
+        if (read != REPO_OK) { return verdict(read, proved); }
+        into = into + SECTOR_BYTES;
+        sector = sector + 1u64;
+    }
+    let tabled: i64 = check_table(borrow head, count);
+    if (tabled != REPO_OK) { return verdict(tabled, proved); }
+    proved = proved + PROVED_TABLE_VALID;
+
+    // --- the commit the capsule names, and its tree --------------------------
+    let commit: Loaded = load_object(
+        borrow head, borrow mut stream, borrow mut object, count, root);
+    if (commit.class != REPO_OK) { return verdict(commit.class, proved); }
+    let shape: Envelope = parse_envelope(borrow object, commit.length);
+    if (shape.class != REPO_OK) { return verdict(shape.class, proved); }
+    if (shape.kind != KIND_COMMIT) { return verdict(REPO_KIND, proved); }
+    let mut step: Found = commit_tree(borrow object, shape.at, shape.length);
+    if (step.class != REPO_OK) { return verdict(step.class, proved); }
+    proved = proved + PROVED_COMMIT_VERIFIED;
+
+    // --- one path, one entry at each level -----------------------------------
+    let mut which: size = 0B;
+    while (which < 4B) {
+        if (which >= MAX_TREE_DEPTH) { return verdict(REPO_BOUNDS, proved); }
+        let tree: Loaded = load_object(
+            borrow head, borrow mut stream, borrow mut object, count, step.oid);
+        if (tree.class != REPO_OK) { return verdict(tree.class, proved); }
+        let inner: Envelope = parse_envelope(borrow object, tree.length);
+        if (inner.class != REPO_OK) { return verdict(inner.class, proved); }
+        if (inner.kind != KIND_TREE) { return verdict(REPO_KIND, proved); }
+        step = find_in_tree(borrow object, inner.at, inner.length, which, which == 3B);
+        if (step.class != REPO_OK) { return verdict(step.class, proved); }
+        which = which + 1B;
+    }
+    proved = proved + PROVED_TREES_VERIFIED;
+
+    // --- the blob, verified against its own id -------------------------------
+    let blob: Loaded = load_object(
+        borrow head, borrow mut stream, borrow mut object, count, step.oid);
+    if (blob.class != REPO_OK) { return verdict(blob.class, proved); }
+    let text: Envelope = parse_envelope(borrow object, blob.length);
+    if (text.class != REPO_OK) { return verdict(text.class, proved); }
+    if (text.kind != KIND_BLOB) { return verdict(REPO_KIND, proved); }
+    proved = proved + PROVED_BLOB_VERIFIED;
+
+    // --- the Stage-4 linkage witness -----------------------------------------
+    //
+    // SHA-256 over the repository blob's payload, against the digest of the
+    // boot-canonical file the nucleus validated. This is the whole claim: the
+    // text this machine booted is the `source/system/boot/init.tos` of the
+    // commit its capsule names.
+    let digest: Hash8 = sha256_region(borrow object, text.at, text.length);
+    let mut differed: u64 = 0u64;
+    let mut byte: size = 0B;
+    while (byte < 32B) {
+        let mut value: u64 = digest.a;
+        if (byte / 4B == 1B) { value = digest.b; }
+        if (byte / 4B == 2B) { value = digest.c; }
+        if (byte / 4B == 3B) { value = digest.d; }
+        if (byte / 4B == 4B) { value = digest.e; }
+        if (byte / 4B == 5B) { value = digest.f; }
+        if (byte / 4B == 6B) { value = digest.g; }
+        if (byte / 4B == 7B) { value = digest.h; }
+        match (to_u64(3B - byte % 4B)) {
+            Ok(place) => {
+                if ((value >> (place * 8u64)) % 256u64
+                    != chunk_byte(content0, content1, content2, content3, byte)) {
+                    differed = differed + 1u64;
+                }
+            }
+            Err(impossible) => { return -6i64; }
+        }
+        byte = byte + 1B;
+    }
+    if (differed != 0u64) { return verdict(REPO_LINKAGE, proved); }
+    proved = proved + PROVED_LINKAGE;
+
+    return verdict(REPO_OK, proved);
+}
