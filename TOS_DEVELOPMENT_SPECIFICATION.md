@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `6df7191ca980c25096058f1b320c715c01c60a90cf9f671775e42ee1a295b4cc`\
+Source-manifest SHA-256: `6de471387c7d5f4479353bbf7e7904d19a6eb252ded60e56dd6d830c90208d16`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -505,11 +505,13 @@ stage: **persistent object storage** (ADR-0099, `STATE_STORE_V1`,
 `qemu_state_store`) and **the first half of the capsule-to-repository handoff**
 (ADR-0102, `qemu_repository_linkage`) — the linkage, which is the statement that
 the canonical text this machine booted is the `source/system/boot/init.tos` of the
-commit the boot chain verified. Its evidence is twenty-three boots: one that proves
-the witness and twenty-two that are each refused with the exact class ADR-0102 §10a
-fixes. ADR-0102 §11d's in-boot re-read by a second reader generation is **NOT
-MEASURED** — it runs and is collected, and its own account does not reach the
-journal; the gate prints the gap rather than counting one generation as two.
+commit the boot chain verified. Its evidence is twenty-seven boots: one in which
+two successive reader generations each reach the witness from the same device,
+twenty-three refused with the exact class ADR-0102 §10a fixes, and three that hold
+the boot identity to the rules every capability in this system obeys — a process
+not endowed it cannot read it, attenuation is intersection and an empty
+intersection is refused, and an endowment description of that object kind with a
+non-zero scope does not start a boot.
 
 **And since 2026-09-23 a service can die and be replaced without losing data.** A
 block service serves a write and ends still holding the function, the mapped
@@ -39152,7 +39154,7 @@ Each refused with the §10a class named beside it, and each its own case:
 | unsorted table | `REPO_FORMAT` | entries not strictly ascending |
 | object count past bound | `REPO_BOUNDS` | `object_count > MAX_OBJECTS` |
 | object length past bound | `REPO_BOUNDS` | `uncompressed_length > MAX_OBJECT_UNCOMPRESSED_BYTES` |
-| traversal depth past bound | `REPO_BOUNDS` | a path deeper than `MAX_TREE_DEPTH` |
+| traversal depth past bound | `REPO_BOUNDS` | the traversal runs past `MAX_TREE_DEPTH`; see below |
 | **device capacity below 2113 sectors** | `REPO_BOUNDS` | and **no repository-sector `READ` is issued** (§6a1) |
 | malformed Git object header | `REPO_FORMAT` | not `"<kind> <decimal>\0"`, or a size disagreeing with the payload |
 | **malformed or truncated tree entry** | `REPO_FORMAT` | an entry missing OID bytes, an empty name, or a name containing `NUL` or `/` (§5d) |
@@ -39165,6 +39167,17 @@ Each refused with the §10a class named beside it, and each its own case:
 | a **different valid commit** than the capsule's | `REPO_MISSING` | the extent holds a well-formed commit the capsule does not name: its OID is simply not in the table, and the reader does not go looking for a substitute |
 | the correct commit but the **wrong boot blob** | `REPO_LINKAGE` | traversal succeeds, the SHA-256 comparison fails |
 | the state store is unaffected | — | a `GET` of an object the state store holds still succeeds after the repository reads, in the same boot |
+
+**The depth bound is exercised by lowering it, not by deepening the path.** §9 fixes the
+traversal at `source/system/boot/init.tos`, which is four components, so the production
+reader cannot reach a bound of 16 — and a runtime-selectable path added so that it could
+would be product surface invented for a test. The negative is therefore a conformance
+copy of the reader that differs from the accepted one **in that constant alone**, against
+the same extent: the same fixed traversal runs past the lowered bound and refuses
+`REPO_BOUNDS`. The gate proves the two texts differ in exactly one line. The accepted
+interface, the accepted reader and the accepted path are unchanged, and no boot of the
+product can take that branch — which is the honest statement about a guard whose job is
+to bound a path the profile fixes.
 
 **Where "no lower block request" is part of a refusal, it is proved from the real block
 service's journal**, not from the reader's own assertion — the derived-count discipline

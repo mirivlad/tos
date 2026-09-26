@@ -490,11 +490,13 @@ stage: **persistent object storage** (ADR-0099, `STATE_STORE_V1`,
 `qemu_state_store`) and **the first half of the capsule-to-repository handoff**
 (ADR-0102, `qemu_repository_linkage`) — the linkage, which is the statement that
 the canonical text this machine booted is the `source/system/boot/init.tos` of the
-commit the boot chain verified. Its evidence is twenty-three boots: one that proves
-the witness and twenty-two that are each refused with the exact class ADR-0102 §10a
-fixes. ADR-0102 §11d's in-boot re-read by a second reader generation is **NOT
-MEASURED** — it runs and is collected, and its own account does not reach the
-journal; the gate prints the gap rather than counting one generation as two.
+commit the boot chain verified. Its evidence is twenty-seven boots: one in which
+two successive reader generations each reach the witness from the same device,
+twenty-three refused with the exact class ADR-0102 §10a fixes, and three that hold
+the boot identity to the rules every capability in this system obeys — a process
+not endowed it cannot read it, attenuation is intersection and an empty
+intersection is refused, and an endowment description of that object kind with a
+non-zero scope does not start a boot.
 
 **And since 2026-09-23 a service can die and be replaced without losing data.** A
 block service serves a write and ends still holding the function, the mapped

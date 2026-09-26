@@ -1000,7 +1000,7 @@ Each refused with the §10a class named beside it, and each its own case:
 | unsorted table | `REPO_FORMAT` | entries not strictly ascending |
 | object count past bound | `REPO_BOUNDS` | `object_count > MAX_OBJECTS` |
 | object length past bound | `REPO_BOUNDS` | `uncompressed_length > MAX_OBJECT_UNCOMPRESSED_BYTES` |
-| traversal depth past bound | `REPO_BOUNDS` | a path deeper than `MAX_TREE_DEPTH` |
+| traversal depth past bound | `REPO_BOUNDS` | the traversal runs past `MAX_TREE_DEPTH`; see below |
 | **device capacity below 2113 sectors** | `REPO_BOUNDS` | and **no repository-sector `READ` is issued** (§6a1) |
 | malformed Git object header | `REPO_FORMAT` | not `"<kind> <decimal>\0"`, or a size disagreeing with the payload |
 | **malformed or truncated tree entry** | `REPO_FORMAT` | an entry missing OID bytes, an empty name, or a name containing `NUL` or `/` (§5d) |
@@ -1013,6 +1013,17 @@ Each refused with the §10a class named beside it, and each its own case:
 | a **different valid commit** than the capsule's | `REPO_MISSING` | the extent holds a well-formed commit the capsule does not name: its OID is simply not in the table, and the reader does not go looking for a substitute |
 | the correct commit but the **wrong boot blob** | `REPO_LINKAGE` | traversal succeeds, the SHA-256 comparison fails |
 | the state store is unaffected | — | a `GET` of an object the state store holds still succeeds after the repository reads, in the same boot |
+
+**The depth bound is exercised by lowering it, not by deepening the path.** §9 fixes the
+traversal at `source/system/boot/init.tos`, which is four components, so the production
+reader cannot reach a bound of 16 — and a runtime-selectable path added so that it could
+would be product surface invented for a test. The negative is therefore a conformance
+copy of the reader that differs from the accepted one **in that constant alone**, against
+the same extent: the same fixed traversal runs past the lowered bound and refuses
+`REPO_BOUNDS`. The gate proves the two texts differ in exactly one line. The accepted
+interface, the accepted reader and the accepted path are unchanged, and no boot of the
+product can take that branch — which is the honest statement about a guard whose job is
+to bound a path the profile fixes.
 
 **Where "no lower block request" is part of a refusal, it is proved from the real block
 service's journal**, not from the reader's own assertion — the derived-count discipline

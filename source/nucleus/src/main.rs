@@ -43,6 +43,7 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-carried-call-answer") as usize
     + cfg!(feature = "test-state-store") as usize
     + cfg!(feature = "test-repository-linkage") as usize
+    + cfg!(feature = "test-repository-linkage-scope") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -2032,6 +2033,27 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // before this line runs, and the nucleus answers with what it already holds. It
     // parses nothing, hashes nothing and reaches no device: ADR-0102 §2 keeps Git,
     // inflate and repository traversal out of the trusted base entirely.
+    // **The same constant, with one field wrong** (ADR-0102 §3a1, §11a.4). An
+    // endowment description naming object kind 14 with a non-zero `scope` is
+    // refused, so this boot does not start — and the one thing that differs from
+    // the constant above it is that number. `endow_for_launch` writes `scope: 0`
+    // for every plan entry and `capability_attenuate_scoped` is for memory
+    // authorities, so a bootstrap constant is the only place such a description
+    // can be written at all; that is why the negative lives here and not in
+    // canonical text.
+    #[cfg(feature = "test-repository-linkage-scope")]
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"process"),
+            rights: tos_launch::RIGHT_CREATE,
+        },
+        capability::Endowment::Existing {
+            binding: binding(b"boot_identity_full"),
+            object: capability::Object::BootIdentity,
+            rights: tos_launch::RIGHT_READ,
+            scope: 1,
+        },
+    ];
     #[cfg(feature = "test-repository-linkage")]
     let first_endowment = {
         let (Some(block_serve), Some(reader_inbox)) = (ipc::create(), ipc::create()) else {
@@ -2576,6 +2598,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-carried-call-answer",
         feature = "test-state-store",
         feature = "test-repository-linkage",
+        feature = "test-repository-linkage-scope",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -2617,6 +2640,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-carried-call-answer",
         feature = "test-state-store",
         feature = "test-repository-linkage",
+        feature = "test-repository-linkage-scope",
         feature = "test-region-transfer-text",
         feature = "test-block-lifecycle",
         feature = "test-build-topology",

@@ -80,7 +80,6 @@ TOOLS="$GITROOT/source/host-tools/repository-extent"
 TOOL="$ROOT/target/release/tos-capsule-tool"
 PRODUCTION="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
 TARGET="$ROOT/target/test-repository-linkage"
-NUCLEUS="$TARGET/x86_64-unknown-none/release/tos-nucleus"
 
 REPOSITORY_FIRST_SECTOR=65
 
@@ -117,15 +116,24 @@ fail() {
 
 [ -x "$TOOL" ] || (cd "$ROOT" && cargo build --release -p tos-capsule-tool)
 
+# Every test nucleus is built into a target directory of its own and the
+# production digest is compared before and after. A gate that quietly rebuilt the
+# shipped artifact would be evidence about a different nucleus.
 before=""
 [ -f "$PRODUCTION" ] && before="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
-(cd "$ROOT" && CARGO_TARGET_DIR="$TARGET" cargo build --release \
-    -p tos-nucleus --target x86_64-unknown-none --features test-repository-linkage)
-if [ -n "$before" ]; then
-    after="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
-    [ "$before" = "$after" ] ||
-        fail "the production nucleus changed while building the isolated test artifact"
-fi
+nucleus_for() {
+    feature="$1"
+    target="$ROOT/target/$feature"
+    (cd "$ROOT" && CARGO_TARGET_DIR="$target" cargo build --release \
+        -p tos-nucleus --target x86_64-unknown-none --features "$feature" >/dev/null 2>&1) ||
+        fail "the nucleus does not build with $feature"
+    if [ -n "$before" ]; then
+        [ "$before" = "$(sha256sum "$PRODUCTION" | awk '{print $1}')" ] ||
+            fail "the production nucleus changed while building $feature"
+    fi
+    echo "$target/x86_64-unknown-none/release/tos-nucleus"
+}
+NUCLEUS="$(nucleus_for test-repository-linkage)"
 
 # --- the fixture repository ----------------------------------------------------
 #
@@ -143,6 +151,25 @@ export GIT_AUTHOR_DATE="1000000000 +0000" GIT_COMMITTER_DATE="1000000000 +0000"
 
 HEAD_COMMIT="$(git -C "$GITROOT" rev-parse HEAD)"
 
+# **The depth guard, made reachable without widening the product.**
+#
+# `source/system/boot/init.tos` is four components deep and `MAX_TREE_DEPTH` is
+# sixteen, so the production traversal cannot exceed its own bound — and a
+# runtime-selectable path added to manufacture a depth negative would be surface
+# invented for a test. Instead the bound is lowered *in a conformance copy of the
+# reader* to two, so the same fixed traversal runs past it, and the gate proves
+# the copy differs from the committed reader in exactly that one line. The
+# production interface, the production reader and the production path are
+# unchanged.
+sed 's/^const MAX_TREE_DEPTH: size = 16B;$/const MAX_TREE_DEPTH: size = 2B;/' \
+    "$FIXTURE/reader.tos" > "$OUT/reader-depth.tos"
+differences="$(diff "$FIXTURE/reader.tos" "$OUT/reader-depth.tos" | grep -c '^[<>]' || true)"
+[ "$differences" = 2 ] ||
+    fail "the depth-limited reader differs from the committed one in $differences line(s);
+       it must differ in exactly one, which diff reports as one removed and one added"
+grep -q '^const MAX_TREE_DEPTH: size = 2B;$' "$OUT/reader-depth.tos" ||
+    fail "the depth-limited reader does not carry the lowered bound"
+
 # The three files this boot runs, at the repository paths they are committed to — and
 # the launcher at the landing path, which is what makes the positive reachable.
 place() {
@@ -156,6 +183,8 @@ place source/system/boot/init.tos "$FIXTURE/init.tos"
 # and every object mutation needs one too because ordinary Git cannot walk to the
 # landing path of a commit whose trees are deliberately malformed.
 place source/tests/vectors/repository-linkage/init.tos "$FIXTURE/init.tos"
+place source/tests/vectors/repository-linkage/identity.tos "$FIXTURE/identity.tos"
+place source/tests/vectors/repository-linkage/denied.tos "$FIXTURE/denied.tos"
 place source/tests/vectors/repository-linkage/block.tos "$FIXTURE/block.tos"
 place source/tests/vectors/repository-linkage/reader.tos "$FIXTURE/reader.tos"
 
@@ -166,6 +195,9 @@ synthesise() {
     git -C "$WORK" read-tree "$HEAD_COMMIT"
     for pair in "source/system/boot/init.tos:$1" \
                 "source/tests/vectors/repository-linkage/init.tos:$FIXTURE/init.tos" \
+                "source/tests/vectors/repository-linkage/identity.tos:$FIXTURE/identity.tos" \
+                "source/tests/vectors/repository-linkage/denied.tos:$FIXTURE/denied.tos" \
+                "source/tests/vectors/repository-linkage/reader-depth.tos:$OUT/reader-depth.tos" \
                 "source/tests/vectors/repository-linkage/block.tos:$FIXTURE/block.tos" \
                 "source/tests/vectors/repository-linkage/reader.tos:$FIXTURE/reader.tos"; do
         blob="$(git -C "$WORK" hash-object -w "${pair#*:}")"
@@ -192,7 +224,15 @@ manifest() {
 }
 
 build_capsule() {
-    # $1 = commit, $2 = the repository path the boot module is taken from, $3 = output
+    # $1 = commit, $2 = the repository path the boot module is taken from,
+    # $3 = output, $4 = the file that commit carries at the landing path.
+    #
+    # **The worktree is put back in step with the commit first.** The capsule
+    # tool verifies every manifest file against `commit:<path>`, and these boots
+    # deliberately use commits that differ at the landing path — which is the
+    # whole of what `REPO_LINKAGE` is about. A worktree left holding the previous
+    # boot's landing blob would make the tool refuse, and rightly.
+    cp "${4:-$FIXTURE/init.tos}" "$WORK/source/system/boot/init.tos"
     manifest "$2"
     (cd "$WORK" && "$TOOL" --git-commit "$1" \
         --licence "$ROOT/system/boot/NOTICES.txt" --out "$3" manifest.txt) > /dev/null
@@ -523,7 +563,8 @@ NOREAD
 # is taken from a repository path that is not the landing path, so traversal
 # succeeds, every object verifies against its own id, and the SHA-256 comparison is
 # the one thing that fails.
-build_capsule "$UNLINKED" source/tests/vectors/repository-linkage/init.tos "$OUT/unlinked.bin"
+build_capsule "$UNLINKED" source/tests/vectors/repository-linkage/init.tos \
+    "$OUT/unlinked.bin" "$GITROOT/source/system/boot/init.tos"
 python3 "$TOOLS/provision.py" --capsule "$OUT/unlinked.bin" --git-dir "$WORK/.git" \
     --out "$OUT/unlinked.img" > /dev/null
 python3 "$TOOLS/verify.py" --extent "$OUT/unlinked.img" --capsule "$OUT/unlinked.bin" \
@@ -533,6 +574,7 @@ refusal_boot linkage 6 "$OUT/unlinked.bin" "$OUT/unlinked.img"
 
 # **A detached capsule names no commit at all**, so there is nothing to link to and
 # the linkage is refused rather than attempted.
+cp "$FIXTURE/init.tos" "$WORK/source/system/boot/init.tos"
 manifest source/system/boot/init.tos
 (cd "$WORK" && "$TOOL" --detached --licence "$ROOT/system/boot/NOTICES.txt" \
     --out "$OUT/detached.bin" manifest.txt) > /dev/null
@@ -585,6 +627,92 @@ object_boot duplicate-component  1 REPO_FORMAT
 object_boot wrong-kind           4 REPO_KIND
 object_boot missing-component    3 REPO_MISSING
 
-rm -rf "$WORK" "$OUT/refusal" "$OUT/mutant.img" "$OUT/mutant.bin"
-echo "repository-linkage: PASS (the linkage proved from a real device, and" \
-     "$refusals refusal(s), each with the ADR-0102 §10a class §11c names for it)"
+# --- ADR-0102 §11a: the identity as a capability, not as a source of facts -----
+#
+# Three rules that a reader holding exactly the right authority never meets, and
+# each is its own boot of one process — so there is nothing else in the boot that
+# a result could have come from.
+
+# **Denial**: the same operation and the same interface under a binding nothing
+# answers. The launcher endows the identity as `boot_identity_full`; this module
+# asks for it as `identity`, and `docs/42` §2 has the request asked once, before
+# the first instruction, with a denial that is neither an empty authority nor a
+# zero handle. The run is refused at startup with the binding named.
+DENIED="$(synthesise "$FIXTURE/denied.tos")"
+build_capsule "$DENIED" source/system/boot/init.tos "$OUT/denied.bin" "$FIXTURE/denied.tos"
+bash "$HERE/run.sh" \
+    --out "$OUT/identity" \
+    --capsule "$OUT/denied.bin" \
+    --nucleus "$NUCLEUS" \
+    --stage4-block-device \
+    --expect 75 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.REFUSED TOS.BOOTMODULE.FAIL" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.COMPLETED TOS.RUN.INTERFACE TOS.RUN.REQUEST" \
+    > /dev/null || fail "a process denied system.boot.Identity was not refused at startup"
+grep -aq 'reason=capability-denied binding=identity interface=system.boot.Identity' \
+    "$OUT/identity/events.log" ||
+    fail "the refusal does not name the binding and the interface it was denied for:
+       $(grep -a 'TOS.RUN.REFUSED' "$OUT/identity/events.log" | tr '\n' ' ')"
+echo "repository-linkage: a process not endowed system.boot.Identity cannot read it —"
+echo "  refused before its first instruction, with the binding named"
+
+# **Attenuation**: intersection and not validation, and an empty intersection is
+# a refusal rather than a rightless handle.
+IDENTITY="$(synthesise "$FIXTURE/identity.tos")"
+build_capsule "$IDENTITY" source/system/boot/init.tos "$OUT/identity.bin" "$FIXTURE/identity.tos"
+#   1 read   2 shape   4 not empty   8 widening intersects
+#   16 the narrowed name reads   32 the empty intersection refuses
+EXPECTED_IDENTITY="i64:63"
+bash "$HERE/run.sh" \
+    --out "$OUT/identity" \
+    --capsule "$OUT/identity.bin" \
+    --nucleus "$NUCLEUS" \
+    --stage4-block-device \
+    --expect 33 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.COMPLETED TOS.HALT" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.TRAP TOS.RUN.REFUSED" \
+    > /dev/null || fail "the identity attenuation boot did not reach a clean halt"
+grep -aq "^TOS\.RUN\.COMPLETED value=$EXPECTED_IDENTITY\$" "$OUT/identity/events.log" ||
+    fail "the identity probe did not prove all six of its rules; it reported:
+       $(grep -a '^TOS.RUN.COMPLETED value=' "$OUT/identity/events.log" | tr '\n' ' ')"
+[ "$(grep -ac '^TOS\.RUN\.INTERFACE operation=capability_attenuate status=-1$' \
+    "$OUT/identity/events.log")" = 1 ] ||
+    fail "exactly one attenuation must be refused: the one whose intersection is empty"
+echo "repository-linkage: attenuation of system.boot.Identity is intersection —"
+echo "  asking for read|send yields read and still reads; asking for send alone is refused"
+
+# **Object kind 14 with a non-zero launch scope is refused** (§3a1). The same
+# launcher constant with one field wrong, so the boot does not start.
+bash "$HERE/run.sh" \
+    --out "$OUT/identity" \
+    --capsule "$OUT/identity.bin" \
+    --nucleus "$(nucleus_for test-repository-linkage-scope)" \
+    --stage4-block-device \
+    --expect 71 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.UNSTARTABLE TOS.MEM.FAIL" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.COMPLETED TOS.RUN.BEGIN" \
+    > /dev/null || fail "an endowment of kind 14 with a non-zero scope was not refused"
+echo "repository-linkage: an endowment description of kind 14 with a non-zero scope"
+echo "  is refused, so the boot does not start"
+
+# --- ADR-0102 §8: the depth guard is live --------------------------------------
+#
+# The same fixed traversal against the same extent, read by a reader whose
+# `MAX_TREE_DEPTH` is two. It runs past the bound at the third component and
+# refuses `REPO_BOUNDS` — which is the guard doing its work rather than a
+# condition the product cannot reach.
+# The ordinary boot's commit and the ordinary launcher; only the reader the
+# capsule carries at `/system/repository/reader.tos` is the depth-limited one.
+cp "$FIXTURE/init.tos" "$WORK/source/system/boot/init.tos"
+cp "$OUT/reader-depth.tos" "$WORK/source/tests/vectors/repository-linkage/reader-depth.tos"
+manifest source/system/boot/init.tos
+sed -i 's|/reader\.tos$|/reader-depth.tos|' "$WORK/manifest.txt"
+(cd "$WORK" && "$TOOL" --git-commit "$LINKED" \
+    --licence "$ROOT/system/boot/NOTICES.txt" --out "$OUT/depth.bin" manifest.txt) > /dev/null
+refusal_boot depth 2 "$OUT/depth.bin" "$OUT/extent.img"
+
+rm -rf "$WORK" "$OUT/refusal" "$OUT/identity" "$OUT/mutant.img" "$OUT/mutant.bin" \
+    "$OUT/reader-depth.tos" "$TARGET" "$ROOT/target/test-repository-linkage-scope"
+echo "repository-linkage: PASS (the linkage proved from a real device by two" \
+     "generations, $refusals refusal(s) each with the ADR-0102 §10a class §11c names" \
+     "for it, and the identity's denial, attenuation and scope rules)"

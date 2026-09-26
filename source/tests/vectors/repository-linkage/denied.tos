@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A process that asks for `system.boot.Identity` and is not given one
+// (ADR-0102 §11a.3, `PROCESS_IDENTITY_V1` §7.3).
+//
+// **The same operation, the same interface, a binding nothing answers.** The
+// launcher constant of this boot endows the identity under the name
+// `boot_identity_full`; this module requests it under `identity`, which no
+// endowment of this boot provides. `docs/42` §2 has the request asked once,
+// before the first instruction, and a denial that is *"not an empty authority
+// and not a zero handle"* — so the run is refused at startup with the binding
+// named, and `main` never begins.
+//
+// It is the boot module of its own boot, so nothing else in that boot could
+// have produced the refusal: there is one process, one request and one answer.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.boot.Identity as identity;
+
+resource [
+    fuel: 16384,
+    stack: 8KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 2
+]
+
+extern fn boot_identity_read(
+    cap: system.boot.Identity
+) -> Result<system.boot.IdentityRecord, i64> uses [identity];
+
+// Never reached: a module whose capability request is denied does not run.
+pub fn main() -> i64 uses [identity] {
+    match (boot_identity_read(identity)) {
+        Ok(facts) => {
+            match (to_i64(facts.source_kind)) {
+                Ok(kind) => { return kind; }
+                Err(impossible) => { return -1i64; }
+            }
+        }
+        Err(status) => { return status; }
+    }
+}
