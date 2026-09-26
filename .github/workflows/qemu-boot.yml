@@ -31,7 +31,11 @@ concurrency:
 jobs:
   boot:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A resource limit, not a threshold of any gate. The whole `qemu` profile runs
+    # here under TCG: `e9d09bb` took 45 minutes, and the Stage 4 closure gates added
+    # about twenty boots, which cancelled `e06258f` at 45 minutes with 67 gates
+    # passed and none failed. Raised with room rather than to the edge again.
+    timeout-minutes: 90
     steps:
       # The capsule identity gate resolves repo-relative paths against HEAD and
       # verifies each source file with `git cat-file blob HEAD:<path>`, so the
