@@ -194,7 +194,13 @@ place source/system/boot/init.tos "$FIXTURE/init.tos"
 # and every object mutation needs one too because ordinary Git cannot walk to the
 # landing path of a commit whose trees are deliberately malformed.
 place source/tests/vectors/repository-linkage/init.tos "$FIXTURE/init.tos"
-place source/tests/vectors/repository-linkage/initializer.tos "$FIXTURE/initializer.tos"
+# **The accepted state-store initializer, unchanged and not a copy of it.** Its
+# refusal to format a store that already exists is `STATE_STORE_V1` §12's own
+# negative; what this boot adds is *when* it runs — after every repository read —
+# so the module has to be that one and not a fixture's rendering of it.
+mkdir -p "$WORK/source/tests/vectors/state-store"
+git -C "$GITROOT" show "HEAD:source/tests/vectors/state-store/initializer.tos" \
+    > "$WORK/source/tests/vectors/state-store/initializer.tos"
 place source/tests/vectors/repository-linkage/identity.tos "$FIXTURE/identity.tos"
 place source/tests/vectors/repository-linkage/denied.tos "$FIXTURE/denied.tos"
 place source/tests/vectors/repository-linkage/block.tos "$FIXTURE/block.tos"
@@ -207,7 +213,6 @@ synthesise() {
     git -C "$WORK" read-tree "$HEAD_COMMIT"
     for pair in "source/system/boot/init.tos:$1" \
                 "source/tests/vectors/repository-linkage/init.tos:$FIXTURE/init.tos" \
-                "source/tests/vectors/repository-linkage/initializer.tos:$FIXTURE/initializer.tos" \
                 "source/tests/vectors/repository-linkage/identity.tos:$FIXTURE/identity.tos" \
                 "source/tests/vectors/repository-linkage/denied.tos:$FIXTURE/denied.tos" \
                 "source/tests/vectors/repository-linkage/reader-depth.tos:$OUT/reader-depth.tos" \
@@ -234,7 +239,7 @@ manifest() {
         >> "$WORK/manifest.txt"
     printf '/system/repository/reader.tos\tsource/tests/vectors/repository-linkage/reader.tos\n' \
         >> "$WORK/manifest.txt"
-    printf '/system/state/initializer.tos\tsource/tests/vectors/repository-linkage/initializer.tos\n' \
+    printf '/system/state/initializer.tos\tsource/tests/vectors/state-store/initializer.tos\n' \
         >> "$WORK/manifest.txt"
 }
 
@@ -291,6 +296,36 @@ bash "$HERE/run.sh" \
 
 LOG="$OUT/live/events.log"
 count() { grep -c "$1" "$LOG" || true; }
+
+# --- 0a: the journal this gate reads is the journal the machine wrote ----------
+#
+# `run.sh` keeps the lines of `serial.log` that *begin* with `TOS.`, so anything
+# glued to the front of one is dropped whole — and a gate then asserts over a
+# journal with holes in it while every count it makes still looks plausible. That
+# is not hypothetical: the nucleus used to stream frames belonging to other
+# processes onto the serial line, because it read a report region as one physical
+# run that had been mapped frame by frame, and what it cost was a whole reader
+# generation's account.
+#
+# So the filtered log is held against the raw one: every `TOS.` in the transport
+# must be at the start of its line. A gate that could not tell a missing record
+# from a record that never happened is a gate that reports the second when it
+# means the first.
+python3 - "$OUT/live/serial.log" <<'INTACT' || fail "the boot journal reached the log with holes in it"
+import re
+import sys
+
+raw = open(sys.argv[1], "rb").read().decode("utf-8", errors="replace")
+raw = re.sub(r"\x1b\[[0-9;=?]*[A-Za-z]", "", raw).replace("\r", "")
+glued = [line for line in raw.split("\n") if "TOS." in line and not line.startswith("TOS.")]
+if glued:
+    print(f"{len(glued)} journal line(s) did not reach the start of a line; first:",
+          file=sys.stderr)
+    print("  " + repr(glued[0][:160]), file=sys.stderr)
+    raise SystemExit(1)
+print(f"{sum(1 for line in raw.split(chr(10)) if line.startswith('TOS.'))} journal "
+      f"record(s), every one of them whole")
+INTACT
 completed=$(grep '^TOS\.RUN\.COMPLETED value=' "$LOG" | sed 's/^TOS\.RUN\.COMPLETED value=//')
 
 # --- 0: every module reported a success account --------------------------------
@@ -330,11 +365,13 @@ steps = [
     ("A exits normally", lambda line: line.startswith("TOS.RUN.PROCESS_EXIT ")
         and "self_reported_status=0" in line),
     ("A is collected", lambda line: line == "TOS.RUN.INTERFACE operation=process_wait_child status=0"),
-    ("B is created afterwards", lambda line: line.startswith(
-        "TOS.RUN.INTERFACE operation=process_create_funded status=0")
-        and line.endswith("said=system/repository/reader.tos")),
-    ("B begins over the same module", lambda line: line.startswith(
-        "TOS.RUN.BEGIN path=system/repository/reader.tos ")),
+    # **B's beginning and not B's creation**, because which of the two reaches
+    # the log first is a scheduling detail: a child can run before its creator's
+    # syscall returns and drains, and this check reported a broken restart shape
+    # on the boots where it did. That five children were created is counted
+    # below; what this step is about is that B *ran* after A was collected.
+    ("B begins over the same module, after A was collected", lambda line:
+        line.startswith("TOS.RUN.BEGIN path=system/repository/reader.tos ")),
     ("B reads the boot identity for itself", lambda line:
         line == "TOS.RUN.INTERFACE operation=boot_identity_read status=0"),
     ("B reads the device for itself", lambda line:
@@ -346,12 +383,15 @@ steps = [
 ]
 
 at = 0
+reached = []
 for name, matches in steps:
     while at < len(events) and not matches(events[at]):
         at += 1
     if at == len(events):
         print(f"the journal does not reach: {name}", file=sys.stderr)
+        print("  reached, in order: " + "; ".join(reached), file=sys.stderr)
         raise SystemExit(1)
+    reached.append(f"{name} @{at}")
     at += 1
 print("both reader generations reached the witness, in §11d's order")
 RESTART

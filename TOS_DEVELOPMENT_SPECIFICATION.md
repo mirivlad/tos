@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `591d460f3c6a98525abc520df2a504085330c6655c0cfbe0d6e1eb260b91cdee`\
+Source-manifest SHA-256: `392d5d6cfcdadc576c01e2339172b02cf2a492a864adc788260d5400ade900be`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -508,7 +508,7 @@ the canonical text this machine booted is the `source/system/boot/init.tos` of t
 commit the boot chain verified. Its evidence is twenty-eight boots: one in which
 two successive reader generations each reach the witness from the same device and
 the state store's own sector survives the traffic that went past it,
-twenty-four refused with the exact class ADR-0102 §10a fixes, and three that hold
+twenty-three refused with the exact class ADR-0102 §10a fixes, and three that hold
 the boot identity to the rules every capability in this system obeys — a process
 not endowed it cannot read it, attenuation is intersection and an empty
 intersection is refused, and an endowment description of that object kind with a
