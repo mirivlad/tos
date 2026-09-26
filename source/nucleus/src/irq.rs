@@ -619,6 +619,10 @@ extern "C" fn device_interrupt(slot: u32) {
     }
     let entry = source.entry;
     let deliveries = source.deliveries;
+    // **The adversary writes before anybody reads**, which is when a device that
+    // lied would have finished writing its lie (`test-hostile-device` only).
+    #[cfg(feature = "test-hostile-device")]
+    crate::adversary::on_delivery(source.assignment, source.assignment_generation, deliveries);
     // **The record of the delivery, made by the party that took it.** This is
     // the evidence that a wake came from the device through the source the
     // holder named, rather than from anything the host supplied: no other
