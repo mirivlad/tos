@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// `system.boot.Identity`, exercised as a capability rather than as a source of
+// facts (ADR-0102 §3, §11a).
+//
+// The repository reader proves that what this object *reports* is exact: the
+// commit id and the boot-content digest it hands out are the ones the extent on
+// the device answers to. What that boot cannot show is the other half — that the
+// object behaves like every other capability in this system — because a reader
+// that holds exactly the right authority never meets the rules that bound it.
+//
+// So this module holds the identity and nothing else, and asks the three
+// questions ADR-0100's rules answer for every kind:
+//
+//   read through the endowed name          the ordinary case
+//   attenuate to more than it has          intersection, not validation:
+//                                          the result is `read` and it works
+//   attenuate to rights it does not have   an empty intersection is a
+//                                          **refusal**, not a rightless handle
+//
+// **No plan, no child, no device.** It is the boot process itself, so what it
+// holds is the launcher constant and there is nothing else in the boot for a
+// result to have come from.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.boot.Identity as boot_identity_full;
+
+resource [
+    fuel: 65536,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+const OK: i64 = 0i64;
+const E_NO_CAPABILITY: i64 = -1i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_READ: u64 = 256u64;
+
+const SOURCE_KIND_GIT: u64 = 1u64;
+const OID_ALGORITHM_SHA1: u64 = 1u64;
+const OID_LENGTH_SHA1: u64 = 20u64;
+
+const PROVED_READ: i64 = 1i64;
+const PROVED_SHAPE: i64 = 2i64;
+const PROVED_NOT_EMPTY: i64 = 4i64;
+const PROVED_WIDENING_INTERSECTS: i64 = 8i64;
+const PROVED_NARROWED_READS: i64 = 16i64;
+const PROVED_EMPTY_REFUSED: i64 = 32i64;
+
+extern fn boot_identity_read(
+    cap: system.boot.Identity
+) -> Result<system.boot.IdentityRecord, i64> uses [boot_identity_full];
+
+extern fn capability_attenuate(
+    cap: system.boot.Identity, rights: u64
+) -> Result<system.boot.Identity, i64> uses [boot_identity_full];
+
+extern fn capability_release(
+    cap: system.boot.Identity
+) -> i64 uses [system.boot.Identity];
+
+pub fn main() -> i64 uses [boot_identity_full, system.boot.Identity] {
+    let mut proved: i64 = 0i64;
+
+    // --- the ordinary case ---------------------------------------------------
+    match (boot_identity_read(boot_identity_full)) {
+        Ok(facts) => {
+            proved = proved + PROVED_READ;
+            // The shape this profile requires (§5b). What the values *are* is
+            // the repository reader's claim, not this module's — it has nothing
+            // to check them against and does not pretend to.
+            if (facts.source_kind != SOURCE_KIND_GIT) { return -1i64; }
+            if (facts.oid_algorithm != OID_ALGORITHM_SHA1) { return -2i64; }
+            if (facts.oid_length != OID_LENGTH_SHA1) { return -3i64; }
+            proved = proved + PROVED_SHAPE;
+            // An all-zero identity would be a record the nucleus filled in with
+            // nothing while reporting success.
+            let identity: u64 = facts.oid_0 | facts.oid_1 | facts.oid_2 | facts.oid_3;
+            let content: u64 = facts.boot_content_0 | facts.boot_content_1
+                | facts.boot_content_2 | facts.boot_content_3;
+            if (identity == 0u64) { return -4i64; }
+            if (content == 0u64) { return -5i64; }
+            proved = proved + PROVED_NOT_EMPTY;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+
+    // --- attenuation is intersection, and asking for more does not widen ------
+    //
+    // `read | send` over an object that holds `read`: what comes back is `read`,
+    // because attenuation *narrows* and never validates the request. A refusal
+    // here would mean asking for too much is an error; a `send` that worked
+    // would mean asking for too much is a grant. Neither is what ADR-0100 says,
+    // and the narrowed name reading the record is what shows which it is.
+    match (capability_attenuate(boot_identity_full, RIGHT_READ | RIGHT_SEND)) {
+        Ok(narrowed) => {
+            proved = proved + PROVED_WIDENING_INTERSECTS;
+            match (boot_identity_read(narrowed)) {
+                Ok(again) => {
+                    if (again.oid_algorithm != OID_ALGORITHM_SHA1) { return -6i64; }
+                    proved = proved + PROVED_NARROWED_READS;
+                }
+                Err(status) => { return status - 200i64; }
+            }
+            if (capability_release(narrowed) != OK) { return -7i64; }
+        }
+        Err(status) => { return status - 300i64; }
+    }
+
+    // --- an empty intersection is a refusal ----------------------------------
+    //
+    // `send` alone over an object that holds `read` intersects to nothing.
+    // `CAPABILITY_V1` §4 refuses that rather than producing a handle with no
+    // rights, and ADR-0102 §11a.6 is explicit that this decision invents no such
+    // thing: there is no identity capability that resolves and may not read.
+    match (capability_attenuate(boot_identity_full, RIGHT_SEND)) {
+        Ok(rightless) => {
+            // Released before reporting, so the failure is reported by a process
+            // that is not also leaking the thing it is complaining about.
+            if (capability_release(rightless) != OK) { return -8i64; }
+            return -9i64;
+        }
+        Err(status) => {
+            if (status != E_NO_CAPABILITY) { return status - 400i64; }
+            proved = proved + PROVED_EMPTY_REFUSED;
+        }
+    }
+
+    return proved;
+}

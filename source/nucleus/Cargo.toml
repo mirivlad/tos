@@ -71,6 +71,9 @@ test-state-store = []
 # nucleus mints the object; every fact it reports was validated by the boot chain
 # before the first process existed.
 test-repository-linkage = []
+# The same constant with one field wrong: object kind 14 with a non-zero `scope`,
+# which ADR-0102 §3a1 refuses rather than ignoring. The boot does not start.
+test-repository-linkage-scope = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after
