@@ -583,6 +583,16 @@ qemu_carried_call_answer() {
 qemu_block_fault() {
     bash "$ROOT/source/host-tools/qemu-test/block-fault.sh"
 }
+# What one completed `block.device.v1` READ costs, counted by the nucleus: the
+# accepted protocol boot on a nucleus whose scheduler reports its dispatches,
+# handoffs, idle waits and preemptions on every routed delivery. Pins the design's
+# per-request figures — one region allocation, one delivery, one idle wait, eight
+# handoffs before the timer's — which `docs/evidence/STAGE4_PERFORMANCE_REPORT.md`
+# holds against `docs/35`'s hard budgets. The gate is the instrument; the verdict is
+# the report's.
+qemu_stage4_request_cost() {
+    bash "$ROOT/source/host-tools/qemu-test/stage4-request-cost.sh"
+}
 qemu_state_store() {
     bash "$ROOT/source/host-tools/qemu-test/state-store.sh"
 }
@@ -827,6 +837,7 @@ gate qemu       full-only "QEMU a sector crosses IPC as a region"  qemu_block_da
 gate qemu       full-only "QEMU a successor restarts the device path" qemu_block_lifecycle
 gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_block_protocol
 gate qemu       full-only "QEMU a service that ends mid-request"      qemu_block_fault
+gate qemu       full-only "QEMU what one block request costs"         qemu_stage4_request_cost
 gate qemu       full-only "QEMU a send-only name for an endpoint"    qemu_endpoint_attenuation
 gate qemu       full-only "QEMU a carried call reads its reply"       qemu_carried_call_answer
 gate qemu       full-only "QEMU a persistent object store"             qemu_state_store

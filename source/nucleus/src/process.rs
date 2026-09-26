@@ -856,6 +856,15 @@ pub unsafe fn preempt(frame: &mut TrapFrame, tick: u64) {
     // SAFETY: written here and read by the paths that end a process, all of
     // which run with interrupts masked and none of which is re-entrant.
     unsafe { CURRENT = next };
+    #[cfg(feature = "test-request-cost")]
+    count_dispatch(next);
+    // And that this dispatch was the timer's rather than a context giving the
+    // processor up, which is the distinction a handoff budget has to be read with.
+    #[cfg(feature = "test-request-cost")]
+    // SAFETY: single-context nucleus; the only writer.
+    unsafe {
+        PREEMPTIONS = PREEMPTIONS.wrapping_add(1)
+    };
     // SAFETY: every space in this table maps this nucleus at the addresses it
     // is running at — the stack this handler is on, its text, and the local
     // APIC it has already acknowledged — because each was built by
@@ -871,6 +880,58 @@ pub unsafe fn preempt(frame: &mut TrapFrame, tick: u64) {
 /// `IPC_V1` §8 means by "excluding scheduler preemption" — so the two counters
 /// together are exactly the crossings that contract bounds.
 static mut ENTRIES: u64 = 0;
+
+/// What one completed request cost the scheduler, counted in the build that
+/// counts it (`docs/35` §Stage 4's handoff budget).
+///
+/// ```text
+/// dispatches   every time the processor is given to a context
+/// handoffs     those that give it to a different context than the one that
+///              last had it — idle counts as nobody, so a context woken out of
+///              an idle wait is a handoff
+/// idles        every time nothing could run and the machine waited for an
+///              interrupt
+/// ```
+///
+/// Observations only: nothing reads them to decide anything, and no operation
+/// reaches them. They are reported on each routed delivery, so the difference
+/// between two deliveries is one request's cost.
+#[cfg(feature = "test-request-cost")]
+static mut DISPATCHES: u64 = 0;
+#[cfg(feature = "test-request-cost")]
+static mut HANDOFFS: u64 = 0;
+#[cfg(feature = "test-request-cost")]
+static mut IDLES: u64 = 0;
+#[cfg(feature = "test-request-cost")]
+static mut LAST_RUN: usize = usize::MAX;
+#[cfg(feature = "test-request-cost")]
+static mut PREEMPTIONS: u64 = 0;
+
+#[cfg(feature = "test-request-cost")]
+fn count_dispatch(next: usize) {
+    // SAFETY: single-context nucleus with interrupts masked on every path here.
+    unsafe {
+        DISPATCHES = DISPATCHES.wrapping_add(1);
+        if LAST_RUN != next {
+            HANDOFFS = HANDOFFS.wrapping_add(1);
+        }
+        LAST_RUN = next;
+    }
+}
+
+/// The three counts, for the record that reports them.
+#[cfg(feature = "test-request-cost")]
+pub fn request_cost() -> (u64, u64, u64, u64) {
+    // SAFETY: single-context nucleus; reads of plain counters.
+    unsafe {
+        (
+            core::ptr::addr_of!(DISPATCHES).read(),
+            core::ptr::addr_of!(HANDOFFS).read(),
+            core::ptr::addr_of!(IDLES).read(),
+            core::ptr::addr_of!(PREEMPTIONS).read(),
+        )
+    }
+}
 
 /// That count.
 pub fn entries() -> u64 {
@@ -1284,6 +1345,12 @@ fn report_liveness(verdict: Liveness, blocked: u32, routed: u32) {
 /// following instruction, so an interrupt that arrives between the two is taken
 /// after the `hlt` rather than before it, and no wakeup is lost.
 fn await_interrupt() {
+    #[cfg(feature = "test-request-cost")]
+    // SAFETY: single-context nucleus; the only writer.
+    unsafe {
+        IDLES = IDLES.wrapping_add(1);
+        LAST_RUN = usize::MAX;
+    }
     // SAFETY: no context is running, the nucleus's own address space is live,
     // and the IDT has been loaded since boot — so an interrupt taken here lands
     // in a handler that finds `RUNNING` false and returns without touching the
@@ -1525,6 +1592,8 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
         // SAFETY: as above; these are the only writers.
         unsafe {
             CURRENT = next;
+            #[cfg(feature = "test-request-cost")]
+            count_dispatch(next);
             let slot = addr_of_mut!(TABLE).cast::<Slot>().add(next);
             (*slot).quanta += 1;
             // SAFETY: the slot's space maps this nucleus at the addresses it is
