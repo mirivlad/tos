@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `392d5d6cfcdadc576c01e2339172b02cf2a492a864adc788260d5400ade900be`\
+Source-manifest SHA-256: `dd74065dce6c0bdf0f8954b46e5785ce8832df4836fef5f35b69742bc0a386ae`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -39096,8 +39096,12 @@ the one this repository corrected `state.tos` to obey.
 
 ## 11. Conformance evidence this decision requires
 
-Acceptance carries these obligations, and none is met today. Every refusal named below
-is one of §10a's classes, and the gate asserts the class.
+Acceptance carried these obligations and none of them was met at acceptance. **Every
+reachable one was met on 2026-09-26**, by `host-tools/qemu-test/repository-linkage.sh`
+and the `selftest` gate beside it. Two are not reachable and the text below says so
+where it says it: `REPO_BLOCK` is implemented and cannot be provoked on a conforming
+reference device (§11e), and cross-reboot persistence is explicitly not claimed (§11d).
+Every refusal named below is one of §10a's classes, and the gate asserts the class.
 
 ### 11a. Boot identity
 
