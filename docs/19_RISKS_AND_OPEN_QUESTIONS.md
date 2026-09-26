@@ -29,6 +29,11 @@ Mitigation:
 - quantitative contracts from `docs/35_PERFORMANCE_CONTRACTS.md` measured on VirtIO;
 - optimize execution engine without changing source model.
 
+Measured on 2026-09-26 (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`, observational):
+about 40 ms per 512-byte READ through `block.device.v1` under TCG, dominated by
+byte-at-a-time loops in interpreted canonical text. The risk is realized at Stage 4,
+not hypothetical.
+
 ## R3 — Git repository scale
 
 Using Git semantics for an entire system may create object-count, checkout, merge, and garbage-collection challenges.
@@ -146,7 +151,13 @@ Mitigation:
 - SMP activation stage;
 - state snapshot mechanism;
 - exact official project name after trademark clearance;
-- first professional patent/FTO review scope;
+- first professional patent/FTO review scope, and the recorded decision on the three
+  items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
+  §Stage 4 engineering review);
+- the Stage 4 performance contract: the measurement method for `docs/35`'s
+  reference-platform budgets (clock, oracle, workload shape), and the two hard
+  budgets the accepted `block.device.v1` design exceeds — one allocation and eight
+  handoffs per completed READ (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §6);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes

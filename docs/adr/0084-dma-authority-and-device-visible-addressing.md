@@ -29,6 +29,13 @@
   not an ordering relaxation, and is held off for the right reason. §9 lists what
   moved
 - Date: 2026-09-08
+- Evidence (recorded 2026-09-26; nothing decided above changes): §8's items 1–3,
+  6–10 and the teardown of 13 are gated by `dma-region.sh` and
+  `virtio-block-write.sh`; items 4, 9a, 9b, 11, 12 and 13a — which until then had no
+  runtime evidence — by `dma-quarantine.sh`, whose second boot injects the one
+  device observation 13a needs. Operation 30 now answers item 9a's refusal with
+  `E_BAD_ARGUMENT`, as `SYSTEM_ABI_V1` row 30 states; §9's revision-5 chronology
+  records the `E_NO_CAPABILITY` the first boot observed, and that record stands
 - Decision level: **3** — it admits a third class of authority descending from a
   device assignment, it is the first object with **two** ancestries at once, and
   it decides whether a number the hardware will accept as an address may leave

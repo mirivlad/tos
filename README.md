@@ -466,7 +466,14 @@ handoff. **Stage 4B — BAR/MMIO and real textual VirtIO PCI capability discover
 IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 
 **Stage 4C and Stage 4D are built and gated but not closed**, and no closure is
-claimed for them here. Their evidence is
+claimed for them here. The closure-readiness audit of the whole of Stage 4 is
+`docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
+**ready to close** on the evidence, and Stage 4 **blocked** by its performance
+contract — two `docs/35` hard budgets are exceeded by accepted design and the
+reference-platform budgets have no accepted measurement method
+(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`) — and by the Project Architect's
+decision on the Stage 4 patent review. Those are decisions, and none is taken here.
+Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
 `STAGE4D2_FIRST_BLOCK_READ.md`, `STAGE4D3_QUEUE_REUSE.md`,
@@ -474,8 +481,7 @@ claimed for them here. Their evidence is
 (routed interrupt authority), ADR-0084 (DMA authority and device-visible
 addressing) and ADR-0086 (DMA publication and consumption ordering).
 
-The frontier is the **client/service boundary**, not more device work: a
-canonical textual client holding no part of the machine reaches the driver over
+The **client/service boundary** is built: a canonical textual client holding no part of the machine reaches the driver over
 IPC and receives an answer that originated in a real device read
 (`qemu_block_service`), having been given the service's endpoint by a textual
 registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
@@ -561,22 +567,25 @@ red, each on its own assertion.
 crash consistency, no journaling, no transactions, no exactly-once `PUT`, no delete, no
 enumeration, no second owner or store, no `docs/09` `/state` namespace, no path
 semantics — and **no Stage 4 closure**: Stage 4C, Stage 4D and Stage 4 remain open.
-`ST_BLOCK` is implemented and deliberately **not** exercised: the conforming reference
-endpoint answers every well-formed in-range request successfully, and no device failure
-is manufactured to colour the row green.
+`ST_BLOCK` is implemented and **not** exercised by the store's gate, whose reference
+endpoint answers every well-formed in-range request successfully; the device failure
+below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
+fail a real request and the block service answers `BLK_DEVICE`.
 
-**What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
-separately rather than collected under one word:
+**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-26):
 
-- **the capsule-to-repository handoff** — a deliverable distinct from persistent
-  object/state storage, which is built, and distinct from durability, which is not
-  claimed by either;
-- **a crash in flight**: the lifecycle boot's first instance ends after
-  acknowledging its write, so it asks nothing about a request accepted and never
-  answered — ADR-0093's case D, which stays deliberately ambiguous — and an
-  adversarial-device suite is separate again;
-- the **Stage 4 performance contract report**;
-- current-state documentation, and a closure review.
+- **built and gated**: PCI discovery, the interrupt/MMIO/DMA contracts, the VirtIO
+  block textual driver, persistent object/state storage, and the first half of the
+  capsule-to-repository handoff (ADR-0102's linkage and verification);
+- **crash/reset and adversarial-device tests**: a service that dies and a successor
+  that resets the device (`block-lifecycle.sh`); ADR-0093's case D exhibited as the
+  boundary it is and an incomplete `READ` (`block-fault.sh`); a device that fails
+  a request, lies about its ring or never goes quiet (`block-fault.sh`,
+  `dma-quarantine.sh`);
+- **the performance contract report exists and says the contract is not met**:
+  one allocation and eight scheduler handoffs per completed READ against budgets of
+  zero and four, and no accepted method for the reference-platform ratios;
+- the **closure decision** is the Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a

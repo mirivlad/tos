@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The Stage 3 closure audit names gates that exist, and verdicts that are real.
+# A stage closure audit names gates that exist, and verdicts that are real.
 #
 # A closure audit is only worth reading if its right-hand column can be
 # followed. This holds every gate it names against `scripts/preflight.sh`'s own
@@ -8,10 +8,27 @@
 # than quietly become fiction — and checks that every verdict is one of the four
 # the document admits, because "mostly done" is the failure mode a closure audit
 # exists to prevent.
+#
+# **One checker for every stage's audit**, selected by the argument: each stage
+# states its own verdicts, and a verdict one audit admits is not thereby admitted
+# by another.
+#
+#   check-closure-audit.sh [stage3|stage4]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-AUDIT="$ROOT/docs/evidence/STAGE3_CLOSURE_AUDIT.md"
+STAGE="${1:-stage3}"
+case "$STAGE" in
+    stage3)
+        AUDIT="$ROOT/docs/evidence/STAGE3_CLOSURE_AUDIT.md"
+        VERDICTS='CLOSED|ENVIRONMENT-ONLY|OPEN — blocks Stage 3|OUT OF STAGE 3 by accepted decision'
+        MIN_ROWS=40 ;;
+    stage4)
+        AUDIT="$ROOT/docs/evidence/STAGE4_CLOSURE_AUDIT.md"
+        VERDICTS='PASS|PARTIAL|MISSING|NONCLAIM'
+        MIN_ROWS=60 ;;
+    *) echo "usage: $0 [stage3|stage4]" >&2; exit 2 ;;
+esac
 PREFLIGHT="$ROOT/scripts/preflight.sh"
 
 fail() { echo "check-closure-audit: FAIL: $*" >&2; exit 1; }
@@ -52,25 +69,20 @@ done
 # Counted over the numbered requirement rows only, which is what the summary
 # claims to count — a rule stated in the document and applied here, so the two
 # cannot drift.
-python3 - "$AUDIT" <<'PY' || fail "the audit's verdicts and its summary disagree"
+python3 - "$AUDIT" "$VERDICTS" "$MIN_ROWS" <<'PY' || fail "the audit's verdicts and its summary disagree"
 import re
 import sys
 from collections import Counter
 
-VERDICTS = {
-    "CLOSED",
-    "ENVIRONMENT-ONLY",
-    "OPEN — blocks Stage 3",
-    "OUT OF STAGE 3 by accepted decision",
-}
+VERDICTS = set(sys.argv[2].split("|"))
 text = open(sys.argv[1], encoding="utf-8").read()
 rows = [line for line in text.splitlines() if re.match(r"^\| \d+\.\d+ \|", line)]
-if len(rows) < 40:
+if len(rows) < int(sys.argv[3]):
     raise SystemExit(f"only {len(rows)} requirement row(s)")
 counted = Counter(row.rsplit("|", 2)[1].strip() for row in rows)
 for verdict in counted:
     if verdict not in VERDICTS:
-        raise SystemExit(f"a row records {verdict!r}, which is not one of the four verdicts")
+        raise SystemExit(f"a row records {verdict!r}, which is not one of this audit's verdicts")
 
 claimed = {}
 for verdict, number in re.findall(r"^\| \**([A-Z][^|*]*?)\** \| \**(\d+)\** \|$", text, re.M):

@@ -261,6 +261,16 @@ Stage 4 reference-platform budgets:
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
 
+**Status, 2026-09-26** (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`; the counts are
+`qemu_stage4_request_cost`'s). The budgets above are unchanged and are **not met**:
+a completed `block.device.v1` READ costs one region allocation and eight scheduler
+handoffs before the timer's, against zero and four — both structural to the accepted
+protocol — while one payload copy, the batching rule and the lock rule hold. The three
+reference-platform budgets are **P0**: no accepted decision fixes their clock, oracle
+or workload shape. Closing Stage 4 therefore needs the Project Architect's decision
+under this section's own rule, and this paragraph records the state rather than making
+it.
+
 ## Stage 5 — Repository and activation
 
 Hard budgets:

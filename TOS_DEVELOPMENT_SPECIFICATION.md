@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `9dd7ffaa38461bfbae395538bfbd126ba71e587c791f592e99a51f8d6db6c6b1`\
+Source-manifest SHA-256: `dcf3cde20e3337389243a26329b28c8c17fed17d68a7be5d2827563bfa16f1fe`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -481,7 +481,14 @@ handoff. **Stage 4B — BAR/MMIO and real textual VirtIO PCI capability discover
 IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 
 **Stage 4C and Stage 4D are built and gated but not closed**, and no closure is
-claimed for them here. Their evidence is
+claimed for them here. The closure-readiness audit of the whole of Stage 4 is
+`docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
+**ready to close** on the evidence, and Stage 4 **blocked** by its performance
+contract — two `docs/35` hard budgets are exceeded by accepted design and the
+reference-platform budgets have no accepted measurement method
+(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`) — and by the Project Architect's
+decision on the Stage 4 patent review. Those are decisions, and none is taken here.
+Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
 `STAGE4D2_FIRST_BLOCK_READ.md`, `STAGE4D3_QUEUE_REUSE.md`,
@@ -489,8 +496,7 @@ claimed for them here. Their evidence is
 (routed interrupt authority), ADR-0084 (DMA authority and device-visible
 addressing) and ADR-0086 (DMA publication and consumption ordering).
 
-The frontier is the **client/service boundary**, not more device work: a
-canonical textual client holding no part of the machine reaches the driver over
+The **client/service boundary** is built: a canonical textual client holding no part of the machine reaches the driver over
 IPC and receives an answer that originated in a real device read
 (`qemu_block_service`), having been given the service's endpoint by a textual
 registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
@@ -576,22 +582,25 @@ red, each on its own assertion.
 crash consistency, no journaling, no transactions, no exactly-once `PUT`, no delete, no
 enumeration, no second owner or store, no `docs/09` `/state` namespace, no path
 semantics — and **no Stage 4 closure**: Stage 4C, Stage 4D and Stage 4 remain open.
-`ST_BLOCK` is implemented and deliberately **not** exercised: the conforming reference
-endpoint answers every well-formed in-range request successfully, and no device failure
-is manufactured to colour the row green.
+`ST_BLOCK` is implemented and **not** exercised by the store's gate, whose reference
+endpoint answers every well-formed in-range request successfully; the device failure
+below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
+fail a real request and the block service answers `BLK_DEVICE`.
 
-**What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
-separately rather than collected under one word:
+**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-26):
 
-- **the capsule-to-repository handoff** — a deliverable distinct from persistent
-  object/state storage, which is built, and distinct from durability, which is not
-  claimed by either;
-- **a crash in flight**: the lifecycle boot's first instance ends after
-  acknowledging its write, so it asks nothing about a request accepted and never
-  answered — ADR-0093's case D, which stays deliberately ambiguous — and an
-  adversarial-device suite is separate again;
-- the **Stage 4 performance contract report**;
-- current-state documentation, and a closure review.
+- **built and gated**: PCI discovery, the interrupt/MMIO/DMA contracts, the VirtIO
+  block textual driver, persistent object/state storage, and the first half of the
+  capsule-to-repository handoff (ADR-0102's linkage and verification);
+- **crash/reset and adversarial-device tests**: a service that dies and a successor
+  that resets the device (`block-lifecycle.sh`); ADR-0093's case D exhibited as the
+  boundary it is and an incomplete `READ` (`block-fault.sh`); a device that fails
+  a request, lies about its ring or never goes quiet (`block-fault.sh`,
+  `dma-quarantine.sh`);
+- **the performance contract report exists and says the contract is not met**:
+  one allocation and eight scheduler handoffs per completed READ against budgets of
+  zero and four, and no accepted method for the reference-platform ratios;
+- the **closure decision** is the Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
@@ -6200,6 +6209,18 @@ can exhibit that refusal. This follows the precedent of
 *"was attempted and withdrawn"* because the reference device could not be made to
 fail it, rather than building a fake device to manufacture one.
 
+**Beyond ADR-0098 §4, on 2026-09-26**, `host-tools/qemu-test/block-fault.sh`
+exercises three things that list did not require, against the same accepted
+service text plus named exits: `BLK_DEVICE` (§7) from a real device failure — QEMU's
+own `blkdebug` layer fails a real `WRITE` and a real `READ` — answered as a refusal,
+with the next request served and no region after a refused `READ`; §6a's incomplete
+`READ`, where the service ends between its success reply and its region and the
+client's receive is cancelled with nothing queued; and §9's case D, exhibited as a
+boundary — the caller's observation is identical whether or not the device wrote.
+Exercising `BLK_DEVICE` found that a device-refused request was not counted as
+having reached the ring, which left the next request waiting forever; the service
+now counts it.
+
 <!-- END source/interfaces/device/BLOCK_DEVICE_V1.md -->
 
 ---
@@ -11775,41 +11796,6 @@ This is the Stage 3 form of the failure Stage 1 was built to prevent — an
 invented official commit. It is cheap to introduce by accident and expensive to
 detect later.
 
-### X4.1 — A boot identity that selects rather than reports (T2, T6 → A1, A5)
-
-`system.boot.Identity` (`ADR-0102` §3) makes the verified boot source identity
-readable by canonical text. The threat is that a readable fact becomes a selectable
-one: a capability that could choose which commit the system believes in would move
-boot selection out of boot control.
-
-Controls: the operation is **read-only and the object is immutable for the boot**;
-it is minted only at the trusted boot boundary and reaches a process only by
-bootstrap or launch-plan endowment; `RIGHT_READ` is the only right, attenuation is
-intersection and an empty intersection is refused; and the repository extent
-deliberately carries **no root commit field**, so the extent cannot name the commit
-a reader trusts (`ADR-0102` §7a). **E2**.
-
-### X4.2 — Attacker-controlled repository bytes (T4 → A5, S2)
-
-The Stage-4 repository extent is raw bytes a host wrote, parsed by canonical text:
-a zlib stream, a Git object graph and a bounded object table are all
-attacker-controlled input to a parser under `docs/34` S2's bounded-parsing rule.
-
-Controls: every size, depth and count bound is declared and **checked before the
-work it bounds** — the inflate bound comes from the table entry before any byte is
-produced; the object id is **recomputed** over the object's own bytes rather than
-trusted from where it was found; the extent's own capacity is established through
-`CAPACITY` before any repository sector is read; reserved bytes and object sector
-padding must be zero; and every refusal is one of `ADR-0102` §10a's nine classes,
-failing closed with no fallback. **E2**.
-
-**And one limitation stated rather than implied.** The Stage-4 profile verifies
-**SHA-1** Git object ids, because that is what the repository and the capsule OID
-are. Recomputation proves corruption and substitution under this conformance
-profile; it is **not** claimed as collision resistance against an adversary who can
-produce a collision, which is the T4 case this profile does not defend against. A
-hash-family migration is a later decision, not a property of this one.
-
 ### X3.10 — Privileged policy migrating into the nucleus (T0 → A1, A8)
 
 Service logic moves into the nucleus because IPC is inconvenient, and the system
@@ -11819,6 +11805,24 @@ Controls: a design threat, checked as docs/31 checks it — a dependency and
 surface inventory at Stage 3 close showing that no service logic entered the
 nucleus and that every privileged behaviour is exercised by a source-identified
 textual process. **E1**, honestly: a reviewable property, not a tested one.
+
+### What Stage 3 does not claim
+
+- no protection against T7 or T8, which remain outside containment;
+- no timing or micro-architectural side-channel protection between processes;
+  clearing reused frames closes the direct-disclosure path and nothing more;
+- no time source a process can trust — monotonic ticks exist for scheduling
+  (ADR-0049) and trusted time is Stage 7;
+- no revocation of already-delegated authority beyond what an owning service
+  implements (`CAPABILITY_V1` §4).
+
+## Stage 4 — the device, driver and storage boundary in detail
+
+Trust boundary 8 — driver to device through MMIO, interrupt and DMA grants — is
+created by Stage 4 under ADR-0079…ADR-0102, together with the first persistent
+bytes and the first repository bytes canonical text reads. As in Stage 3, adversary
+classes, assets and required properties are the existing ones; the entries below are
+the detail the change rule requires before Stage 4 can close.
 
 ### X4.1 — Interrupt routing taken by writing a number (T2 → A3, A8, S3)
 
@@ -11853,7 +11857,10 @@ this one cannot be — a stale MSI carries a vector and does not carry the
 source's generation — so the conservative rule stands in for the proof. The
 supply is finite and exhaustion is `E_LIMIT` rather than recycling. An interrupt
 on a retired vector keeps its IDT gate, is acknowledged, is counted as spurious
-and wakes nobody. **E2**.
+and wakes nobody. **E2** for the retirement: `irq-routed.sh` re-claims the same
+entry and is given a **different** vector, and every teardown record says
+`vector_retired=1`. **E1** for the late message itself: a conforming device masked
+before retirement sends none, and no device is built to send one.
 
 ### X4.3 — Memory returned to the pool while a device can still write it (T7 → A4, A9, S5)
 
@@ -11872,9 +11879,19 @@ function's ordering and coherency bits are nucleus-owned so a driver cannot
 weaken that proof. **Fail-closed**: if the proof cannot be established the frames
 stay out, the charge stays outstanding and the assignment does not end, so the
 device cannot be handed to a second driver. There is no timeout and no reset
-fallback. **E1** until Stage 4C-2's evidence exists; the residual risk is
-ADR-0084 §5c.1's TC0-only profile requirement, which is qualified about the
-platform rather than checked in ring 0.
+fallback.
+
+**E2**, and **E3** for the fail-closed branch. `dma-quarantine.sh` releases regions
+while an interrupt source keeps the function mastering and reads the nucleus's own
+record: the runs stay out of the pool, and come back only after bus mastering has
+stopped and the proof has held. Its second boot injects one device observation —
+Device Status reporting Transactions Pending on every read — and nothing comes back,
+the assignment stays pinned, the same BDF is refused, and after the process has died
+the pool has lost exactly the quarantined frames; a nucleus that reclaimed on
+`BME = 0` alone turns that boot red, which was checked by making it one.
+`virtio-block-write.sh` runs the same path on process death. The residual risk is
+ADR-0084 §5c.1's TC0-only profile requirement, which is qualified about the platform
+rather than checked in ring 0, and is not tested because no register reports it.
 
 ### X4.4 — One memory budget spent twice through quarantine churn (T2 → A9, S5)
 
@@ -11886,19 +11903,207 @@ Controls (ADR-0084 §5f): the allocation charge **stays outstanding** while the
 backing is quarantined, and the funding lineage is refunded at the same moment
 the frames actually return. This is ADR-0075's existing rule — physical
 reclamation before accounting refund — with a longer interval, so
-`allocated + reserved + free == budget` holds throughout. **E2** once the churn
-case of ADR-0084 §8.12 is exercised, which a refund-on-release implementation
-fails and every other item passes.
+`allocated + reserved + free == budget` holds throughout. **E2**: the churn case of
+ADR-0084 §8.12 is exercised by `dma-quarantine.sh` — two cycles spend a two-frame
+child budget while a sibling keeps the function mastering, the third allocation is
+refused while the parent still funds one at that moment, and the child funds again
+only after the runs have returned. A refund-on-release nucleus turns that boot red,
+which was checked by making it one.
 
-### What Stage 3 does not claim
+### X4.5 — A boot identity that selects rather than reports (T2, T6 → A1, A5)
 
-- no protection against T7 or T8, which remain outside containment;
-- no timing or micro-architectural side-channel protection between processes;
-  clearing reused frames closes the direct-disclosure path and nothing more;
-- no time source a process can trust — monotonic ticks exist for scheduling
-  (ADR-0049) and trusted time is Stage 7;
-- no revocation of already-delegated authority beyond what an owning service
-  implements (`CAPABILITY_V1` §4).
+`system.boot.Identity` (`ADR-0102` §3) makes the verified boot source identity
+readable by canonical text. The threat is that a readable fact becomes a selectable
+one: a capability that could choose which commit the system believes in would move
+boot selection out of boot control.
+
+Controls: the operation is **read-only and the object is immutable for the boot**;
+it is minted only at the trusted boot boundary and reaches a process only by
+bootstrap or launch-plan endowment; `RIGHT_READ` is the only right, attenuation is
+intersection and an empty intersection is refused; and the repository extent
+deliberately carries **no root commit field**, so the extent cannot name the commit
+a reader trusts (`ADR-0102` §7a). **E2**.
+
+### X4.6 — Attacker-controlled repository bytes (T4 → A5, S2)
+
+The Stage-4 repository extent is raw bytes a host wrote, parsed by canonical text:
+a zlib stream, a Git object graph and a bounded object table are all
+attacker-controlled input to a parser under `docs/34` S2's bounded-parsing rule.
+
+Controls: every size, depth and count bound is declared and **checked before the
+work it bounds** — the inflate bound comes from the table entry before any byte is
+produced; the object id is **recomputed** over the object's own bytes rather than
+trusted from where it was found; the extent's own capacity is established through
+`CAPACITY` before any repository sector is read; reserved bytes and object sector
+padding must be zero; and every refusal is one of `ADR-0102` §10a's nine classes,
+failing closed with no fallback. **E2**.
+
+**And one limitation stated rather than implied.** The Stage-4 profile verifies
+**SHA-1** Git object ids, because that is what the repository and the capsule OID
+are. Recomputation proves corruption and substitution under this conformance
+profile; it is **not** claimed as collision resistance against an adversary who can
+produce a collision, which is the T4 case this profile does not defend against. A
+hash-family migration is a later decision, not a property of this one.
+
+### X4.7 — Device memory reached outside the window a driver was given (T2 → A4, S3)
+
+A driver maps or touches device memory its function does not decode, another
+function's BAR, the MSI-X table or pending-bit array, or a window it no longer
+holds — or presents an address and hopes the nucleus maps it.
+
+Controls (ADR-0081 §13–§14, ADR-0082 §5): no operation takes an address; a window
+is derived from the BAR the assignment measured at claim time, at a page-aligned
+offset and length checked against that extent; an access through a window is
+bounds-checked **before** the device transaction and refused rather than faulted;
+a read-only window has no writable mapping; a window overlapping the MSI-X table or
+pending-bit array is refused in both forms; windows are uncached device memory and
+end with their assignment and their process. **E2**: `virtio-mmio.sh` executes eight
+mapping refusals and an access past its own window refused before the device is
+touched, and the same probe without the device reports a refusal rather than a
+reading; `pci-placement.sh` shows a window still deriving the measured extent after
+a refused relocation.
+
+### X4.8 — A device that fails, lies or never finishes (T0, T7 → A9, S1)
+
+A device reports an error for a request; or reports something it could not have
+done — a capability chain that loops, a configuration generation that never
+settles, a used-ring element naming a chain the driver did not make, a length
+larger than the buffers it was given, success for a read that wrote nothing; or it
+never quiesces.
+
+Controls: every device observation is checked before it is believed, in the driver
+and not in ring 0 — a capability walk bounded by count; the VIRTIO §2.5.1 generation
+protocol bounded; `used.idx`, the used element's id and its length compared against
+exactly what the driver made available (VIRTIO §2.7.8), and a read refused when its
+sentinel survived; a non-OK completion status is a **refusal** answered with
+`BLK_DEVICE`, not a collapse of the service, and the ring counters account for it;
+a function that never reports Transactions Pending clear keeps its DMA memory
+quarantined for the rest of the boot (X4.3).
+
+Evidence, by the part of the control it exercises:
+
+- **E2, a device that fails.** `block-fault.sh` puts QEMU's own `blkdebug` layer
+  under the reference endpoint so that it completes one `WRITE`, and in another boot
+  one `READ`, with a real non-OK status through the real ring. Each is refused with
+  `BLK_DEVICE`, the next request is served, a refused `READ` owes and sends no
+  region, and the image agrees with what the client was told. Exercising the path
+  for the first time found that a request the device failed was not counted as
+  having reached the ring, so the next one was published into the same slot and
+  waited for a completion that could never come; that is fixed in every copy of the
+  service.
+- **E3, a device that never quiesces**: X4.3's injected observation.
+- **E2, a malformed capability chain**: `virtio-caps.sh` runs a chain whose pointer
+  is `0xFF`, and the walk terminates on its own bound.
+- **E3, a device that lies about its ring.** `block-fault.sh` builds a test nucleus
+  that writes into the driver's DMA memory, at a named delivery and before the
+  driver is woken, what a bus master of that function could: a used element naming
+  a chain the driver never made, a length past the buffers and one short of them,
+  and a successful read whose data buffer still holds the driver's sentinel. Each
+  is refused at the step that checks it, with that step's own code, the device is
+  given up, and no byte reaches the client. The nucleus is told an offset and a
+  byte and knows nothing about rings; the offsets are computed by the harness from
+  the service's own layout rule, and a wrong one would show as a different code.
+- **E1, a device that never advances `used.idx`**: the driver waits, and the wait is
+  the availability loss named below.
+
+**Named rather than hidden:** a device that never advances `used.idx` leaves its
+driver waiting on a live routed source, which the liveness rule does not diagnose
+(`SYSTEM_ABI_V1` §6). That is an availability loss to an adversary controlling a
+granted device — an accepted non-goal — and it reaches no other process's memory or
+authority through the driver.
+
+### X4.9 — A block client that sends what the protocol does not admit (T1 → A9, S2)
+
+A client of `block.device.v1` sends a malformed length, a reserved opcode, a sector
+past the device, a `WRITE` with no region, a `READ` with nowhere to answer, a stray
+send with no call behind it, or authority nobody asked for.
+
+Controls (`BLOCK_DEVICE_V1` §4–§7, ADR-0098): the length is checked before the word
+is read; opcode, range against the device's own capacity, region presence and answer
+channel are each refused with their own code, **every refusal is a reply**, and none
+of them reaches the device; a non-call message is dropped and what it carried is
+released; one request is one sector, so no client-chosen count reaches the device.
+**E2**: `block-protocol.sh` exhibits every refusal and counts, from the service's own
+journal windows, that none of the refused requests resolved a device address;
+`state-store.sh` does the same for `state.store.v1` above it.
+
+### X4.10 — A dead driver's name, and an answer that arrives for somebody else (T1, T2 → A3, S4)
+
+A service dies and its successor is reached through the name a client held for the
+old one; or a region answering one request is left on an endpoint and taken as the
+answer to another.
+
+Controls (ADR-0093 option P3, ADR-0095, `BLOCK_DEVICE_V1` §6a): publication is a
+dedicated channel; the supervisor collects the ending and **withdraws** the
+publication before a successor exists; the successor claims the function at a new
+generation and publishes a **new** endpoint; a name for the dead instance is never
+repaired, and a call on it is cancelled rather than served; a `READ` replies before
+it sends its region, so a service that dies in between leaves nothing queued.
+**E2**: `block-lifecycle.sh` (death, withdrawal, successor, fresh lookup, a stale call
+cancelled while the successor waits), `publication-authority.sh`, and
+`block-fault.sh`'s incomplete `READ` (a success reply, no region ever sent, the
+receive cancelled by the liveness rule).
+
+**Case D is a boundary, and is evidenced as one.** `block-fault.sh` ends the service
+once before and once after the device performs a `WRITE`: the caller's observation is
+`E_CANCELLED` in both, identically, while the device differs. No transaction id,
+journal, retry or exactly-once rule is claimed (ADR-0093 §5a, ADR-0098 §3).
+
+### X4.11 — A driver that resets or relocates its function under the nucleus's measurement (T2 → A4)
+
+A driver writes a BAR, the expansion ROM register or Initiate Function Level Reset,
+so that the function decodes somewhere the nucleus did not measure while windows,
+interrupt entries and DMA addresses derived from the old measurement stay live.
+
+Controls (ADR-0082 §5a, ADR-0092 option R1a): every resource-placement register of
+the reported header type, and the FLR bit, is refused when a write would change it,
+judged bit by bit, while a write-back of the current value and the other bits of the
+same words proceed. Recovery of a device is the successor driver's own protocol reset
+in user space — `DEVICE_STATUS` written to 0 and read back as 0 — and not a reset ring
+0 performs. **E2**: `pci-placement.sh` (every BAR, both halves of the 64-bit pair, the
+ROM register and FLR refused, with their neighbours writable); `block-lifecycle.sh`
+(the successor's reset and full reinitialization).
+
+### X4.12 — Persistent state read back as something it is not (T0, T5 → A7, S1)
+
+A store opened over storage that is not one — uninitialized, formatted for a
+different schema, too small for its extent — or a populated store re-formatted by an
+initializer that did not look.
+
+Controls (`STATE_STORE_V1` §4.3–§4.5, ADR-0099): a store is open only when sector 0
+carries the magic, the format version, all-zero reserved bytes and the opening
+service's own schema identity, **and** the device's capacity holds the extent;
+formatting is permitted only over an all-zero sector 0; presence is the occupancy
+bitmap and nothing else. **E2**: `state-store.sh` refuses to re-format a populated
+store, answers every request with `ST_STORE` on a device one sector too small, refuses
+an id never created without reading its sector, and turns red under each of its five
+named mutations.
+
+**And one limitation stated rather than implied.** Nothing in `state.store.v1`
+authenticates bytes. A local attacker with write access to the disk (T5) can write a
+header and objects the store will accept, and the store has no way to tell: there is
+no checksum, MAC or signature at Stage 4. The controls above keep **accidental** and
+wrong-format storage from being read as a store; they are not a defence against T5,
+and no sentence claims that they are.
+
+### What Stage 4 does not claim
+
+- **No hardware DMA confinement.** On the no-IOMMU reference profile a bus-mastering
+  device can write any memory; what the capability model bounds is the memory a
+  driver can obtain **legitimately** (S5). T7 remains outside containment.
+- **No availability against a granted device.** A device that stops completing
+  requests stops its driver, and while a routed source is live the liveness rule does
+  not diagnose a peer deadlock beside it (`SYSTEM_ABI_V1` §6).
+- **No power-loss durability**, no `VIRTIO_BLK_F_FLUSH`, no crash consistency, no
+  journaling or transactions, and no exactly-once write: case D stays ambiguous by
+  decision (X4.10).
+- **No integrity or confidentiality of persistent bytes** against T5 (X4.12), and no
+  collision resistance for the SHA-1 object ids the Stage-4 repository profile
+  verifies (X4.6).
+- **The TC0-only requester profile (P5) is qualified, not checked** (ADR-0084
+  §5c.1); the DMA drain proof is only as good as that qualification (X4.3).
+- **No second device, no multi-queue, no scheduling fairness** between clients of one
+  driver: one driver serves one function.
 
 ## Accepted non-goals for early stages
 
@@ -11928,9 +12133,10 @@ Release notes state the evidence level for security claims.
 - Stage 1: boot/capsule boundaries and source identity;
 - Stage 1.5–2: parser, language, verifier, resource and source-map threats;
 - Stage 3: capability, IPC and process isolation threats;
-- Stage 4: interrupt, MMIO, DMA and storage-corruption threats, and — from
-  `ADR-0102` — the verified boot identity a process may read and the raw repository
-  bytes a canonical textual parser consumes (X4.1, X4.2);
+- Stage 4: interrupt, MMIO, DMA, device, block-protocol, service-lifetime, reset and
+  storage-corruption threats (X4.1–X4.4, X4.7–X4.12), and — from `ADR-0102` — the
+  verified boot identity a process may read and the raw repository bytes a canonical
+  textual parser consumes (X4.5, X4.6);
 - Stage 5: repository, refs, protected candidate/current/last-known-good/recovery
   selection, rollback, garbage collection and state migration threats;
 - Stage 7: remote, network, credential and time threats.
@@ -12559,6 +12765,16 @@ Stage 4 reference-platform budgets:
 - performance results include textual-runtime engine identity and cache state.
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
+
+**Status, 2026-09-26** (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`; the counts are
+`qemu_stage4_request_cost`'s). The budgets above are unchanged and are **not met**:
+a completed `block.device.v1` READ costs one region allocation and eight scheduler
+handoffs before the timer's, against zero and four — both structural to the accepted
+protocol — while one payload copy, the batching rule and the lock rule hold. The three
+reference-platform budgets are **P0**: no accepted decision fixes their clock, oracle
+or workload shape. Closing Stage 4 therefore needs the Project Architect's decision
+under this section's own rule, and this paragraph records the state rather than making
+it.
 
 ## Stage 5 — Repository and activation
 
@@ -13296,6 +13512,11 @@ Mitigation:
 - quantitative contracts from `docs/35_PERFORMANCE_CONTRACTS.md` measured on VirtIO;
 - optimize execution engine without changing source model.
 
+Measured on 2026-09-26 (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`, observational):
+about 40 ms per 512-byte READ through `block.device.v1` under TCG, dominated by
+byte-at-a-time loops in interpreted canonical text. The risk is realized at Stage 4,
+not hypothetical.
+
 ## R3 — Git repository scale
 
 Using Git semantics for an entire system may create object-count, checkout, merge, and garbage-collection challenges.
@@ -13413,7 +13634,13 @@ Mitigation:
 - SMP activation stage;
 - state snapshot mechanism;
 - exact official project name after trademark clearance;
-- first professional patent/FTO review scope;
+- first professional patent/FTO review scope, and the recorded decision on the three
+  items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
+  §Stage 4 engineering review);
+- the Stage 4 performance contract: the measurement method for `docs/35`'s
+  reference-platform budgets (clock, oracle, workload shape), and the two hard
+  budgets the accepted `block.device.v1` design exceeds — one allocation and eight
+  handoffs per completed READ (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §6);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes
@@ -14536,7 +14763,7 @@ speedup.
 
 # Preliminary patent landscape
 
-**Status:** engineering research only, updated 2026-08-05. This is not a legal opinion, exhaustive search or freedom-to-operate conclusion. Legal status shown by public aggregators must be verified in official registers for each jurisdiction.
+**Status:** engineering research only, updated 2026-08-05; Stage 4 engineering review added 2026-09-26. This is not a legal opinion, exhaustive search or freedom-to-operate conclusion. Legal status shown by public aggregators must be verified in official registers for each jurisdiction.
 
 ## Search clusters
 
@@ -14586,13 +14813,89 @@ speedup.
 - Design response: TOS uses a commit/tree/blob graph, immutable commit-addressed `/system`, candidate refs and boot records. Do not implement the Oracle-specific hard-link/filename/patch-memento structure without a claim review.
 - Research URL: `https://patents.google.com/patent/US10762059B2/en`
 
+## Stage 4 engineering review (2026-09-26)
+
+`docs/16` §Cross-stage gates requires, before Stage 4 closes, a review of the
+user-space interrupt, DMA and interpreted-driver mechanisms; `docs/24` §Review
+procedure is how. This section is steps 1–6 of that procedure for the mechanisms
+Stage 4 actually built. **It is engineering research, not a legal opinion, and it
+claims no mechanism is free of patents.** Step 8 — preserving a decision — is the
+Project Architect's, and nothing here is that decision. Statuses are what the
+public aggregator showed on the date above and must be verified in the official
+register of each jurisdiction before anyone relies on them.
+
+### The mechanisms, stated precisely (step 1)
+
+| | TOS mechanism | Where it is decided |
+|---|---|---|
+| M1 | a device driver is canonical TOS Core text held in the capsule (and, from Stage 5, the repository), checked, lowered and interpreted by the runtime inside an ordinary user process; nothing is read from the peripheral | ADR-0027, ADR-0048, ADR-0079 |
+| M2 | the nucleus owns the function's MSI-X table; a driver holds a `platform.irq.Source` derived from its assignment and blocks in `irq_wait`; ring 0 acknowledges at the local APIC and wakes the waiter through a one-bit latch; no line is masked and re-enabled per delivery, and no driver code runs in interrupt context | ADR-0082 |
+| M3 | a `DmaRegion` requires both a function capability with `dma` and a memory authority with `spend`; the device-visible address is data issued for a bounded offset; released backing is quarantined until bus mastering has stopped and Transactions Pending reads clear; no IOMMU on the reference profile | ADR-0084, ADR-0086 |
+
+### What was found (steps 2–4)
+
+- **L-001** (`WO1997024656A1`): the national-phase family the aggregator lists is
+  `US5835772A` (expired, fee-related), `AU1568497A` (abandoned), `TW318227B`
+  (right ceased). Every independent claim read requires the uncompiled driver code
+  to be **stored in the peripheral device's own memory** and read from it.
+- **L-002** (`US7581051B2`): US, EP (`EP1889165B1`), JP, CN, BR and RU members are
+  shown expired, lapsed or ceased; `CA` withdrawn, `KR` abandoned. **`MX2007014338A`
+  is shown as an active grant and `ATE538436T1` as active** — the latter is the
+  Austrian validation of an EP patent the same page shows expired at the end of its
+  lifetime, so the indicator is doubtful, and both need the register. The
+  independent claims read combine a registered user-mode driver, a
+  device-independent interrupt interface, masking the interrupt **below processor
+  level (APIC or bus controller)** while the user-mode handler runs, a generic
+  kernel-mode routine run after kernel drivers' routines, and re-enabling the line.
+- **L-003** (`US20020049865A1` / `US7058929B2`): the granted US claims read are
+  about fragment-based compilation of dominant execution paths, and the grant is
+  shown expired (2020). **The landscape's association of this family with
+  interrupt-level non-native stacks is imprecise** and is corrected here: that
+  subject is in the grouped disclosure, not in the claims this grant carries.
+- **L-005, new — IBM, `US8806511B2`** (priority 2010), executing a kernel device
+  driver as a user-space process: shown expired (fee-related). Its independent
+  claims read intercept kernel API calls from a user-space driver through a library
+  and convey privileged ones to a kernel module through a file descriptor. **One US
+  continuation is shown active (granted 2018-11-06); its claims have not been
+  read.**
+- **L-006, new — Apple, `US11829303B2`** (priority 2019), device driver operation
+  in non-kernel space: **shown active, expiring 2041-04-09.** Independent claims
+  read concern a non-kernel entity given access to a hardware component and a
+  memory allocation while other entities' allocations are excluded, configuration
+  from granted resources, deallocation on termination, and — in the method claim —
+  an IOMMU used for the allocation. Claim 1 is written about a network interface.
+- A concept search for interpreted or bytecode device drivers returned bytecode
+  interpreter and VM-acceleration patents and nothing claiming a driver executed
+  as interpreted source in user space.
+
+### Engineering claim matrix and design differences (steps 5–6)
+
+| Family | Element the claims read require | M1 | M2 | M3 |
+|---|---|---|---|---|
+| L-001 | driver code stored in and read from the peripheral | not practised: the driver is a capsule/repository object | — | — |
+| L-002 | interrupt masked at APIC/bus level while a user-mode handler runs, then re-enabled | — | **different by design**: edge MSI-X, unshared, one latch; no per-delivery mask/unmask of a line | — |
+| L-003 | fragment compilation of dominant paths | TOS has no JIT; interpretation only | — | — |
+| L-005 | kernel-API emulation library forwarding privileged calls to a kernel module | — | no emulation layer; operations are capability ABI rows | no emulation layer |
+| L-006 | non-kernel hardware access, allocation isolation, deallocation on termination; IOMMU in the method claim | — | overlaps in **general concept** (a user-space driver granted a device and memory, released at termination) | overlaps in general concept; **no IOMMU** on the reference profile |
+
+**Flagged for the Project Architect, not resolved here:** L-006 is active and its
+general concept overlaps M2/M3; L-005 has an active continuation whose claims were
+not read; L-002 has two family members shown active by the aggregator. A general
+overlap is not a finding of practice — every independent claim is a combination,
+and none was charted element by element against TOS at claim-construction depth —
+but `docs/24` step 7 (counsel) and step 8 (the recorded decision) are the Project
+Architect's to take or to decline, and this review does not take them.
+
 ## Required follow-up searches
 
-Before Stage 4:
+Before Stage 4 — **performed 2026-09-26** as the engineering review above, with
+three items flagged for decision:
 
-- active international family claims around user-space interrupt/DMA delivery;
-- interpreted or bytecode device-driver mechanisms;
-- IOMMU capability allocation.
+- active international family claims around user-space interrupt/DMA delivery —
+  L-002's remaining members, L-005's continuation and L-006;
+- interpreted or bytecode device-driver mechanisms — no specific family found;
+- IOMMU capability allocation — **not reachable yet**: the Stage 4 reference
+  profile has no IOMMU backend, and the search is owed again when one is built.
 
 Before Stage 5:
 
@@ -31531,6 +31834,13 @@ a boot with phases.
   not an ordering relaxation, and is held off for the right reason. §9 lists what
   moved
 - Date: 2026-09-08
+- Evidence (recorded 2026-09-26; nothing decided above changes): §8's items 1–3,
+  6–10 and the teardown of 13 are gated by `dma-region.sh` and
+  `virtio-block-write.sh`; items 4, 9a, 9b, 11, 12 and 13a — which until then had no
+  runtime evidence — by `dma-quarantine.sh`, whose second boot injects the one
+  device observation 13a needs. Operation 30 now answers item 9a's refusal with
+  `E_BAD_ARGUMENT`, as `SYSTEM_ABI_V1` row 30 states; §9's revision-5 chronology
+  records the `E_NO_CAPABILITY` the first boot observed, and that record stands
 - Decision level: **3** — it admits a third class of authority descending from a
   device assignment, it is the first object with **two** ancestries at once, and
   it decides whether a number the hardware will accept as an address may leave
