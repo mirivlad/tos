@@ -1,0 +1,336 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The state-store **initializer**: the one thing in this boot that formats storage,
+// and it is not a state service.
+//
+// `STATE_STORE_V1` §4.4 and ADR-0099 §6a. Formatting is separated from starting a
+// store because a child is never told its restart generation — the supervisor asserts
+// it and the nucleus *"records it and never computes or increments it"*
+// (`PROCESS_IDENTITY_V1` §3) — so a service asked to decide for itself cannot tell a
+// fresh first start from a restart whose header failed to read, and one that
+// auto-formatted would destroy a store to recover from a transient failure.
+//
+//   capacity()                     -> must admit the whole 65-sector extent
+//   READ sector 0
+//   all 512 bytes zero  -> WRITE one complete valid v1 header, and terminate
+//   anything else       -> REFUSE TO FORMAT
+//
+// **Only an all-zero header is permission.** An already valid header, one valid but
+// for another schema, one of an unknown format, a corrupt one, or merely non-zero
+// garbage are all *not* permission: opening a store asks whether it is usable, and
+// formatting asks whether there is certainly nothing there.
+//
+// **Sectors 1..64 are never looked at.** The harness deliberately seeds some of them,
+// so their contents say nothing about whether a store exists — occupancy is
+// authoritative, and it is only meaningful once one does.
+//
+// **What it holds**: a budget, `send | call` on the block service, and an inbox of its
+// own. No PCI bus, no function, no window, no interrupt source, no DMA region — it
+// reaches the device only through `block.device.v1`. It publishes nothing and the
+// supervisor collects it before the state service starts, which is what keeps the
+// block service's client capability single-holder in steady state.
+//
+// **In this boot it is the witness that the two extents do not overlap**
+// (ADR-0102 §6b, §11c). `STATE_STORE_V1` owns sectors `[0, 65)` and the repository
+// extent begins at 65. The supervisor runs this module once before any repository
+// read and once after every one of them, against the same device: the first run
+// formats sector 0 and the second must find the header the first wrote and refuse
+// to format. A repository reader that had addressed a sector below 65 would have
+// had to write to change what is there, and it holds no such authority — so what
+// this second run adds is the direct statement that the store's authoritative
+// sector is still the one it was, after thirty-seven sectors of repository traffic
+// went past it on the same device through the same service.
+
+module system.state.initializer version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as block;
+import capability system.ipc.Endpoint as inbox;
+
+resource [
+    fuel: 262144,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+
+// --- `BLOCK_DEVICE_V1` §3, §4, §5 ---------------------------------------------
+const OP_READ: u64 = 0u64;
+const OP_WRITE: u64 = 1u64;
+const OP_CAPACITY: u64 = 2u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const BLOCK_REFUSED: u64 = 9223372036854775808u64;
+
+// --- `STATE_STORE_V1` §3, §4.1 -------------------------------------------------
+const SECTOR_BYTES: size = 512B;
+const HEADER_SECTOR: u64 = 0u64;
+const STORE_SECTORS: u64 = 65u64;
+const FORMAT_VERSION: u64 = 1u64;
+// The owner's schema identity: a `u64` chosen by this store's owner, stable for one
+// schema lineage, meaningful only together with this extent — not globally unique,
+// not a content id, not a module id, not a `/state` path id (§4.2a).
+const SCHEMA_IDENTIFIER: u64 = 8241925632510001u64;
+const SCHEMA_VERSION: u64 = 1u64;
+
+const AT_FORMAT_VERSION: size = 8B;
+const AT_SCHEMA_VERSION: size = 12B;
+const AT_SCHEMA_IDENTIFIER: size = 16B;
+const AT_OCCUPANCY: size = 24B;
+
+// --- what this module proves, one bit each ------------------------------------
+const PROVED_CAPACITY_FITS: i64 = 1i64;
+const PROVED_HEADER_READ: i64 = 2i64;
+const PROVED_WAS_ZERO: i64 = 4i64;
+const PROVED_FORMATTED: i64 = 8i64;
+// And what it reports instead when it finds a store already there.
+const PROVED_REFUSED_TO_FORMAT: i64 = 16i64;
+// Or when the device cannot hold the bounded extent at all, in which case nothing is
+// read and nothing is written.
+const PROVED_TOO_SMALL: i64 = 32i64;
+
+extern fn endpoint_call_word(
+    cap: system.ipc.Endpoint, word: u64
+) -> Result<system.ipc.Answer, i64> uses [block];
+
+extern fn endpoint_call_word_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region, word: u64
+) -> Result<system.ipc.Answer, i64> uses [block, system.memory.Region];
+
+// **Its result is the reply** (ADR-0101). `BLOCK_DEVICE_V1` §5 makes every reply a
+// `system.ipc.Answer{length, word}`, and this is the row §6a makes a `READ` with — so
+// this is the only place a `READ`'s success or refusal can be read from.
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [system.ipc.Endpoint, block];
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+// ADR-0100. A delegation carries the rights the sender holds and one endpoint has one
+// receive-rights holder, so the channel handed over is a send-only alias.
+extern fn capability_attenuate(
+    cap: system.ipc.Endpoint, rights: u64
+) -> Result<system.ipc.Endpoint, i64> uses [inbox];
+
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [budget];
+
+extern fn region_freeze(
+    cap: system.memory.Region
+) -> Result<Region<u8>, i64> uses [system.memory.Region];
+
+// The magic byte at `at`: `TOSSTORE`, eight bytes in ascending address order, read as
+// bytes so no endianness applies to it (§4.1).
+fn magic_at(at: size) -> u64 {
+    if (at == 0B) { return 84u64; }
+    if (at == 1B) { return 79u64; }
+    if (at == 2B) { return 83u64; }
+    if (at == 3B) { return 83u64; }
+    if (at == 4B) { return 84u64; }
+    if (at == 5B) { return 79u64; }
+    if (at == 6B) { return 82u64; }
+    return 69u64;
+}
+
+// One byte of a fixed-width little-endian field.
+//
+// **Composed from a `u64` rather than written through anything that could carry a
+// `size`**: `docs/40` forbids serializing `size` in a persistent form and requires an
+// explicit fixed-width integer, so every number in this header is built byte by byte.
+fn byte_of(value: u64, index: u64) -> u8 {
+    let mut shifted: u64 = value;
+    let mut moved: u64 = 0u64;
+    while (moved < index) {
+        shifted = shifted / 256u64;
+        moved = moved + 1u64;
+    }
+    match (to_u8(shifted % 256u64)) {
+        Ok(byte) => { return byte; }
+        Err(impossible) => { return 0u8; }
+    }
+}
+
+fn put_le(borrow mut header: Region<mut u8>, at: size, value: u64, width: u64) -> unit {
+    let mut index: u64 = 0u64;
+    let mut offset: size = at;
+    while (index < width) {
+        header[offset] = byte_of(value, index);
+        offset = offset + 1B;
+        index = index + 1u64;
+    }
+}
+
+// The complete valid v1 header and nothing else: `occupancy` zero because a new store
+// is empty, and every reserved byte zero because §4.3 makes a reader refuse a header
+// whose reserved run is not.
+fn compose(borrow mut header: Region<mut u8>) -> unit {
+    let mut at: size = 0B;
+    while (at < SECTOR_BYTES) {
+        header[at] = 0u8;
+        at = at + 1B;
+    }
+    at = 0B;
+    while (at < AT_FORMAT_VERSION) {
+        match (to_u8(magic_at(at))) {
+            Ok(byte) => { header[at] = byte; }
+            Err(impossible) => { header[at] = 0u8; }
+        }
+        at = at + 1B;
+    }
+    put_le(borrow mut header, AT_FORMAT_VERSION, FORMAT_VERSION, 4u64);
+    put_le(borrow mut header, AT_SCHEMA_VERSION, SCHEMA_VERSION, 4u64);
+    put_le(borrow mut header, AT_SCHEMA_IDENTIFIER, SCHEMA_IDENTIFIER, 8u64);
+    put_le(borrow mut header, AT_OCCUPANCY, 0u64, 8u64);
+}
+
+// Whether the first 512 bytes of what came back are all zero — the only state that is
+// permission to format. Counted rather than stopped at the first non-zero byte.
+fn all_zero(borrow arrived: Region<u8>) -> bool {
+    let mut at: size = 0B;
+    let mut seen: u64 = 0u64;
+    while (at < SECTOR_BYTES) {
+        if (arrived[at] != 0u8) { seen = seen + 1u64; }
+        at = at + 1B;
+    }
+    return seen == 0u64;
+}
+
+// Reads sector 0 and answers whether it is all zero.
+//
+// **The alias is made, used and released here.** One transient capability-table entry
+// per block read, released **whether the call succeeded or not** and before the
+// result is interpreted: the callee holds its own name either way, and a module that
+// tidied up only on the happy path would leak exactly under stress (ADR-0100 §4).
+//
+// **The lower layer's answer is read, not inferred** (ADR-0101, `STATE_STORE_V1` §2a).
+// Four arms, and each is a different thing that happened:
+//
+//   Err(status)           the lower IPC operation failed. An incomplete operation of
+//                         this module's own, not a refusal it received
+//   length != 8           not a reply of `block.device.v1` at all (§5)
+//   word >= BLK_REFUSED   the block layer refused, and a region is **not** waited for
+//   word == 0             exactly one region is owed; take it
+//
+// **Nothing here waits for a region after a refusal.** Waiting for one a refusal
+// means will never arrive is a wait the liveness rule ends, so it would turn a refused
+// read into a cancelled boot — which is why the absence of a region was never usable
+// as the refusal's signal.
+fn header_is_zero() -> Result<bool, i64>
+    uses [block, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    match (capability_attenuate(inbox, RIGHT_SEND)) {
+        Ok(reply_to) => {
+            let asked: Result<system.ipc.Answer, i64> =
+                endpoint_call_word_carrying(reply_to, block,
+                    HEADER_SECTOR * OPCODE_SPAN + OP_READ);
+            if (capability_release(reply_to) != OK) { return Err(-400i64); }
+            match (asked) {
+                Ok(answer) => {
+                    if (answer.length != REQUEST_BYTES) { return Err(-401i64); }
+                    if (answer.word >= BLOCK_REFUSED) { return Err(-402i64); }
+                    if (answer.word != 0u64) { return Err(-403i64); }
+                    match (endpoint_receive_region(inbox)) {
+                        Ok(arrived) => {
+                            let zeroed: bool = all_zero(borrow arrived);
+                            if (capability_release(arrived) != OK) { return Err(-420i64); }
+                            return Ok(zeroed);
+                        }
+                        Err(status) => { return Err(status - 430i64); }
+                    }
+                }
+                Err(status) => { return Err(status - 410i64); }
+            }
+        }
+        Err(status) => { return Err(status - 440i64); }
+    }
+}
+
+pub fn main() -> i64
+    uses [budget, block, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut proved: i64 = 0i64;
+
+    // --- the whole bounded layout must fit, before anything is written -------
+    // `BLOCK_DEVICE_V1` §6c. A store that cannot fit refuses to format rather than
+    // writing a header it would later run past the end of, and it learns the bound by
+    // asking rather than by issuing a request built to be refused.
+    match (endpoint_call_word(block, OP_CAPACITY)) {
+        Ok(answer) => {
+            if (answer.length != REQUEST_BYTES) { return -1i64; }
+            if (answer.word >= BLOCK_REFUSED) { return -2i64; }
+            if (answer.word < STORE_SECTORS) {
+                // **Too small, and that is not a failure of this module.** It reports
+                // what it found and formats nothing; the state service then cannot
+                // open, and every request it receives is refused with `ST_STORE`
+                // (`STATE_STORE_V1` §4.4, §9). A device that cannot contain the whole
+                // bounded layout is refused *before* the header is written, rather than
+                // discovered later by running past the end of it — which is why
+                // `ADR-0098` keeps `capacity` in v1 at all.
+                return PROVED_TOO_SMALL;
+            }
+            proved = proved + PROVED_CAPACITY_FITS;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+
+    // --- read sector 0, and only format an all-zero one ----------------------
+    match (header_is_zero()) {
+        Ok(zeroed) => {
+            proved = proved + PROVED_HEADER_READ;
+            if (!zeroed) {
+                // Something is there, and this module assigns no meaning to bytes it
+                // did not write: a valid header, a foreign schema, an unknown version,
+                // a corrupt header and plain garbage are all the same answer.
+                return proved + PROVED_REFUSED_TO_FORMAT;
+            }
+            proved = proved + PROVED_WAS_ZERO;
+        }
+        Err(status) => { return status; }
+    }
+
+    // --- write one complete valid header, and no payload sector --------------
+    match (region_allocate(budget, SECTOR_BYTES)) {
+        Ok(header) => {
+            compose(borrow mut header);
+            match (region_freeze(header)) {
+                Ok(frozen) => {
+                    match (endpoint_call_word_region(block, frozen,
+                        HEADER_SECTOR * OPCODE_SPAN + OP_WRITE)) {
+                        Ok(answer) => {
+                            if (answer.length != REQUEST_BYTES) { return -5i64; }
+                            if (answer.word != 0u64) { return -6i64; }
+                            proved = proved + PROVED_FORMATTED;
+                        }
+                        Err(status) => { return status - 110i64; }
+                    }
+                }
+                Err(unfrozen) => { return unfrozen - 200i64; }
+            }
+        }
+        Err(unallocated) => { return unallocated - 300i64; }
+    }
+
+    return proved;
+}

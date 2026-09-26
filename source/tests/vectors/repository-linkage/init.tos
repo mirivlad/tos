@@ -137,10 +137,13 @@ const ENDING_EXITED: u64 = 1u64;
 const EXIT_COMPLETED: u64 = 0u64;
 
 const CREATED_BLOCK: i64 = 1i64;
-const CREATED_READER_A: i64 = 2i64;
-const FIRST_COLLECTED: i64 = 4i64;
-const CREATED_READER_B: i64 = 8i64;
-const REST_COLLECTED: i64 = 16i64;
+const FORMATTED_COLLECTED: i64 = 2i64;
+const CREATED_READER_A: i64 = 4i64;
+const FIRST_COLLECTED: i64 = 8i64;
+const CREATED_READER_B: i64 = 16i64;
+const SECOND_COLLECTED: i64 = 32i64;
+const REFUSAL_COLLECTED: i64 = 64i64;
+const REST_COLLECTED: i64 = 128i64;
 
 // The block service: the request endpoint it receives on, and the bus it claims.
 fn block_plan() -> Result<system.process.LaunchPlan, i64>
@@ -197,6 +200,36 @@ fn reader_plan() -> Result<system.process.LaunchPlan, i64>
             return launch_plan_seal(process, builder);
         }
         Err(unplanned) => { return Err(unplanned - 3100i64); }
+    }
+}
+
+// The state store's initializer, which this boot runs twice: a budget, `send | call`
+// on the block service, and an inbox — the same one the readers use, because nothing
+// here is ever live at the same time as anything else that receives on it.
+//
+// **It is here to say the two extents do not overlap** (ADR-0102 §6b, §11c).
+// `STATE_STORE_V1` owns `[0, 65)` and the repository begins at 65; the first run
+// formats sector 0 and the run after every repository read must find that header and
+// refuse to format.
+fn initializer_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, block_serve_full, reader_inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-4001i64);
+            }
+            if (endow_for_launch(block_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
+                return Err(-4002i64);
+            }
+            if (endow_for_launch(reader_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-4003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 4100i64); }
     }
 }
 
@@ -276,7 +309,12 @@ pub fn main() -> i64
     match (block_plan()) {
         Ok(block) => {
             match (reader_plan()) {
-                Ok(reader) => { return run(block, reader); }
+                Ok(reader) => {
+                    match (initializer_plan()) {
+                        Ok(initializer) => { return run(block, reader, initializer); }
+                        Err(unplanned) => { return unplanned; }
+                    }
+                }
                 Err(unplanned) => { return unplanned; }
             }
         }
@@ -292,7 +330,8 @@ pub fn main() -> i64
 // child that receives on it exists.
 fn run(
     block: system.process.LaunchPlan,
-    reader: system.process.LaunchPlan
+    reader: system.process.LaunchPlan,
+    initializer: system.process.LaunchPlan
 ) -> i64
     uses [process, memory, block_serve_full, reader_inbox_full, system.ipc.Endpoint]
 {
@@ -303,6 +342,14 @@ fn run(
 
     if (start(block, "system/service/block.tos", SERVICE_GRANT) != OK) { return -6101i64; }
     found = found + CREATED_BLOCK;
+
+    // --- the state store's sector 0, written before any repository read ------
+    if (start(initializer, "system/state/initializer.tos", READER_GRANT) != OK) {
+        return -6104i64;
+    }
+    let formatted: i64 = collect();
+    if (formatted != OK) { return formatted - 6204i64; }
+    found = found + FORMATTED_COLLECTED;
 
     if (start(reader, "system/repository/reader.tos", READER_GRANT) != OK) {
         return -6102i64;
@@ -324,8 +371,21 @@ fn run(
 
     let second: i64 = collect();
     if (second != OK) { return second - 6202i64; }
-    let third: i64 = collect_after_the_census();
-    if (third != OK) { return third - 6203i64; }
+    found = found + SECOND_COLLECTED;
+
+    // --- and the store's sector, after every repository read -----------------
+    // **The same module from the same sealed plan**, differing only in what it
+    // finds: a header the first run wrote, on a device across which thirty-seven
+    // sectors of repository traffic have since gone. It must refuse to format.
+    if (start(initializer, "system/state/initializer.tos", READER_GRANT) != OK) {
+        return -6105i64;
+    }
+    let refused: i64 = collect();
+    if (refused != OK) { return refused - 6205i64; }
+    found = found + REFUSAL_COLLECTED;
+
+    let last: i64 = collect_after_the_census();
+    if (last != OK) { return last - 6203i64; }
     found = found + REST_COLLECTED;
 
     return found;
