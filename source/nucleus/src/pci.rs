@@ -550,6 +550,7 @@ unsafe fn table() -> &'static mut [Assignment; MAX_ASSIGNMENTS] {
     feature = "test-dma-unqualified",
     feature = "test-dma-no-spend",
     feature = "test-dma-driver",
+    feature = "test-dma-quarantine",
     feature = "test-block-service",
     feature = "test-block-lifecycle",
     feature = "test-block-protocol",
@@ -946,6 +947,12 @@ pub fn transactions_pending(index: u32, generation: u32) -> Option<bool> {
     if status == 0xFFFF {
         return None;
     }
+    // **The one observation a test build may change, and only in one
+    // direction.** A device that never completes what it issued reports the bit
+    // on every read; the build that stands for one sets it here and leaves
+    // every decision after this line to the production code (ADR-0084 §8.13a).
+    #[cfg(feature = "test-device-never-quiescent")]
+    let status = status | EXPRESS_TRANSACTIONS_PENDING;
     Some(status & EXPRESS_TRANSACTIONS_PENDING != 0)
 }
 

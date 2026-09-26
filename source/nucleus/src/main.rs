@@ -74,6 +74,10 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     // that configures a real device queue needs no authority the DMA slice did
     // not already establish, and ring 0 is not told which device class it is.
     + cfg!(feature = "test-dma-driver") as usize
+    // The quarantine boot: the driver's endowment again, and a second function
+    // the profile qualifies — one with no PCI Express capability, so that the
+    // only thing refusing its DMA authority is ADR-0084 §5c's P1.
+    + cfg!(feature = "test-dma-quarantine") as usize
     // These two share one binding, so they are one constant and are counted
     // once: the rollback boot is the memory-authority boot with a failure
     // injected, not a different endowment.
@@ -1410,7 +1414,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-dma-wrong-kind",
         feature = "test-dma-unqualified",
         feature = "test-dma-no-spend",
-        feature = "test-dma-driver"
+        feature = "test-dma-driver",
+        feature = "test-dma-quarantine"
     ))]
     let first_endowment = {
         let Some(bus) = pci::endow_root(0, 0, 255) else {
@@ -1439,6 +1444,15 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             pci::STAGE4_TARGET.2,
             pci::STAGE4_TARGET.3,
         );
+        // **A qualification the P1 check must still refuse** (ADR-0084 §8.9a).
+        // The machine's own ICH9 SATA function is a conventional PCI function
+        // on the root complex, with no PCI Express capability and so no
+        // Transactions Pending bit. The profile saying it is TC0-only is true
+        // and beside the point: a region whose reclaim could never be proved
+        // must not be made, and this is the boot that shows P5 does not stand
+        // in for P1.
+        #[cfg(feature = "test-dma-quarantine")]
+        pci::qualify_dma(0, 0, 31, 2);
         // **The wrong-kind negative grants a real object of the wrong kind
         // under the right name.** The launch record says `pci function`, which
         // is what the schema declares for the binding, so the runtime image's
@@ -2624,7 +2638,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-dma-wrong-kind",
         feature = "test-dma-unqualified",
         feature = "test-dma-no-spend",
-        feature = "test-dma-driver"
+        feature = "test-dma-driver",
+        feature = "test-dma-quarantine"
     )))]
     // **Nothing, because the module asks for nothing.** ADR-0055 makes an
     // endowment what a launcher decided, and ADR-0061 makes each entry the
@@ -2668,7 +2683,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-dma-wrong-kind",
         feature = "test-dma-unqualified",
         feature = "test-dma-no-spend",
-        feature = "test-dma-driver"
+        feature = "test-dma-driver",
+        feature = "test-dma-quarantine"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
     // The same chain, given to a process, so operation 16 can be asked for from
