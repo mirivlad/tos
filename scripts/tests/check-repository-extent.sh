@@ -44,7 +44,12 @@ mkdir -p "$OUT"
 FIXTURE="$OUT/repo"
 git init -q "$FIXTURE"
 printf '%s\n' "$ROOT/.git/objects" > "$FIXTURE/.git/objects/info/alternates"
-cp "$ROOT/README.md" "$FIXTURE/README.md"
+# **From the commit, not from the working tree.** The object mutations build
+# their root commit on `HEAD`, and the capsule tool verifies every manifest file
+# against `commit:<path>`. Taking this one from the working tree made the gate
+# fail whenever the tree was dirty — which says nothing about the tool and
+# everything about when the gate happened to run.
+git -C "$ROOT" show "HEAD:README.md" > "$FIXTURE/README.md"
 printf '/system/boot/init.tos\tREADME.md\n' > "$FIXTURE/off-path.txt"
 
 HEAD_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
