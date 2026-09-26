@@ -1727,7 +1727,7 @@ unsafe fn retire(index: usize) {
         release_mapped(space, frames, reclaim.data_at, reclaim.data_length);
         release_mapped(space, frames, RECORD, reclaim.record_length);
         release_mapped(space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
-        release_mapped(space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
+        release_mapped_run(space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
         release_mapped(space, frames, ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE);
         release_mapped(space, frames, GRANT, reclaim.grant_length);
     }
@@ -2584,6 +2584,7 @@ pub unsafe fn create_funded(
     // `admit` has to change it back.
     let mut space = paging::build(bi, descs, tables)?;
     let mut carved: Option<Span> = None;
+    let mut reported: Option<Span> = None;
     let furnished = (|| -> Result<Furnished, Unlaunchable> {
         map_range(
             &mut space,
@@ -2699,7 +2700,33 @@ pub unsafe fn create_funded(
         map_fresh(&mut space, tables, frames, GRANT, grant_length / FRAME_SIZE)?;
 
         map_fresh(&mut space, tables, frames, STACK, STACK_FRAMES)?;
-        let report = map_fresh(&mut space, tables, frames, REPORT, REPORT_FRAMES)?;
+        // **Carved as one run, because the nucleus reads it through its own
+        // identity map.** `drain_report` walks the region as `base + offset`
+        // physical bytes, and [`install`] states it is given a physically
+        // contiguous one — a precondition `map_fresh` does not establish. It
+        // allocates frame by frame, so the *first* processes of a boot get an
+        // adjacent set from the pool's frontier by luck, and a process created
+        // after another has been torn down gets whatever the released list hands
+        // back. The nucleus then streams frames belonging to something else onto
+        // the serial line, which is where a second reader generation's account
+        // went: the text was written and drained, and what reached the log was
+        // the text of other frames interleaved with it.
+        //
+        // The launch record two blocks down is carved for exactly this reason
+        // and says so; this is the same rule for the same map.
+        let report_span = carve_cleared(frames, REPORT_FRAMES * FRAME_SIZE)?;
+        reported = Some(report_span);
+        let report = report_span.start;
+        let mut mapped = 0;
+        while mapped < report_span.length() {
+            space.map_page(
+                tables,
+                REPORT + mapped,
+                report + mapped,
+                PRESENT_USER | WRITABLE | NO_EXECUTE,
+            )?;
+            mapped += FRAME_SIZE;
+        }
         let message = map_fresh(&mut space, tables, frames, ARGUMENTS, ARGUMENT_FRAMES)?;
         // Sized by the set it carries, not by a frame: a capsule may hold a
         // thousand source files, and a record that fitted only what one frame holds
@@ -2904,6 +2931,7 @@ pub unsafe fn create_funded(
                     &plan,
                     IMAGE + header.text,
                     carved,
+                    reported,
                 )
             };
             // The frames are back in the pool, so the authority has to be told:
@@ -3231,6 +3259,7 @@ unsafe fn discard(
     plan: &DynamicCharge,
     data_at: u64,
     record: Option<Span>,
+    report: Option<Span>,
 ) {
     // Read back out of the page tables, exactly as reclamation does, so a range
     // that was never reached contributes nothing rather than needing a flag.
@@ -3238,14 +3267,24 @@ unsafe fn discard(
     unsafe {
         release_mapped(space, frames, data_at, plan.data);
         release_mapped(space, frames, STACK, plan.stack);
-        release_mapped(space, frames, REPORT, plan.report);
         release_mapped(space, frames, ARGUMENTS, plan.arguments);
         release_mapped(space, frames, GRANT, plan.grant);
     }
-    // The record is carved rather than allocated frame by frame, so a failure
-    // between the carve and the last of its mappings leaves frames the page
-    // tables do not name. Unmapped without releasing, then released as the one
-    // run it actually is.
+    // The report region and the launch record are **carved** rather than
+    // allocated frame by frame, so a failure between the carve and the last of
+    // their mappings leaves frames the page tables do not name. Each is unmapped
+    // without releasing, then released as the one run it actually is — which is
+    // also how the adjacency `drain_report` depends on comes back to the pool.
+    if let Some(span) = report {
+        let mut offset = 0;
+        while offset < span.length() {
+            space.unmap_page(REPORT + offset);
+            offset += FRAME_SIZE;
+        }
+        // SAFETY: the carve handed this run over, its mappings are gone, and
+        // nothing else ever named it.
+        unsafe { frames.release_run(span) };
+    }
     if let Some(span) = record {
         let mut offset = 0;
         while offset < span.length() {
@@ -3759,6 +3798,64 @@ fn map_range(
 /// and are charged to an authority, while the tables that map them come from
 /// the reserve and are not (ADR-0076 §2). One parameter each is what makes the
 /// difference visible at every call site.
+/// One physically contiguous run, cleared, for a structure the nucleus reads or
+/// writes through its own identity map.
+///
+/// A carve is not cleared — `ADR-0050` §3 clears on release, and a run may come
+/// from memory this pool has never handed out — so anything that becomes a
+/// process's memory is cleared here.
+fn carve_cleared(frames: &mut Frames, bytes: u64) -> Result<Span, Unlaunchable> {
+    let run = frames
+        .carve(bytes, FRAME_SIZE)
+        .ok_or(Unlaunchable::OutOfFrames)?;
+    // SAFETY: the run was just carved from the pool, is identity-mapped for the
+    // nucleus, and nothing else references it.
+    unsafe {
+        core::ptr::write_bytes(
+            core::ptr::with_exposed_provenance_mut::<u8>(run.start as usize),
+            0,
+            run.length() as usize,
+        )
+    };
+    Ok(run)
+}
+
+/// Gives a mapped run back **as a run**, so the adjacency the nucleus depended
+/// on returns to the pool with it.
+///
+/// The run is read back out of the page tables, exactly as [`release_mapped`]
+/// does, and its contiguity is *checked* rather than assumed: a region that
+/// turned out not to be one run is released frame by frame instead. Assuming it
+/// is the mistake this function exists to have stopped making.
+///
+/// # Safety
+///
+/// As [`release_mapped`].
+// SAFETY: the caller's promise that nothing references the range is what makes
+// unmapping and releasing it safe.
+unsafe fn release_mapped_run(space: &mut AddressSpace, frames: &mut Frames, at: u64, length: u64) {
+    let Some(start) = space.translate(at) else {
+        return;
+    };
+    let mut offset = 0;
+    while offset < length {
+        if space.translate(at + offset) != Some(start + offset) {
+            // SAFETY: per this function's contract.
+            unsafe { release_mapped(space, frames, at, length) };
+            return;
+        }
+        offset += FRAME_SIZE;
+    }
+    offset = 0;
+    while offset < length {
+        space.unmap_page(at + offset);
+        offset += FRAME_SIZE;
+    }
+    // SAFETY: the run was carved from this pool, its mappings are gone, and
+    // nothing else names it.
+    unsafe { frames.release_run(Span::new(start, start + length)) };
+}
+
 fn map_fresh(
     space: &mut AddressSpace,
     tables: &mut Tables,

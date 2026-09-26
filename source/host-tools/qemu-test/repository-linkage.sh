@@ -245,31 +245,59 @@ done
 
 # --- 1: the linkage, twice, from two processes ---------------------------------
 readers="$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_READER\$")"
-[ "$readers" -ge 1 ] ||
+[ "$readers" = 2 ] ||
     fail "no repository reader proved the linkage; the boot reported:
        $(printf '%s ' $completed)"
 
-# **§11d's restart shape is NOT MEASURED, and this says so rather than passing.**
+# --- 1b: §11d's restart shape, in order ----------------------------------------
 #
-# Two reader generations run in this boot, three children are created and three
-# endings are collected, and the nucleus reports the second generation as an
-# ordinary clean exit. What is missing is its **account**: partway
-# through its run its journal stops reaching the serial log, the nucleus emits no
-# `TOS.RUN.PROCESS_EXIT` for it either, and the log carries thirty-two bytes of
-# what look like heap pointers inside one of its lines — consistent with its report
-# header being overwritten mid-run, so that every line written afterwards lands
-# below the nucleus's drain cursor and is never emitted.
-#
-# **The work itself happens.** The block service answers exactly two generations'
-# worth of requests above, and its own `receive` lines are among the ones the same
-# loss eats. So the re-read is **performed and not evidenced** — which is not the
-# same as proved, and this gate says so rather than counting one generation as two.
-if [ "$readers" -lt 2 ]; then
-    echo "repository-linkage: NOT MEASURED: ADR-0102 §11d's second reader generation"
-    echo "  was created, made its reads and was collected, and emitted no account and"
-    echo "  no process-exit record; $readers of 2 generations proved the linkage."
-    echo "  Performed, not evidenced. Not counted as evidence."
-fi
+# **A second generation is a claim about sequence, so the sequence is what is
+# asserted.** Not two accounts somewhere in the log: generation A reaching the
+# witness, ending, and being collected — and only then B being created, reading
+# the same device for itself, reaching the same witness, exiting normally and
+# being collected. Two matching accounts with no order between them would be
+# satisfied by a boot that ran them side by side, which is a different claim and
+# one `IPC_V1` §2 does not even permit here.
+python3 - "$LOG" "$EXPECTED_READER" <<'RESTART' || fail "the second reader generation is not ADR-0102 §11d's restart shape"
+import sys
+
+events = [line.rstrip("\r\n") for line in open(sys.argv[1], encoding="utf-8", errors="replace")]
+witness = f"TOS.RUN.COMPLETED value={sys.argv[2]}"
+
+# The steps, in the order §11d requires them, each matched against the rest of
+# the journal after the one before it. A step that matched earlier text would be
+# a step this boot did not take in this order.
+steps = [
+    ("A reaches the linkage witness", lambda line: line == witness),
+    ("A exits normally", lambda line: line.startswith("TOS.RUN.PROCESS_EXIT ")
+        and "self_reported_status=0" in line),
+    ("A is collected", lambda line: line == "TOS.RUN.INTERFACE operation=process_wait_child status=0"),
+    ("B is created afterwards", lambda line: line.startswith(
+        "TOS.RUN.INTERFACE operation=process_create_funded status=0")
+        and line.endswith("said=system/repository/reader.tos")),
+    ("B begins over the same module", lambda line: line.startswith(
+        "TOS.RUN.BEGIN path=system/repository/reader.tos ")),
+    ("B reads the boot identity for itself", lambda line:
+        line == "TOS.RUN.INTERFACE operation=boot_identity_read status=0"),
+    ("B reads the device for itself", lambda line:
+        line == "TOS.RUN.INTERFACE operation=endpoint_call_word_carrying status=0"),
+    ("B reaches the same linkage witness", lambda line: line == witness),
+    ("B exits normally", lambda line: line.startswith("TOS.RUN.PROCESS_EXIT ")
+        and "self_reported_status=0" in line),
+    ("B is collected", lambda line: line == "TOS.RUN.INTERFACE operation=process_wait_child status=0"),
+]
+
+at = 0
+for name, matches in steps:
+    while at < len(events) and not matches(events[at]):
+        at += 1
+    if at == len(events):
+        print(f"the journal does not reach: {name}", file=sys.stderr)
+        raise SystemExit(1)
+    at += 1
+print("both reader generations reached the witness, in §11d's order")
+RESTART
+
 [ "$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_SUPERVISOR\$")" = 1 ] ||
     fail "the supervisor did not complete its three phases"
 [ "$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_BLOCK\$")" = 1 ] ||
