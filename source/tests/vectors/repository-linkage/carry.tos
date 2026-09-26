@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// An attempt to put `system.boot.Identity` into a message, which does not compile
+// (ADR-0102 §3e).
+//
+// **The accepted authority path for this slice is one path**: the bootstrap holder
+// endows the identity into a sealed launch plan, and the process created from that
+// plan holds it. Generic capability transfer over IPC is not part of the slice, and
+// the reason it is not reachable is structural rather than enforced: every row of
+// `SYSTEM_INTERFACE_V1` §4 that carries a capability — `endpoint_send_carrying`,
+// `endpoint_call_carrying`, `endpoint_call_word_carrying` — is nominally typed for
+// `system.ipc.Endpoint` in the carried position, and a schema row is what canonical
+// text may write.
+//
+// So this module is the negative for a rule the language enforces: it declares the
+// row correctly, holds a real identity and a real endpoint, and passes the identity
+// where an endpoint is required. The checker refuses it and the boot never runs a
+// first instruction. The nucleus's own refusal — `Object::travels_in_a_message`
+// answering no for this kind — sits behind that as a backstop for an artifact that
+// did not come through the checker at all.
+//
+// **This file is a reject vector that is compiled by a real boot**, which is why it
+// lives with the fixtures rather than in `docs/language/conformance`: what it proves
+// is a fact about an accepted *schema row*, not about the grammar.
+
+module system.boot.init version 1.5 profile full;
+
+import capability system.boot.Identity as boot_identity_full;
+import capability system.ipc.Endpoint as block_serve_full;
+
+resource [
+    fuel: 16384,
+    stack: 8KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 4
+]
+
+extern fn endpoint_send_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [system.ipc.Endpoint, block_serve_full];
+
+// The identity in the carried position, where the row requires an endpoint.
+pub fn main() -> i64 uses [boot_identity_full, block_serve_full, system.ipc.Endpoint] {
+    return endpoint_send_carrying(boot_identity_full, block_serve_full, 0u64);
+}

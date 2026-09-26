@@ -84,14 +84,19 @@ TARGET="$ROOT/target/test-repository-linkage"
 REPOSITORY_FIRST_SECTOR=65
 
 # --- the accounts, one distinct value each -------------------------------------
-# The supervisor: five children in five phases, every ending collected.
-EXPECTED_SUPERVISOR="i64:255"
-# The state store's initializer, twice: it formats a zeroed sector 0 before any
-# repository sector is read, and after every one of them it finds that header and
-# refuses to format. `STATE_STORE_V1` owns `[0, 65)` and the repository begins at
-# 65, and these two accounts are what says the traffic between them did not cross.
+# The supervisor: eight children in six phases, every ending collected.
+EXPECTED_SUPERVISOR="i64:511"
+# ADR-0099's own accounts, unchanged, because ADR-0099's own modules are what run.
+# The initializer formats sector 0; store generation A opens and serves the
+# writer's two objects; the writer's three shape refusals and two `PUT`s; then —
+# after every repository read of two reader generations — a **new** store
+# generation opens the header from the device and the reader `GET`s object 2 and
+# verifies all 512 bytes.
 EXPECTED_FORMATTED="i64:15"
-EXPECTED_REFUSED_TO_FORMAT="i64:19"
+EXPECTED_STATE_A="i64:4544"
+EXPECTED_WRITER="i64:126976"
+EXPECTED_STATE_B="i64:14016"
+EXPECTED_STORE_READER="i64:16646144"
 # The reader, twice: every proof bit set and the class `REPO_OK`.
 #   1 identity read        16 table valid        128 blob verified
 #   2 identity is git      32 commit verified    256 linkage
@@ -194,15 +199,19 @@ place source/system/boot/init.tos "$FIXTURE/init.tos"
 # and every object mutation needs one too because ordinary Git cannot walk to the
 # landing path of a commit whose trees are deliberately malformed.
 place source/tests/vectors/repository-linkage/init.tos "$FIXTURE/init.tos"
-# **The accepted state-store initializer, unchanged and not a copy of it.** Its
-# refusal to format a store that already exists is `STATE_STORE_V1` §12's own
-# negative; what this boot adds is *when* it runs — after every repository read —
-# so the module has to be that one and not a fixture's rendering of it.
+# **The accepted `state.store.v1` implementation, unchanged and not a copy of it.**
+# ADR-0102 §11c requires that a `GET` of an object the store holds still succeeds
+# after the repository reads, in the same boot — so what runs has to be ADR-0099's
+# own initializer, store, writer and reader, and their accounts have to be the ones
+# `state-store.sh` already asserts.
 mkdir -p "$WORK/source/tests/vectors/state-store"
-git -C "$GITROOT" show "HEAD:source/tests/vectors/state-store/initializer.tos" \
-    > "$WORK/source/tests/vectors/state-store/initializer.tos"
+for accepted in initializer state writer reader; do
+    git -C "$GITROOT" show "HEAD:source/tests/vectors/state-store/$accepted.tos" \
+        > "$WORK/source/tests/vectors/state-store/$accepted.tos"
+done
 place source/tests/vectors/repository-linkage/identity.tos "$FIXTURE/identity.tos"
 place source/tests/vectors/repository-linkage/denied.tos "$FIXTURE/denied.tos"
+place source/tests/vectors/repository-linkage/carry.tos "$FIXTURE/carry.tos"
 place source/tests/vectors/repository-linkage/block.tos "$FIXTURE/block.tos"
 place source/tests/vectors/repository-linkage/reader.tos "$FIXTURE/reader.tos"
 
@@ -215,6 +224,7 @@ synthesise() {
                 "source/tests/vectors/repository-linkage/init.tos:$FIXTURE/init.tos" \
                 "source/tests/vectors/repository-linkage/identity.tos:$FIXTURE/identity.tos" \
                 "source/tests/vectors/repository-linkage/denied.tos:$FIXTURE/denied.tos" \
+                "source/tests/vectors/repository-linkage/carry.tos:$FIXTURE/carry.tos" \
                 "source/tests/vectors/repository-linkage/reader-depth.tos:$OUT/reader-depth.tos" \
                 "source/tests/vectors/repository-linkage/block.tos:$FIXTURE/block.tos" \
                 "source/tests/vectors/repository-linkage/reader.tos:$FIXTURE/reader.tos"; do
@@ -240,6 +250,12 @@ manifest() {
     printf '/system/repository/reader.tos\tsource/tests/vectors/repository-linkage/reader.tos\n' \
         >> "$WORK/manifest.txt"
     printf '/system/state/initializer.tos\tsource/tests/vectors/state-store/initializer.tos\n' \
+        >> "$WORK/manifest.txt"
+    printf '/system/state/store.tos\tsource/tests/vectors/state-store/state.tos\n' \
+        >> "$WORK/manifest.txt"
+    printf '/system/state/writer.tos\tsource/tests/vectors/state-store/writer.tos\n' \
+        >> "$WORK/manifest.txt"
+    printf '/system/state/reader.tos\tsource/tests/vectors/state-store/reader.tos\n' \
         >> "$WORK/manifest.txt"
 }
 
@@ -271,10 +287,21 @@ echo "$provisioned"
 EXTENT_SECTORS="$(printf '%s' "$provisioned" | sed -n 's/.*, \([0-9]*\) of [0-9]* sector(s).*/\1/p')"
 [ -n "$EXTENT_SECTORS" ] || fail "the provisioner did not report how much of the extent it used"
 READER_REQUESTS=$((1 + EXTENT_SECTORS))
-# The store's initializer, twice: `CAPACITY` and sector 0 both times, plus the one
-# write the first run makes and the second refuses to.
-INITIALIZER_REQUESTS=$((2 + 3))
-EXPECTED_REQUESTS=$((2 * READER_REQUESTS + INITIALIZER_REQUESTS))
+# The state-store sequence, derived from `STATE_STORE_V1`'s protocol exactly as
+# `state-store.sh` derives it:
+#
+#   initializer   capacity, READ 0, WRITE 0                              3
+#   store A       capacity and READ 0 to open; then object 1 and object 2
+#                 at a payload sector and a header each                  6
+#   store B       capacity and READ 0 to open, and READ 2                3
+STORE_BLOCK_REQUESTS=12
+# And what the store's own clients ask *it*, which reaches the journal through the
+# same `endpoint_reply_word` row because a reply is a reply whoever sends it: five
+# per store generation, as `state-store.sh` derives them — the writer's three shape
+# refusals and two `PUT`s, and the reader's three refusals, one absent id and one
+# `GET`.
+STORE_CLIENT_REQUESTS=10
+EXPECTED_REQUESTS=$((2 * READER_REQUESTS + STORE_BLOCK_REQUESTS + STORE_CLIENT_REQUESTS))
 # **The independent checker runs over every extent this gate hands to QEMU.** A negative
 # the canonical reader refuses with a class two independent readers agreed on is a
 # statement about the contract; one only the reader refuses is a statement about the
@@ -403,10 +430,10 @@ RESTART
        served; it reported: $(printf '%s ' $completed)"
 
 # --- 2: three modules, four processes, nothing stalled -------------------------
-grep -q '^TOS\.RUN\.BEGIN .* modules=4$' "$LOG" ||
-    fail "the boot did not run a set of four modules"
-[ "$(count '^TOS\.RUN\.BEGIN path=')" = 6 ] ||
-    fail "six processes did not begin: $(count '^TOS\.RUN\.BEGIN path=') did"
+grep -q '^TOS\.RUN\.BEGIN .* modules=7$' "$LOG" ||
+    fail "the boot did not run a set of seven modules"
+[ "$(count '^TOS\.RUN\.BEGIN path=')" = 9 ] ||
+    fail "nine processes did not begin: $(count '^TOS\.RUN\.BEGIN path=') did"
 # **Exactly one census, and it is the one that ends the boot.** When the only
 # things left are the supervisor waiting on its child relation and the block
 # service waiting for a message, nothing can satisfy either and `SYSTEM_ABI_V1`
@@ -417,25 +444,34 @@ stalls="$(count '^TOS\.RUN\.LIVENESS .*verdict=stalled')"
 [ "$stalls" = 1 ] ||
     fail "$stalls liveness censuses declared a stall; exactly one may — the one that ends
        the block service's receive once every client is collected"
-[ "$(count '^TOS\.RUN\.INTERFACE operation=process_create_funded status=0')" = 5 ] ||
-    fail "five children were not created"
-[ "$(count '^TOS\.RUN\.INTERFACE operation=process_wait_child status=0$')" = 5 ] ||
-    fail "five endings were not collected"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=process_create_funded status=0')" = 8 ] ||
+    fail "eight children were not created"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=process_wait_child status=0$')" = 8 ] ||
+    fail "eight endings were not collected"
 
-# --- 2a: the state store's extent is unaffected by the repository reads --------
+# --- 2a: a real object survives the repository reads ---------------------------
 #
-# §11c's last row, and §6b's boundary asserted from the device rather than from
-# either reader's word. The same module from the same sealed plan runs before any
-# repository sector is read and again after every one of them: it formats a zeroed
-# sector 0, then finds that header and refuses. Two different accounts, and
-# neither may be the other's.
-[ "$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_FORMATTED\$")" = 1 ] ||
-    fail "the state store's sector was not formatted exactly once before the
-       repository reads"
-[ "$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_REFUSED_TO_FORMAT\$")" = 1 ] ||
-    fail "after every repository read the store's initializer did not find its own
-       header and refuse to format; the two extents overlap, or the store's sector
-       did not survive (STATE_STORE_V1 §4.4, ADR-0102 §6b)"
+# ADR-0102 §11c's last row, in the shape the row asks for. A 512-byte object with a
+# distinctive witness is `PUT` by a writer that then ends; the store generation that
+# served it ends and is collected; every repository read of two reader generations
+# goes past on the same device through the same block service; and then a **new**
+# store generation re-reads the header from the device and a client `GET`s that
+# object and verifies every byte.
+#
+# **The accounts are ADR-0099's own**, because the modules are: the store's
+# isolation boundary, its refusal surface and its byte witness are already accepted
+# and are not re-derived here. What this boot adds is what happens between the `PUT`
+# and the `GET`.
+for account in "$EXPECTED_FORMATTED" "$EXPECTED_STATE_A" "$EXPECTED_WRITER" \
+               "$EXPECTED_STATE_B" "$EXPECTED_STORE_READER"; do
+    [ "$(count "^TOS\.RUN\.COMPLETED value=$account\$")" = 1 ] ||
+        fail "the state-store sequence did not report $account exactly once; the boot
+       reported: $(printf '%s ' $completed)
+       ADR-0102 §11c requires a GET of an object the store holds to still succeed
+       after the repository reads, in the same boot"
+done
+echo "repository-linkage: a 512-byte object PUT before the repository reads was" \
+     "GET back and verified byte by byte after them, by a new store generation"
 
 # --- 2b: exactly the requests the extent implies, and not one more --------------
 #
@@ -450,13 +486,15 @@ answered="$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply_word status=0$'
     fail "the block service answered $answered request(s) and this extent implies
        $EXPECTED_REQUESTS: one CAPACITY and $EXTENT_SECTORS sector read(s) per reader
        generation — the header, the table and the sectors this extent's object chain
-       occupies — plus $INITIALIZER_REQUESTS for the store's two initializer runs"
+       occupies — plus $STORE_BLOCK_REQUESTS device request(s) and
+       $STORE_CLIENT_REQUESTS client request(s) for the state-store sequence"
 received="$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call_region status=0$')"
 [ "$received" -le "$answered" ] ||
     fail "the block service answered $answered request(s) and received $received; a
        service cannot answer fewer requests than it took"
 echo "repository-linkage: $answered device request(s) answered: two generation(s)" \
-     "of $READER_REQUESTS, and $INITIALIZER_REQUESTS for the store's two runs"
+     "of $READER_REQUESTS, and $STORE_BLOCK_REQUESTS + $STORE_CLIENT_REQUESTS for" \
+     "the state-store sequence"
 
 # --- 2c: the endowment accounting, counted by the launcher and the nucleus ------
 #
@@ -478,13 +516,12 @@ for line in events:
         if field.startswith("capabilities="):
             sizes[int(field.removeprefix("capabilities="))] += 1
 
-#   6   the supervisor: two endpoints, the bus, the boot identity, its own control
-#       and the root remainder
-#   4   each reader generation, which is MAX_ENDOWMENT
-#   3   the block service — a budget, the endpoint it receives on, the bus — and
-#       each run of the store's initializer, which holds a budget, the block
-#       service's endpoint and an inbox
-expected = {6: 1, 4: 2, 3: 3}
+#   8   the supervisor: four endpoints, the bus, the boot identity, its own
+#       control and the root remainder
+#   4   each repository reader generation, each state-store generation and the
+#       initializer that starts from the store's plan — which is MAX_ENDOWMENT
+#   3   the block service, the writer and the store's reader
+expected = {8: 1, 4: 5, 3: 3}
 if dict(sizes) != expected:
     print(f"expected endowment sizes {expected}, saw {dict(sizes)}", file=sys.stderr)
     raise SystemExit(1)
@@ -520,12 +557,22 @@ expected = {
     ("process", "system.process.Control"): 1,
     ("memory", "system.memory.Authority"): 1,
     ("block_serve_full", "system.ipc.Endpoint"): 1,
-    ("reader_inbox_full", "system.ipc.Endpoint"): 1,
+    ("state_serve_full", "system.ipc.Endpoint"): 1,
+    ("state_inbox_full", "system.ipc.Endpoint"): 1,
+    ("client_inbox_full", "system.ipc.Endpoint"): 1,
     ("boot_identity_full", "system.boot.Identity"): 1,
-    ("budget", "system.memory.Authority"): 5,
-    ("serve", "system.ipc.Endpoint"): 1,
-    ("block", "system.ipc.Endpoint"): 4,
-    ("inbox", "system.ipc.Endpoint"): 4,
+    # every child
+    ("budget", "system.memory.Authority"): 8,
+    # the block service, and each store generation
+    ("serve", "system.ipc.Endpoint"): 3,
+    # block.device.v1's client endpoint: the initializer, both store generations
+    # and both repository readers — and nothing else in this boot
+    ("block", "system.ipc.Endpoint"): 5,
+    # the initializer, both store generations, both repository readers, the
+    # writer and the store's reader
+    ("inbox", "system.ipc.Endpoint"): 7,
+    # state.store.v1's client endpoint: clients only
+    ("store", "system.ipc.Endpoint"): 2,
     ("identity", "system.boot.Identity"): 2,
     ("device", "platform.pci.Bus"): 2,
 }
@@ -641,37 +688,31 @@ refusal_boot() {
 # sector short of the layout: the reader asks `CAPACITY`, is answered below 2113,
 # and issues no repository-sector READ at all.
 refusal_boot capacity 2 "$OUT/capsule.bin" "" --stage4-block-sectors 2112
-python3 - "$OUT/refusal/events.log" "$INITIALIZER_REQUESTS" <<'NOREAD' || fail "a repository sector was read on a device too small to hold the extent"
+python3 - "$OUT/refusal/events.log" "$STORE_BLOCK_REQUESTS" "$STORE_CLIENT_REQUESTS" <<'NOREAD' || fail "a repository sector was read on a device too small to hold the extent"
 import sys
 
 events = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
-initializer = int(sys.argv[2])
+store_block, store_client = int(sys.argv[2]), int(sys.argv[3])
 
-# A repository-sector READ is a carrying call (`BLOCK_DEVICE_V1` §6a): the reader
-# delegates the channel its region comes back on. A `CAPACITY` is an
-# `endpoint_call_word` and is permitted, because it is how §6a1's fact is
-# established at all.
+# **Counted as an exact total, because an extra read cannot hide inside one.** Every
+# request either service completed is one `endpoint_reply_word`, and on this boot the
+# whole of what may be asked is the state-store sequence plus one `CAPACITY` per
+# repository reader: §6a1 requires the extent's existence to be established before a
+# repository sector is read, and a device of 2112 sectors cannot hold it. One
+# repository-sector READ would make this number 25 rather than 24.
 #
-# The store's initializer reads sector 0 the same way, once per run, and those are
-# the **only** carrying calls this boot may contain. Every request the block
-# service answered is counted too, so a read that somehow reached it by another
-# shape is visible as well.
-carrying = sum(1 for line in events
-               if line == "TOS.RUN.INTERFACE operation=endpoint_call_word_carrying status=0")
+# Attributing carrying calls instead would not do: a state-store client uses one to
+# take the region its `GET` is answered with, so a carrying call is no longer a
+# repository read by its shape alone.
 answered = sum(1 for line in events
                if line == "TOS.RUN.INTERFACE operation=endpoint_reply_word status=0")
-# The initializer's two runs: `CAPACITY` and sector 0 each, and one write.
-store_reads = 2
-if carrying != store_reads:
-    print(f"{carrying - store_reads} repository-sector read(s) were issued", file=sys.stderr)
+want = store_block + store_client + 2
+if answered != want:
+    print(f"{answered} request(s) were answered and this boot implies {want}: the "
+          f"state-store sequence and one CAPACITY per reader", file=sys.stderr)
     raise SystemExit(1)
-# Two readers, each of which asks `CAPACITY` and then stops.
-if answered != initializer + 2:
-    print(f"the block service answered {answered} request(s) and this boot implies "
-          f"{initializer + 2}: the store's runs and one CAPACITY per reader",
-          file=sys.stderr)
-    raise SystemExit(1)
-print("no repository-sector read was issued; only the store's own two sector reads")
+print(f"no repository-sector read was issued: {answered} request(s), exactly the "
+      f"state store's and one CAPACITY per reader")
 NOREAD
 
 # **The correct commit and the wrong boot blob** (§11c). The capsule's boot module
@@ -796,6 +837,40 @@ grep -aq "^TOS\.RUN\.COMPLETED value=$EXPECTED_IDENTITY\$" "$OUT/identity/events
 echo "repository-linkage: attenuation of system.boot.Identity is intersection —"
 echo "  asking for read|send yields read and still reads; asking for send alone is refused"
 
+# **Canonical text cannot put the identity in a message** (§3e). ADR-0102's
+# accepted authority path is bootstrap holder -> launch-plan endowment -> reader,
+# and generic capability transfer over IPC is not part of the slice. The reason it
+# is unreachable is structural: every carrying row of `SYSTEM_INTERFACE_V1` §4 is
+# nominally typed for `system.ipc.Endpoint` in the carried position. So the
+# negative is a module that declares the row correctly, holds a real identity and a
+# real endpoint, and passes the identity where an endpoint is required — and the
+# checker refuses it before the boot runs an instruction.
+#
+# The nucleus refuses it too, and that is audited rather than asserted here:
+# `resolve_transfers` is the only generic message-transfer path, it is called from
+# one site, and `Object::travels_in_a_message` answers no for this kind. That
+# branch is a backstop for an artifact that did not come through the checker, so no
+# boot of canonical text can reach it.
+CARRY="$(synthesise "$FIXTURE/carry.tos")"
+build_capsule "$CARRY" source/system/boot/init.tos "$OUT/carry.bin" "$FIXTURE/carry.tos"
+bash "$HERE/run.sh" \
+    --out "$OUT/identity" \
+    --capsule "$OUT/carry.bin" \
+    --nucleus "$NUCLEUS" \
+    --stage4-block-device \
+    --expect 75 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.REFUSED TOS.BOOTMODULE.FAIL" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.COMPLETED TOS.RUN.INTERFACE TOS.RUN.REQUEST" \
+    > /dev/null || fail "a module carrying system.boot.Identity in a message was not refused"
+grep -aq 'E1215_ARGUMENT_TYPE_MISMATCH .*callee=endpoint_send_carrying .*expected=system\.ipc\.Endpoint actual=system\.boot\.Identity' \
+    "$OUT/identity/events.log" ||
+    fail "the refusal does not name the carried position, the type it requires and the
+       type that was offered:
+       $(grep -a 'TOS.RUN.DIAGNOSTIC\|TOS.RUN.REFUSED' "$OUT/identity/events.log" | tr '\n' ' ')"
+echo "repository-linkage: canonical text cannot carry system.boot.Identity in a"
+echo "  message — the carried position is typed for system.ipc.Endpoint and the"
+echo "  checker refuses it (E1215_ARGUMENT_TYPE_MISMATCH)"
+
 # **Object kind 14 with a non-zero launch scope is refused** (§3a1). The same
 # launcher constant with one field wrong, so the boot does not start.
 bash "$HERE/run.sh" \
@@ -821,7 +896,8 @@ echo "  is refused, so the boot does not start"
 cp "$FIXTURE/init.tos" "$WORK/source/system/boot/init.tos"
 cp "$OUT/reader-depth.tos" "$WORK/source/tests/vectors/repository-linkage/reader-depth.tos"
 manifest source/system/boot/init.tos
-sed -i 's|/reader\.tos$|/reader-depth.tos|' "$WORK/manifest.txt"
+sed -i 's|repository-linkage/reader\.tos$|repository-linkage/reader-depth.tos|' \
+    "$WORK/manifest.txt"
 (cd "$WORK" && "$TOOL" --git-commit "$LINKED" \
     --licence "$ROOT/system/boot/NOTICES.txt" --out "$OUT/depth.bin" manifest.txt) > /dev/null
 refusal_boot depth 2 "$OUT/depth.bin" "$OUT/extent.img"
@@ -830,4 +906,5 @@ rm -rf "$WORK" "$OUT/refusal" "$OUT/identity" "$OUT/mutant.img" "$OUT/mutant.bin
     "$OUT/reader-depth.tos" "$TARGET" "$ROOT/target/test-repository-linkage-scope"
 echo "repository-linkage: PASS (the linkage proved from a real device by two" \
      "generations, $refusals refusal(s) each with the ADR-0102 §10a class §11c names" \
-     "for it, and the identity's denial, attenuation and scope rules)"
+     "for it, the identity's denial, attenuation, scope and no-message rules, and a" \
+     "512-byte state-store object read back after all of it)"

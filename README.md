@@ -490,14 +490,16 @@ stage: **persistent object storage** (ADR-0099, `STATE_STORE_V1`,
 `qemu_state_store`) and **the first half of the capsule-to-repository handoff**
 (ADR-0102, `qemu_repository_linkage`) — the linkage, which is the statement that
 the canonical text this machine booted is the `source/system/boot/init.tos` of the
-commit the boot chain verified. Its evidence is twenty-eight boots: one in which
-two successive reader generations each reach the witness from the same device and
-the state store's own sector survives the traffic that went past it,
-twenty-three refused with the exact class ADR-0102 §10a fixes, and three that hold
-the boot identity to the rules every capability in this system obeys — a process
-not endowed it cannot read it, attenuation is intersection and an empty
-intersection is refused, and an endowment description of that object kind with a
-non-zero scope does not start a boot.
+commit the boot chain verified. Its evidence is twenty-nine boots. One is the ordinary boot, in which a 512-byte
+`state.store.v1` object is written by a process that then ends, two successive
+repository reader generations each reach the witness from the same device, and a
+**new** store generation then reads that object back and verifies every byte —
+which is what says the two extents do not overlap. Twenty-three are refused with
+the exact class ADR-0102 §10a fixes. Four hold the boot identity to the rules
+every capability in this system obeys: a process not endowed it cannot read it,
+attenuation is intersection and an empty intersection is refused, an endowment
+description of that object kind with a non-zero scope does not start a boot, and
+canonical text cannot put one in a message at all.
 
 **And since 2026-09-23 a service can die and be replaced without losing data.** A
 block service serves a write and ends still holding the function, the mapped

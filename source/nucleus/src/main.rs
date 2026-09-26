@@ -2021,11 +2021,13 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // ADR-0102's evidence build: the capsule-to-repository linkage, with the boot
     // identity minted here and nowhere else.
     //
-    // **Six endowments, and the fifth is the new one.** The supervisor holds its own
-    // control and the root's remainder, the block service's endpoint and the reader's
-    // inbox carrying every right the two plans draw from them, the bus the block
-    // service claims from — and a `system.boot.Identity` with `read`, which it endows
-    // into the reader's sealed plan (§3e's only delegation path).
+    // **Eight endowments, and the seventh is the new one.** The supervisor holds its
+    // own control and the root's remainder; four endpoints carrying every right the
+    // four plans draw from them — `block.device.v1`'s, `state.store.v1`'s, the store's
+    // inbox for the regions the block layer answers it with, and one inbox the clients
+    // and the repository readers take theirs on in turn; the bus the block service
+    // claims from — and a `system.boot.Identity` with `read`, which it endows into the
+    // reader's sealed plan (§3e's only delegation path).
     //
     // **The object is minted by the launcher because only a launcher can.** Every
     // fact it reports — the source kind, the object-id algorithm and length, the
@@ -2056,7 +2058,11 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     ];
     #[cfg(feature = "test-repository-linkage")]
     let first_endowment = {
-        let (Some(block_serve), Some(reader_inbox)) = (ipc::create(), ipc::create()) else {
+        let (Some(block_serve), Some(state_serve)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let (Some(state_inbox), Some(client_inbox)) = (ipc::create(), ipc::create()) else {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
             mem_fail();
         };
@@ -2090,8 +2096,20 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
                 scope: 0,
             },
             capability::Endowment::Existing {
-                binding: binding(b"reader_inbox_full"),
-                object: capability::Object::Endpoint(reader_inbox),
+                binding: binding(b"state_serve_full"),
+                object: capability::Object::Endpoint(state_serve),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"state_inbox_full"),
+                object: capability::Object::Endpoint(state_inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"client_inbox_full"),
+                object: capability::Object::Endpoint(client_inbox),
                 rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
                 scope: 0,
             },
