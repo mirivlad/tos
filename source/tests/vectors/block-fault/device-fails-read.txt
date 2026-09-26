@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A QEMU `blkdebug` configuration: the reference device fails the first READ
+# of sector 8 with EIO, so the real `virtio-blk-pci` endpoint completes that
+# request with a non-OK status through the real ring. Everything else is served
+# from the image as usual. Read by `host-tools/qemu-test/block-fault.sh` through
+# `run.sh --stage4-block-fault`; the machine never sees this file.
+[inject-error]
+event = "read_aio"
+iotype = "read"
+errno = "5"
+sector = "8"
+once = "on"

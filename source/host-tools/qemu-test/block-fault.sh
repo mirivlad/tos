@@ -15,6 +15,11 @@
 #   before-region   a READ is answered with success; the region it owes is not
 #                   sent
 #
+# and two more boots of the control policy against a **device that fails**: QEMU's
+# `blkdebug` layer makes the reference endpoint complete the first WRITE, or the
+# first READ, of the target sector with a non-OK status — the only way a conforming
+# reference machine produces `BLOCK_DEVICE_V1` §7's `BLK_DEVICE` at all.
+#
 # **What the pair of case-D boots proves is a boundary, not a guarantee.** The
 # client's observation is `E_CANCELLED` in both, bit for bit, and the device
 # afterwards differs: the nucleus counted no completion interrupt in one and one
@@ -141,28 +146,29 @@ READ
 }
 
 boot() {
-    local policy="$1"
+    local policy="$1" name="${2:-$1}"
+    shift $(( $# < 2 ? $# : 2 ))
     {
         printf '/system/boot/init.tos\t%s/init.tos\n' "$FIXTURE"
         printf '/system/service/block.tos\t%s/service.tos\n' "$FIXTURE"
         printf '/system/client/block.tos\t%s/client.tos\n' "$FIXTURE"
         printf '/system/policy/fault.tos\t%s/fault-%s.tos\n' "$FIXTURE" "$policy"
-    } > "$OUT/$policy.txt"
+    } > "$OUT/$name.txt"
     "$TOOL" --detached --licence "$ROOT/system/boot/NOTICES.txt" \
-        --out "$OUT/$policy.bin" --meta "$OUT/$policy.meta.json" "$OUT/$policy.txt" >/dev/null
+        --out "$OUT/$name.bin" --meta "$OUT/$name.meta.json" "$OUT/$name.txt" >/dev/null
     python3 "$GITROOT/scripts/check-capsule-provenance.py" --root "$GITROOT" \
-        --capsule "$OUT/$policy.bin" --manifest "$OUT/$policy.meta.json" >/dev/null
+        --capsule "$OUT/$name.bin" --manifest "$OUT/$name.meta.json" >/dev/null
     bash "$HERE/run.sh" \
-        --out "$OUT/$policy" \
-        --capsule "$OUT/$policy.bin" \
+        --out "$OUT/$name" \
+        --capsule "$OUT/$name.bin" \
         --nucleus "$NUCLEUS" \
-        --stage4-block-device \
+        --stage4-block-device "$@" \
         --expect 33 \
         --require "TOS.NUCLEUS.ENTRY TOS.RUN.PCI_ROOT TOS.RUN.COMPLETED TOS.HALT" \
         --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.TRAP TOS.RUN.REFUSED TOS.RUN.PROCESS_DEADLOCKED" \
-        > /dev/null || fail "the $policy boot did not complete"
-    grep -q '^TOS\.RUN\.BEGIN path=system/service/block\.tos .* modules=4$' "$OUT/$policy/events.log" ||
-        fail "$policy: the service did not run as one of a set of four modules"
+        > /dev/null || fail "the $name boot did not complete"
+    grep -q '^TOS\.RUN\.BEGIN path=system/service/block\.tos .* modules=4$' "$OUT/$name/events.log" ||
+        fail "$name: the service did not run as one of a set of four modules"
 }
 
 # The three accounts of one boot, by module: the client's, the supervisor's and
@@ -197,8 +203,10 @@ region_sends() {
     grep -c '^TOS\.RUN\.INTERFACE operation=endpoint_send_region status=0$' "$OUT/$1/events.log" || true
 }
 
-# The service's account carries 2^32 exactly when it ended by policy.
+# The service's account carries 2^32 exactly when it ended by policy, and 2^31
+# when the device itself failed a request.
 ENDED_BY_POLICY=4294967296
+PROVED_REFUSED_DEVICE=2147483648
 
 # --- the control ----------------------------------------------------------------
 boot none
@@ -267,4 +275,41 @@ grep -q '^TOS\.RUN\.INTERFACE operation=endpoint_receive_region status=-5$' "$OU
 echo "block-fault: incomplete READ — answered with success, the owed region never sent," \
      "the receive cancelled by the liveness rule, and nothing left queued"
 
-echo "block-fault: PASS (ADR-0093 case D as a stated boundary; BLOCK_DEVICE_V1 §6a's incomplete READ)"
+# --- the device fails, and the service does not -----------------------------------
+#
+# **A real device failure, through the real ring.** QEMU's `blkdebug` layer fails
+# the first WRITE of sector 8 in one boot and the first READ of it in the other, and
+# the reference endpoint completes that request with a non-OK status. Until these
+# boots `BLOCK_DEVICE_V1` §7's `BLK_DEVICE` was implemented and never reached — and
+# reaching it found that the service advanced its ring counters only for requests
+# that *succeeded*, so the request after a device failure was published into the
+# same slot at the same index and waited forever for a completion the device had no
+# reason to send. The count now includes a request the device failed.
+#
+# What must hold: the failure is a **refusal**, answered with `BLK_DEVICE`; the
+# service goes on serving; a refused READ owes no region and none is sent; and the
+# image agrees with what the client was told.
+boot none device-fails-write --stage4-block-fault "$FIXTURE/device-fails-write.txt"
+read -r client supervisor service <<< "$(accounts device-fails-write)"
+[ "$client" = 660 ] ||
+    fail "device-fails-write: the client observed $client; a WRITE refused by the device, then a READ served with a region of zeros, is 660"
+[ "$supervisor" = 15 ] || fail "device-fails-write: the supervisor observed $supervisor; nothing stalled, so 15"
+[ $((service & PROVED_REFUSED_DEVICE)) != 0 ] || fail "device-fails-write: the service did not report a device refusal"
+[ "$(deliveries device-fails-write)" = 2 ] ||
+    fail "device-fails-write: $(deliveries device-fails-write) completion(s); the failed write and the read are two"
+[ "$(region_sends device-fails-write)" = 1 ] || fail "device-fails-write: the READ after the failure was not answered with its region"
+[ "$(sector8 device-fails-write)" = "$ZEROS" ] || fail "device-fails-write: the refused write reached the image"
+
+boot none device-fails-read --stage4-block-fault "$FIXTURE/device-fails-read.txt"
+read -r client supervisor service <<< "$(accounts device-fails-read)"
+[ "$client" = 257 ] ||
+    fail "device-fails-read: the client observed $client; a WRITE served, then a READ refused by the device, is 257"
+[ "$supervisor" = 15 ] || fail "device-fails-read: the supervisor observed $supervisor; nothing stalled, so 15"
+[ $((service & PROVED_REFUSED_DEVICE)) != 0 ] || fail "device-fails-read: the service did not report a device refusal"
+[ "$(region_sends device-fails-read)" = 0 ] || fail "device-fails-read: a region followed a refused READ"
+[ "$(sector8 device-fails-read)" = "$PATTERN" ] || fail "device-fails-read: the served write is not on the image"
+echo "block-fault: device failures — a failed WRITE and a failed READ are each refused with" \
+     "BLK_DEVICE, the service serves the next request, a refused READ owes and sends no" \
+     "region, and the image agrees with what the client was told"
+
+echo "block-fault: PASS (ADR-0093 case D as a stated boundary; BLOCK_DEVICE_V1 §6a's incomplete READ; BLK_DEVICE from a failing device)"

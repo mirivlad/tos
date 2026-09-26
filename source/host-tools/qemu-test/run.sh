@@ -25,6 +25,7 @@
 #                                    [--stage4-block-device]
 #                                    [--stage4-block-overlay SECTOR:FILE]
 #                                    [--stage4-block-sectors N]
+#                                    [--stage4-block-fault BLKDEBUG_CONFIG]
 #                                    [--await-line REGEX --then-qmp JSON ...]
 #                                    [--interactive --display gtk|sdl] [--no-framebuffer]
 #
@@ -81,6 +82,7 @@ STAGE4_BLOCK=0
 # before. The Stage 4 profile itself is unchanged (ADR-0084 revision 5).
 STAGE4_BLOCK_SECTORS=""
 STAGE4_BLOCK_OVERLAY=()
+STAGE4_BLOCK_FAULT=""
 # A *legacy*-transport VirtIO block device, for the negative that shows the
 # textual parser reports absence rather than inventing defaults. It is not part
 # of the Stage 4 reference profile: ADR-0079 §7 fixes that as modern transport.
@@ -114,10 +116,11 @@ while [ $# -gt 0 ]; do
         --stage4-block-device) STAGE4_BLOCK=1; shift ;;
         --stage4-block-sectors) STAGE4_BLOCK_SECTORS="$2"; shift 2 ;;
         --stage4-block-overlay) STAGE4_BLOCK_OVERLAY+=("$2"); shift 2 ;;
+        --stage4-block-fault) STAGE4_BLOCK_FAULT="$2"; shift 2 ;;
         --stage4-block-device-legacy) STAGE4_BLOCK=1; STAGE4_BLOCK_LEGACY=1; shift ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
-        -h|--help)  sed -n '3,29p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '3,30p' "$0"; exit 0 ;;
         --*)        echo "unknown option: $1" >&2; exit 2 ;;
         *)
             # positional: OUT_DIR then CAPSULE_FILE
@@ -375,9 +378,24 @@ if [ "$STAGE4_BLOCK" -eq 1 ]; then
         dd if="$overlay_file" of="$STAGE4_IMAGE" bs=512 seek="$overlay_sector" \
             conv=notrunc status=none
     done
+    # **A device that fails, when a gate asks for one.** QEMU's own `blkdebug`
+    # layer sits between the device model and the image and fails the requests a
+    # configuration file names, so the reference `virtio-blk-pci` endpoint completes
+    # them with a real non-OK status through the real ring — which is the device
+    # failure `BLOCK_DEVICE_V1` §7's `BLK_DEVICE` reports, and which the conforming
+    # reference image alone never produces. `rerror`/`werror` are `report` so the
+    # failure reaches the guest rather than pausing the machine. Opt-in and
+    # per-run: every other gate's device is the plain image.
+    if [ -n "$STAGE4_BLOCK_FAULT" ]; then
+        [ -f "$STAGE4_BLOCK_FAULT" ] || { echo "no such block fault configuration: $STAGE4_BLOCK_FAULT" >&2; exit 2; }
+        QEMU_ARGS+=(
+            -drive "if=none,id=stage4blk,driver=raw,file.driver=blkdebug,file.config=$STAGE4_BLOCK_FAULT,file.image.driver=file,file.image.filename=$STAGE4_IMAGE,rerror=report,werror=report"
+        )
+    else
     QEMU_ARGS+=(
         -drive "if=none,id=stage4blk,format=raw,file=$STAGE4_IMAGE"
     )
+    fi
     if [ "$STAGE4_BLOCK_LEGACY" -eq 1 ]; then
         # Same device class, transitional transport: it reports device 0x1001
         # and carries no modern VirtIO PCI capability structures at all.
