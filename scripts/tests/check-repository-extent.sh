@@ -74,7 +74,8 @@ python3 "$TOOLS/verify.py" --extent "$OUT/extent.img" --capsule "$OUT/capsule.bi
 # **The capsule is the authority, and this proves it is being read.** A tool that
 # quietly used `HEAD` would pass every check above; what catches it is a capsule
 # naming an older commit, whose extent must then be that older commit's.
-OLDER="$(git -C "$ROOT" rev-parse 'HEAD^{commit}^')"
+OLDER="$(git -C "$ROOT" rev-parse -q --verify 'HEAD^{commit}^')" ||
+    fail "HEAD's parent is not in this history; the capsule-is-the-authority case needs it (a depth-1 clone does not have it)"
 (cd "$ROOT" && "$CAPSULE_TOOL" --git-commit "$OLDER" \
     --licence "$ROOT/source/system/boot/NOTICES.txt" \
     --out "$OUT/older.bin" "$OUT/manifest.txt") > /dev/null 2>&1 || true
