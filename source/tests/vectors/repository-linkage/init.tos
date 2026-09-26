@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The supervisor of the capsule-to-repository boot: two plans, three children,
-// two endpoints, one bus and one immutable boot fact.
+// The supervisor of the capsule-to-repository boot: four plans, eight children,
+// four endpoints, one bus and one immutable boot fact.
 //
 // ADR-0102 §11. The order is the claim:
 //
 //   block service            created first, ends last: everything above it
 //                            reaches the device only by asking
+//   initializer              formats `STATE_STORE_V1`'s sector 0
+//   state store A + writer   a real 512-byte object is `PUT` and the store ends
 //   repository reader A      reads the extent from sector 65 up, verifies every
 //                            object against the id it was located by, and proves
 //                            the boot text is the commit's `init.tos`
@@ -14,6 +16,9 @@
 //   repository reader B      the same canonical module from the same sealed
 //                            plan, re-reading the same device, reaching the same
 //                            witness (§11d)
+//   state store B + reader   a **new** store generation opens the header from the
+//                            device and a client `GET`s the object the writer
+//                            left, verified byte by byte (§11c's last row)
 //
 // **This module is the boot-canonical text, and that is the point.** What the
 // reader proves is that `SHA-256` of the repository's
@@ -33,9 +38,23 @@
 // `SYSTEM_INTERFACE_V1` are nominally typed for `system.ipc.Endpoint`, so there
 // is no source form that could put one in a message.
 //
-// **Two processes at the peak plus this one**, which is under `MAX_PROCESSES`:
-// each reader is collected before the next is created, and the block service is
-// live throughout because every repository read goes through it.
+// **The object survives the repository traffic, and that is asserted rather than
+// assumed** (ADR-0102 §11c, §6b). `STATE_STORE_V1` owns sectors `[0, 65)` and the
+// repository extent begins at 65. What passes between the `PUT` and the `GET` is
+// every repository read of two reader generations, on the same device, through the
+// same block service — and the bytes the reader verifies are the ones a process
+// that has ended wrote before any of it happened.
+//
+// **Four plans, which is `MAX_PLANS`, and one of them launches two modules.** The
+// store's plan carries `budget`, `serve`, `block` and `inbox`; the initializer
+// requests `budget`, `block` and `inbox`, which is a subset, so the same sealed
+// plan starts both. That is the shape the client plan already has — one plan, the
+// writer and then the reader — and it is what makes a fifth plan unnecessary.
+//
+// **Three processes at the peak plus this one**, which is `MAX_PROCESSES`: a store
+// generation and its client are live together, every reader is collected before
+// the next is created, and the block service is live throughout because every
+// device request of every layer goes through it.
 
 module system.boot.init version 1.5 profile full;
 
@@ -43,7 +62,9 @@ import capability system.process.Control as process;
 import capability system.memory.Authority as memory;
 import capability platform.pci.Bus as device;
 import capability system.ipc.Endpoint as block_serve_full;
-import capability system.ipc.Endpoint as reader_inbox_full;
+import capability system.ipc.Endpoint as state_serve_full;
+import capability system.ipc.Endpoint as state_inbox_full;
+import capability system.ipc.Endpoint as client_inbox_full;
 import capability system.boot.Identity as boot_identity_full;
 
 resource [
@@ -132,18 +153,20 @@ const NO_SELF_RIGHTS: u64 = 0u64;
 // holds the whole of an object at the bound ADR-0102 §8 declares.
 const SERVICE_GRANT: u64 = 25165824u64;
 const READER_GRANT: u64 = 16777216u64;
+const CHILD_GRANT: u64 = 8388608u64;
 
 const ENDING_EXITED: u64 = 1u64;
 const EXIT_COMPLETED: u64 = 0u64;
 
 const CREATED_BLOCK: i64 = 1i64;
 const FORMATTED_COLLECTED: i64 = 2i64;
-const CREATED_READER_A: i64 = 4i64;
-const FIRST_COLLECTED: i64 = 8i64;
-const CREATED_READER_B: i64 = 16i64;
-const SECOND_COLLECTED: i64 = 32i64;
-const REFUSAL_COLLECTED: i64 = 64i64;
-const REST_COLLECTED: i64 = 128i64;
+const WRITTEN_COLLECTED: i64 = 4i64;
+const CREATED_READER_A: i64 = 8i64;
+const FIRST_COLLECTED: i64 = 16i64;
+const CREATED_READER_B: i64 = 32i64;
+const SECOND_COLLECTED: i64 = 64i64;
+const READ_BACK_COLLECTED: i64 = 128i64;
+const REST_COLLECTED: i64 = 256i64;
 
 // The block service: the request endpoint it receives on, and the bus it claims.
 fn block_plan() -> Result<system.process.LaunchPlan, i64>
@@ -178,7 +201,7 @@ fn block_plan() -> Result<system.process.LaunchPlan, i64>
 // one right; an attenuation asking for more still yields `read`, because
 // attenuation is intersection.
 fn reader_plan() -> Result<system.process.LaunchPlan, i64>
-    uses [process, memory, block_serve_full, reader_inbox_full, boot_identity_full,
+    uses [process, memory, block_serve_full, client_inbox_full, boot_identity_full,
           system.ipc.Endpoint]
 {
     match (launch_plan_create(process)) {
@@ -190,7 +213,7 @@ fn reader_plan() -> Result<system.process.LaunchPlan, i64>
                 RIGHT_SEND | RIGHT_CALL, "block") != OK) {
                 return Err(-3002i64);
             }
-            if (endow_for_launch(reader_inbox_full, builder,
+            if (endow_for_launch(client_inbox_full, builder,
                 RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
                 return Err(-3003i64);
             }
@@ -203,33 +226,69 @@ fn reader_plan() -> Result<system.process.LaunchPlan, i64>
     }
 }
 
-// The state store's initializer, which this boot runs twice: a budget, `send | call`
-// on the block service, and an inbox — the same one the readers use, because nothing
-// here is ever live at the same time as anything else that receives on it.
+// The `state.store.v1` service, and the initializer that formats for it: four
+// endowments, which is `MAX_ENDOWMENT`.
 //
-// **It is here to say the two extents do not overlap** (ADR-0102 §6b, §11c).
-// `STATE_STORE_V1` owns `[0, 65)` and the repository begins at 65; the first run
-// formats sector 0 and the run after every repository read must find that header and
-// refuse to format.
-fn initializer_plan() -> Result<system.process.LaunchPlan, i64>
-    uses [process, memory, block_serve_full, reader_inbox_full, system.ipc.Endpoint]
+// **One plan for both modules.** `state.tos` requests `budget`, `serve`, `block`
+// and `inbox`; `initializer.tos` requests `budget`, `block` and `inbox`, which is a
+// subset — so the initializer starts from this plan and simply never asks for the
+// name it does not declare. The alternative is a fifth plan, and `MAX_PLANS` is
+// four.
+//
+// **`send | receive` on its own inbox**, because a `READ` of the layer below is
+// answered with a region on a channel the store delegates: `receive` to take the
+// region and `send` to have something to attenuate.
+fn state_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, block_serve_full, state_serve_full, state_inbox_full,
+          system.ipc.Endpoint]
 {
     match (launch_plan_create(process)) {
         Ok(builder) => {
             if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
                 return Err(-4001i64);
             }
-            if (endow_for_launch(block_serve_full, builder,
-                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
+            if (endow_for_launch(state_serve_full, builder, RIGHT_RECEIVE, "serve") != OK) {
                 return Err(-4002i64);
             }
-            if (endow_for_launch(reader_inbox_full, builder,
-                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+            if (endow_for_launch(block_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "block") != OK) {
                 return Err(-4003i64);
+            }
+            if (endow_for_launch(state_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-4004i64);
             }
             return launch_plan_seal(process, builder);
         }
         Err(unplanned) => { return Err(unplanned - 4100i64); }
+    }
+}
+
+// The store's clients — the writer and then the reader, from one plan.
+//
+// **No `block.device.v1` capability anywhere in it**, which is the store's
+// isolation boundary (`STATE_STORE_V1` §2) and is readable from the boot journal
+// rather than from this text: a client can name an object id and cannot address a
+// sector.
+fn client_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, memory, state_serve_full, client_inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(memory, builder, RIGHT_SPEND, "budget") != OK) {
+                return Err(-5001i64);
+            }
+            if (endow_for_launch(state_serve_full, builder,
+                RIGHT_SEND | RIGHT_CALL, "store") != OK) {
+                return Err(-5002i64);
+            }
+            if (endow_for_launch(client_inbox_full, builder,
+                RIGHT_SEND | RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-5003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 5100i64); }
     }
 }
 
@@ -303,15 +362,20 @@ fn collect_after_the_census() -> i64
 }
 
 pub fn main() -> i64
-    uses [process, memory, device, block_serve_full, reader_inbox_full,
+    uses [process, memory, device, block_serve_full, client_inbox_full,
           boot_identity_full, system.ipc.Endpoint]
 {
     match (block_plan()) {
         Ok(block) => {
             match (reader_plan()) {
                 Ok(reader) => {
-                    match (initializer_plan()) {
-                        Ok(initializer) => { return run(block, reader, initializer); }
+                    match (state_plan()) {
+                        Ok(state) => {
+                            match (client_plan()) {
+                                Ok(client) => { return run(block, reader, state, client); }
+                                Err(unplanned) => { return unplanned; }
+                            }
+                        }
                         Err(unplanned) => { return unplanned; }
                     }
                 }
@@ -331,32 +395,49 @@ pub fn main() -> i64
 fn run(
     block: system.process.LaunchPlan,
     reader: system.process.LaunchPlan,
-    initializer: system.process.LaunchPlan
+    state: system.process.LaunchPlan,
+    client: system.process.LaunchPlan
 ) -> i64
-    uses [process, memory, block_serve_full, reader_inbox_full, system.ipc.Endpoint]
+    uses [process, memory, block_serve_full, state_serve_full, state_inbox_full,
+          client_inbox_full, system.ipc.Endpoint]
 {
     let mut found: i64 = 0i64;
 
     if (capability_release(block_serve_full) != OK) { return -6001i64; }
-    if (capability_release(reader_inbox_full) != OK) { return -6002i64; }
+    if (capability_release(state_serve_full) != OK) { return -6002i64; }
+    if (capability_release(state_inbox_full) != OK) { return -6003i64; }
+    if (capability_release(client_inbox_full) != OK) { return -6004i64; }
 
     if (start(block, "system/service/block.tos", SERVICE_GRANT) != OK) { return -6101i64; }
     found = found + CREATED_BLOCK;
 
-    // --- the state store's sector 0, written before any repository read ------
-    if (start(initializer, "system/state/initializer.tos", READER_GRANT) != OK) {
-        return -6104i64;
+    // --- the store's sector 0, before anything else touches the device -------
+    if (start(state, "system/state/initializer.tos", CHILD_GRANT) != OK) {
+        return -6102i64;
     }
     let formatted: i64 = collect();
-    if (formatted != OK) { return formatted - 6204i64; }
+    if (formatted != OK) { return formatted - 6202i64; }
     found = found + FORMATTED_COLLECTED;
 
+    // --- a real object, written by a process that then ends ------------------
+    // **Both endings collected before anything else runs**, so the store's address
+    // space and capabilities are gone before the repository reads begin: what the
+    // second generation later reads is what is on the device.
+    if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6103i64; }
+    if (start(client, "system/state/writer.tos", CHILD_GRANT) != OK) { return -6104i64; }
+    let writer_or_store: i64 = collect();
+    if (writer_or_store != OK) { return writer_or_store - 6203i64; }
+    let the_other: i64 = collect();
+    if (the_other != OK) { return the_other - 6204i64; }
+    found = found + WRITTEN_COLLECTED;
+
+    // --- and now the repository, twice --------------------------------------
     if (start(reader, "system/repository/reader.tos", READER_GRANT) != OK) {
-        return -6102i64;
+        return -6105i64;
     }
     found = found + CREATED_READER_A;
     let first: i64 = collect();
-    if (first != OK) { return first - 6201i64; }
+    if (first != OK) { return first - 6205i64; }
     found = found + FIRST_COLLECTED;
 
     // **The same plan, the same entry, the same device.** Nothing crossed from
@@ -365,27 +446,27 @@ fn run(
     // this boot does not make it — the harness re-creates the image for every
     // run (§11d).
     if (start(reader, "system/repository/reader.tos", READER_GRANT) != OK) {
-        return -6103i64;
+        return -6106i64;
     }
     found = found + CREATED_READER_B;
-
     let second: i64 = collect();
-    if (second != OK) { return second - 6202i64; }
+    if (second != OK) { return second - 6206i64; }
     found = found + SECOND_COLLECTED;
 
-    // --- and the store's sector, after every repository read -----------------
-    // **The same module from the same sealed plan**, differing only in what it
-    // finds: a header the first run wrote, on a device across which thirty-seven
-    // sectors of repository traffic have since gone. It must refuse to format.
-    if (start(initializer, "system/state/initializer.tos", READER_GRANT) != OK) {
-        return -6105i64;
-    }
-    let refused: i64 = collect();
-    if (refused != OK) { return refused - 6205i64; }
-    found = found + REFUSAL_COLLECTED;
+    // --- the object, read back after all of it ------------------------------
+    // A **new** store generation from the same sealed plan: it re-reads and
+    // validates the header from the device, and a client that holds no way to
+    // address a sector asks for the object by id and verifies every byte.
+    if (start(state, "system/state/store.tos", CHILD_GRANT) != OK) { return -6107i64; }
+    if (start(client, "system/state/reader.tos", CHILD_GRANT) != OK) { return -6108i64; }
+    let reader_or_store: i64 = collect();
+    if (reader_or_store != OK) { return reader_or_store - 6207i64; }
+    let the_last_pair: i64 = collect();
+    if (the_last_pair != OK) { return the_last_pair - 6208i64; }
+    found = found + READ_BACK_COLLECTED;
 
-    let last: i64 = collect_after_the_census();
-    if (last != OK) { return last - 6203i64; }
+    let device_service: i64 = collect_after_the_census();
+    if (device_service != OK) { return device_service - 6209i64; }
     found = found + REST_COLLECTED;
 
     return found;
