@@ -230,3 +230,12 @@ What this slice does *not* claim is first-virtqueue readiness. It converts the
 plumbing into a real-system fact — two authorities, one region, one nucleus
 entry, one bridge mapping, indexed CPU access, a bounded device-visible address,
 a release that closes both stale paths — and stops there.
+
+## Addendum, 2026-09-26 — P1 no longer refuses the way P5 does
+
+**Nothing above is amended.** §3's *"They refuse identically"* was true of the tree it
+describes: operation 30 answered a function with no PCI Express capability
+`E_NO_CAPABILITY`, the same status a missing `dma` right earns. `SYSTEM_ABI_V1` row 30
+had always said `E_BAD_ARGUMENT` for that case, and the implementation now says so
+too. The two facts are still reported side by side on `TOS.RUN.PCI_ASSIGNED`; P1's
+refusal on a qualified function is exercised by `host-tools/qemu-test/dma-quarantine.sh`.

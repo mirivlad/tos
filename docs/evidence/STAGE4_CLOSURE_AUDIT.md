@@ -161,7 +161,7 @@ driver doing the real I/O.
 |---|---|---|---|---|
 | 11.1 | Review user-space interrupt, DMA and interpreted-driver **patent/security** mechanisms before Stage 4 closes | `docs/16` §Cross-stage gates, `docs/24` | security: `docs/34` X4.1–X4.12. Patent: the engineering review of `docs/research/PATENT_LANDSCAPE.md` §Stage 4 (2026-09-26), `docs/24` steps 1–6; three items flagged for the Project Architect, and step 8 — the recorded decision — not taken | PARTIAL |
 | 11.2 | Open ADRs do not block Stage 4 | `docs/38` | ADR-0044 is Stage 2's module digest and was acknowledged non-blocking at Stage 2's closure; ADR-0096 says itself that it does not block Stage 4; ADR-0094 is resolved; `open_decisions` | PASS |
-| 11.3 | No gate weakened, no threshold changed | `docs/21` | every earlier gate still runs unchanged; the one behaviour change is operation 30's P1 status, brought to what `SYSTEM_ABI_V1` row 30 always stated | PASS |
+| 11.3 | No gate weakened, no threshold changed | `docs/21` | every earlier gate still runs unchanged; the two behaviour changes — operation 30's P1 status, brought to what `SYSTEM_ABI_V1` row 30 always stated, and the block service counting a device-failed request as having reached the ring — weaken no gate, and `qemu_block_protocol`, `qemu_state_store` and `qemu_repository_linkage` were rerun green after the second | PASS |
 
 **What the hostile self-review found and fixed before this audit**, rather than
 listing: the ring-count defect after a device-failed request (every copy of the

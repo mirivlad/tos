@@ -132,10 +132,12 @@ grep -q "TOS.RUN.PCI_ASSIGNED .*express=1" "$OUT/live/events.log" || {
        test-only assumption inside the nucleus is what that record refuses."
 }
 
-# **P1 and P5 are two facts and stay two.** Both refuse operation 30 the same
-# way, so a boot that reported only the refusal could not say which one it was —
-# which is exactly the confusion that hid profile revision 1's missing Express
-# capability behind an `E_NO_CAPABILITY`.
+# **P1 and P5 are two facts and stay two.** Until 2026-09-26 both refused
+# operation 30 with `E_NO_CAPABILITY`, so a boot that reported only the refusal
+# could not say which one it was — which is exactly the confusion that hid
+# profile revision 1's missing Express capability. P1's refusal is now
+# `SYSTEM_ABI_V1` row 30's `E_BAD_ARGUMENT`, and the nucleus still reports both
+# facts, because a status is not where a reader should have to look.
 grep -q "TOS.RUN.PCI_ASSIGNED .*express=1 " "$OUT/live/events.log" ||
     fail "P1 does not hold: the target endpoint reports no PCI Express capability"
 grep -q "TOS.RUN.PCI_ASSIGNED .*dma=1 " "$OUT/live/events.log" ||
