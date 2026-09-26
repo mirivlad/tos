@@ -132,6 +132,11 @@ endowment_constants() {
 closure_audit() {
     bash "$ROOT/scripts/tests/check-closure-audit.sh"
 }
+# The Stage 4 closure-readiness audit: every gate it names exists in this
+# inventory, every verdict is one of its four, and its summary counts its rows.
+closure_audit_stage4() {
+    bash "$ROOT/scripts/tests/check-closure-audit.sh" stage4
+}
 operator_journal() {
     bash "$ROOT/scripts/tests/check-operator-journal.sh"
 }
@@ -737,6 +742,7 @@ gate docs       default   "launcher endowment constants"               endowment
 gate docs       default   "Boot ABI event contract"                    boot_event_contract
 gate docs       default   "operator important-error view"              operator_journal
 gate docs       default   "Stage 3 closure audit"                      closure_audit
+gate docs       default   "Stage 4 closure-readiness audit"          closure_audit_stage4
 gate docs       default   "nucleus exception foundation"               exception_foundation
 gate docs       default   "Stage 2 language-contract consistency"      stage2_language_contract
 gate docs       default   "CI and preflight prove the same gates"      gate_parity

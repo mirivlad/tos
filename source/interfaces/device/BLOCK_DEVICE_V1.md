@@ -313,3 +313,15 @@ can exhibit that refusal. This follows the precedent of
 `host-tools/qemu-test/virtio-queue.sh`, which records an MSI-X negative that
 *"was attempted and withdrawn"* because the reference device could not be made to
 fail it, rather than building a fake device to manufacture one.
+
+**Beyond ADR-0098 §4, on 2026-09-26**, `host-tools/qemu-test/block-fault.sh`
+exercises three things that list did not require, against the same accepted
+service text plus named exits: `BLK_DEVICE` (§7) from a real device failure — QEMU's
+own `blkdebug` layer fails a real `WRITE` and a real `READ` — answered as a refusal,
+with the next request served and no region after a refused `READ`; §6a's incomplete
+`READ`, where the service ends between its success reply and its region and the
+client's receive is cancelled with nothing queued; and §9's case D, exhibited as a
+boundary — the caller's observation is identical whether or not the device wrote.
+Exercising `BLK_DEVICE` found that a device-refused request was not counted as
+having reached the ring, which left the next request waiting forever; the service
+now counts it.
