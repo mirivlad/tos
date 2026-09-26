@@ -99,10 +99,11 @@ PROVED_PROTOCOL_ALL=$(( (1 << 31) - (1 << 20) ))
 EXPECTED_SERVICE="i64:$((PROVED_DEVICE_ALL + PROVED_PROTOCOL_ALL))"
 # **And one bit that must be absent.** `BLK_DEVICE` is implemented — a device that
 # reports a failure is answered with that code rather than tearing the service down —
-# but the QEMU reference endpoint answers every well-formed in-range request with
-# `VIRTIO_BLK_S_OK`, and no fake device is built to manufacture a failure. So bit 31
-# is not in the total above, and a boot that set it would mean the reference device
-# had started failing requests rather than that this gate had got stronger.
+# but this gate's device is the plain reference image, which answers every
+# well-formed in-range request with `VIRTIO_BLK_S_OK`. So bit 31 is not in the total
+# above, and a boot that set it would mean the reference device had started failing
+# requests rather than that this gate had got stronger. The failing device is
+# `block-fault.sh`'s, where QEMU's `blkdebug` layer makes it fail one request.
 PROVED_REFUSED_DEVICE=$(( 1 << 31 ))
 
 # The client: thirteen facts, and the capacity it was told riding above them. The
@@ -472,11 +473,11 @@ echo "  sliced by the service's own receives, and only the two windows that"
 echo "  are allowed to reach the device resolved a device address in them —"
 echo "  three each, and nine in the boot with the ring's own three, none"
 echo "  anywhere else"
-echo "  BLK_DEVICE is implemented and **not** exercised: the reference endpoint"
-echo "  answers every well-formed in-range request with VIRTIO_BLK_S_OK and no"
-echo "  fake device is built to manufacture a failure, so that bit is required"
-echo "  to be absent rather than pretended — the class virtio-queue.sh records"
-echo "  for the MSI-X negative it attempted and withdrew"
+echo "  BLK_DEVICE is not reached here: this gate's device is the plain reference"
+echo "  image, which answers every well-formed in-range request with"
+echo "  VIRTIO_BLK_S_OK, so that bit is required to be absent. A device made to"
+echo "  fail a request by QEMU's blkdebug layer is block-fault.sh's"
 echo "  NOT claimed: power-loss durability, VIRTIO_BLK_F_FLUSH, crash consistency,"
-echo "  exactly-once write, ADR-0093 case D, more than one sector per request,"
+echo "  exactly-once write, ADR-0093 case D (block-fault.sh states that boundary),"
+echo "  more than one sector per request,"
 echo "  batching, more than one client, state.store.v1, or Stage 4 closure"

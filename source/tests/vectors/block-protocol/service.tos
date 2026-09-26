@@ -859,12 +859,13 @@ const PROVED_REFUSED_NO_REGION: i64 = 268435456i64;
 const PROVED_REFUSED_NO_ANSWER: i64 = 536870912i64;
 const PROVED_DROPPED_NON_CALL: i64 = 1073741824i64;
 
-// **The one bit no boot on the reference platform sets.** `BLK_DEVICE` is in the
-// contract and the path that replies with it is implemented above, but the QEMU
-// reference endpoint answers every well-formed in-range request with
-// `VIRTIO_BLK_S_OK` — and no fake device is built to manufacture a failure. So this
-// bit is *absent* from what a green boot reports, the gate's expected total says so,
-// and the evidence class is static rather than pretended.
+// **The one bit the plain reference image never sets.** `BLK_DEVICE` is in the
+// contract and the path that replies with it is implemented above, and the QEMU
+// reference endpoint answers every well-formed in-range request against its plain
+// image with `VIRTIO_BLK_S_OK`. So in every boot of this module against that image
+// the bit is *absent*, and a gate's expected total says so. It is set in
+// `block-fault.sh`, whose device is made to fail a request by QEMU's own `blkdebug`
+// layer and completes it with a real non-OK status through the real ring.
 const PROVED_REFUSED_DEVICE: i64 = 2147483648i64;
 
 // Everything this module can prove is `2^31 - 1`; the gate derives that sum from
@@ -927,8 +928,9 @@ fn serve_requests(
     let mut proved: i64 = proved_so_far;
     let mut served: u64 = 0u64;
     // **Only the requests that reached the device advance the rings.** A refusal
-    // touches nothing, so counting receives instead would leave the driver's idea
-    // of `avail.idx` ahead of the device's.
+    // this service makes itself touches nothing, so counting receives instead
+    // would leave the driver's idea of `avail.idx` ahead of the device's; a
+    // request the *device* failed did reach the rings, and is counted.
     let mut submitted: u64 = 0u64;
     while (served < REQUESTS) {
         served = served + 1u64;
@@ -942,7 +944,15 @@ fn serve_requests(
                     give_up(borrow mut window);
                     return answered;
                 }
-                if ((answered & (PROVED_SERVED_WRITE + PROVED_SERVED_READ)) != 0i64) {
+                // **A request the device failed reached the ring too.** It was
+                // made available, notified and completed with a non-OK status, so
+                // `avail.idx` and `used.idx` advanced for it exactly as for one
+                // that succeeded. Leaving it out would publish the next request
+                // into the same slot at the same index, which the device reads as
+                // nothing new — and the driver would wait for a completion that
+                // is never coming.
+                if ((answered & (PROVED_SERVED_WRITE + PROVED_SERVED_READ
+                                 + PROVED_REFUSED_DEVICE)) != 0i64) {
                     submitted = submitted + 1u64;
                 }
                 proved = proved | answered;
@@ -1417,12 +1427,12 @@ fn perform(
     // leaving the caller to the liveness rule. The window is deliberately **not**
     // given up: one refused request is not a reason to stop serving.
     //
-    // **Unexercised on the reference platform, and recorded as such.** The QEMU
-    // reference endpoint answers a well-formed request of a sector inside its
-    // capacity with `VIRTIO_BLK_S_OK`, and no fake device is built to manufacture a
-    // failure — the same evidence class `virtio-queue.sh` records for the MSI-X
-    // negative it attempted and withdrew. The path exists because the contract
-    // states the code, not because a boot reaches it.
+    // **Reached only against a failing device.** The QEMU reference endpoint
+    // answers a well-formed request of a sector inside its capacity with
+    // `VIRTIO_BLK_S_OK` from its plain image; `block-fault.sh` puts QEMU's
+    // `blkdebug` layer under it so that one request completes with a real non-OK
+    // status, and that is where this path is exercised — including the request
+    // after it, which is why the caller counts this one as having reached the ring.
     let status_byte: u64 = region[status_offset] as u64;
     if (status_byte != BLK_S_OK) {
         return DEVICE_REFUSED;
