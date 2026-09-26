@@ -29,7 +29,12 @@ jobs:
   source:
     runs-on: ubuntu-latest
     steps:
+      # Depth 2, not the default 1: the repository-extent self-test provisions an
+      # extent for HEAD's parent as well, to prove the capsule — not HEAD — decides
+      # which commit is read, and a depth-1 clone has no parent to name.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       # rust-toolchain.toml lives in source/ and pins the toolchain with rustfmt
       # and clippy. rustup must be invoked from there: from the repository root
