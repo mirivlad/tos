@@ -158,6 +158,13 @@ test-dma-quarantine = []
 # every decision after it is the production code's. Orthogonal to endowment, so it
 # is built beside `test-dma-quarantine` rather than instead of it.
 test-device-never-quiescent = []
+# `docs/35` §Stage 4's counted budgets, measured: the scheduler counts its
+# dispatches, the handoffs among them (the processor given to a different context
+# than last had it) and its idle waits, and reports the running totals on each
+# routed interrupt delivery, so the difference between two deliveries is what one
+# completed block request cost. An observation added to a record and nothing else;
+# built beside an endowment constant rather than instead of one.
+test-request-cost = []
 # The same boot with one fact changed: the function binding is answered by a
 # handle naming a **process** rather than an assignment, under the object kind
 # the schema declares. Everything static is right — the interface, the effect,

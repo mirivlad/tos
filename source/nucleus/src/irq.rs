@@ -638,6 +638,20 @@ extern "C" fn device_interrupt(slot: u32) {
     });
     tos_serial::puts(b" latched=");
     tos_serial::put_u32_decimal(u32::from(waiter.is_none()));
+    // What the scheduler has done so far, in the build that counts it: the
+    // difference between two deliveries is what one completed request cost.
+    #[cfg(feature = "test-request-cost")]
+    {
+        let (dispatches, handoffs, idles, preemptions) = crate::process::request_cost();
+        tos_serial::puts(b" dispatches=");
+        tos_serial::put_u32_decimal(dispatches as u32);
+        tos_serial::puts(b" handoffs=");
+        tos_serial::put_u32_decimal(handoffs as u32);
+        tos_serial::puts(b" idles=");
+        tos_serial::put_u32_decimal(idles as u32);
+        tos_serial::puts(b" preemptions=");
+        tos_serial::put_u32_decimal(preemptions as u32);
+    }
     tos_serial::puts(b" asserted_by=nucleus\r\n");
     if let Some(waiter) = waiter {
         // SAFETY: the waiter is a context blocked in `irq_wait`, and `OK` is the
