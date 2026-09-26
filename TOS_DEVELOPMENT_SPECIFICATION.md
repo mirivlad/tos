@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `dcf3cde20e3337389243a26329b28c8c17fed17d68a7be5d2827563bfa16f1fe`\
+Source-manifest SHA-256: `7cc5260b430300aa2e56fe8c2fcc27940d11a5f934d0420fc903209e90d3cce0`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -12076,7 +12076,7 @@ service's own schema identity, **and** the device's capacity holds the extent;
 formatting is permitted only over an all-zero sector 0; presence is the occupancy
 bitmap and nothing else. **E2**: `state-store.sh` refuses to re-format a populated
 store, answers every request with `ST_STORE` on a device one sector too small, refuses
-an id never created without reading its sector, and turns red under each of its five
+an id never created without reading its sector, and turns red under each of its nine
 named mutations.
 
 **And one limitation stated rather than implied.** Nothing in `state.store.v1`

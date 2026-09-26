@@ -108,8 +108,9 @@ bash "$HERE/run.sh" \
     > /dev/null
 
 # P1 and P5 stay two facts, as ADR-0084 §5c requires and as the Stage 4C-2
-# record insisted: both refuse operation 30 the same way, so a boot reporting
-# only the refusal could not say which one it was.
+# record insisted: a boot must say which of them holds rather than leave it to a
+# refusal code — P1's is `E_BAD_ARGUMENT` and P5's is the missing right's
+# `E_NO_CAPABILITY`, and before 2026-09-26 both answered the latter.
 grep -q "TOS.RUN.PCI_ASSIGNED .*express=1 " "$OUT/live/events.log" ||
     fail "P1 does not hold: the target endpoint reports no PCI Express capability"
 grep -q "TOS.RUN.PCI_ASSIGNED .*dma=1 " "$OUT/live/events.log" ||

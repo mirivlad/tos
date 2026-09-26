@@ -625,7 +625,7 @@ service's own schema identity, **and** the device's capacity holds the extent;
 formatting is permitted only over an all-zero sector 0; presence is the occupancy
 bitmap and nothing else. **E2**: `state-store.sh` refuses to re-format a populated
 store, answers every request with `ST_STORE` on a device one sector too small, refuses
-an id never created without reading its sector, and turns red under each of its five
+an id never created without reading its sector, and turns red under each of its nine
 named mutations.
 
 **And one limitation stated rather than implied.** Nothing in `state.store.v1`

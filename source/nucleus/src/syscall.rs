@@ -1743,8 +1743,9 @@ fn report_dma_region(caller: usize, index: u32, generation: u32, length: u64, he
 ///               TC0-only requester traffic, so the capability carries `dma`
 /// ```
 ///
-/// Both must hold and they fail the same way — `E_NO_CAPABILITY` — so a boot
-/// that reported only the refusal could not say which one it was. Test-only,
+/// Both must hold. They fail differently — P1 with `E_BAD_ARGUMENT` and P5, a
+/// missing `dma` right, with `E_NO_CAPABILITY` — but a boot should not have to
+/// read a status to learn which fact was missing, so both are reported. Test-only,
 /// and an observation of state the nucleus already holds: nothing here grants,
 /// widens or qualifies anything.
 #[cfg(any(
