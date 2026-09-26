@@ -1,0 +1,207 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A `block.device.v1` client whose service may end in the middle of its request.
+//
+//   WRITE sector 8 with a pattern of its own, as one atomic call carrying a region
+//   READ sector 8, handing over a send-only name to be answered on
+//   take the region the READ owes, and check every byte
+//
+// **What this client can observe is the whole point, so it observes and does not
+// interpret.** Each outcome is one bit of the value it returns, and nothing here
+// knows which boot it is in: the service it calls is the same canonical text in
+// every boot, and where that service ends is a policy module this client never
+// sees.
+//
+// **Case D is the one it cannot decide** (ADR-0093 §5a, ADR-0098 §3). A `WRITE`
+// whose service ends before replying is answered by nobody; the call is cancelled
+// by the liveness rule (`SYSTEM_ABI_V1` §6) when the system has nothing left to
+// run, and `E_CANCELLED` is exactly what this client sees **whether or not the
+// device wrote the sector**. Two boots make the same observation here and leave
+// the device in different states, and that — not a retry, a journal or a
+// transaction id — is what Stage 4 states about it. So after a cancelled `WRITE`
+// this client stops: it has no way to ask, and asking would be pretending.
+//
+// **An incomplete `READ` is observable, and differently** (`BLOCK_DEVICE_V1` §6a).
+// A success reply means exactly one region is owed; a service that ends between
+// the reply and the send leaves this client's receive to be cancelled by the same
+// rule, and no region has been queued that a later request could mistake for its
+// answer.
+//
+// **No hardware authority of any kind**: a budget, a way to call the service, and
+// an inbox with a send-only name for it.
+
+module system.client.block version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as service;
+import capability system.ipc.Endpoint as inbox;
+import capability system.ipc.Endpoint as reply_to;
+
+resource [
+    fuel: 262144,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+extern fn endpoint_call_word_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region, word: u64
+) -> Result<system.ipc.Answer, i64> uses [service, system.memory.Region];
+
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [reply_to, service];
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [budget];
+
+extern fn region_freeze(
+    cap: system.memory.Region
+) -> Result<Region<u8>, i64> uses [system.memory.Region];
+
+// `BLOCK_DEVICE_V1` §3–§5.
+const OP_READ: u64 = 0u64;
+const OP_WRITE: u64 = 1u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const REFUSED: u64 = 9223372036854775808u64;
+const SECTOR_BYTES: size = 512B;
+const SECTOR_COUNT: u64 = 512u64;
+// Untouched by the reference image's seeding, so nothing but this boot can have
+// put anything there — and the harness reads it back from the image after the
+// machine has stopped.
+const TARGET_SECTOR: u64 = 8u64;
+
+// `SYSTEM_ABI_V1` §4.
+const E_CANCELLED: i64 = -5i64;
+
+//    1  the WRITE was answered with success
+//    2  the WRITE was cancelled — case D, from the only side this client has
+//    4  the READ was answered with success, so exactly one region is owed
+//    8  the READ itself was cancelled
+//   16  the owed region arrived
+//   32  every one of its 512 bytes is this client's pattern
+//   64  the receive for the owed region was cancelled, and nothing arrived
+const WRITE_ANSWERED: i64 = 1i64;
+const WRITE_CANCELLED: i64 = 2i64;
+const READ_ANSWERED: i64 = 4i64;
+const READ_CANCELLED: i64 = 8i64;
+const REGION_ARRIVED: i64 = 16i64;
+const EVERY_BYTE: i64 = 32i64;
+const REGION_CANCELLED: i64 = 64i64;
+
+// Non-zero everywhere, so neither the zeros of an unwritten sector nor a seeded
+// sector can pass for it.
+fn pattern(at: u64) -> u64 {
+    return (at * 61u64 + 29u64) % 251u64 + 1u64;
+}
+
+fn fill(borrow mut payload: Region<mut u8>) -> unit {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    while (at < SECTOR_BYTES) {
+        match (to_u8(pattern(index))) {
+            Ok(byte) => { payload[at] = byte; }
+            Err(impossible) => { payload[at] = 0u8; }
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+}
+
+fn agreeing(borrow payload: Region<u8>) -> u64 {
+    let mut at: size = 0B;
+    let mut index: u64 = 0u64;
+    let mut agreed: u64 = 0u64;
+    while (at < SECTOR_BYTES) {
+        if ((payload[at] as u64) == pattern(index)) {
+            agreed = agreed + 1u64;
+        }
+        at = at + 1B;
+        index = index + 1u64;
+    }
+    return agreed;
+}
+
+// The `WRITE`: its outcome bit, or a negative for a step that is not the
+// protocol's to fail.
+fn write() -> i64 uses [service, budget, system.memory.Region] {
+    match (region_allocate(budget, SECTOR_BYTES)) {
+        Ok(payload) => {
+            fill(borrow mut payload);
+            match (region_freeze(payload)) {
+                Ok(frozen) => {
+                    match (endpoint_call_word_region(service, frozen,
+                                                     TARGET_SECTOR * OPCODE_SPAN + OP_WRITE)) {
+                        Ok(answer) => {
+                            if (answer.length != REQUEST_BYTES) { return -11i64; }
+                            if (answer.word != 0u64) { return -12i64; }
+                            return WRITE_ANSWERED;
+                        }
+                        Err(status) => {
+                            if (status == E_CANCELLED) { return WRITE_CANCELLED; }
+                            return status - 100i64;
+                        }
+                    }
+                }
+                Err(status) => { return status - 200i64; }
+            }
+        }
+        Err(status) => { return status - 300i64; }
+    }
+}
+
+// The `READ` and the region it owes.
+fn read() -> i64 uses [service, inbox, reply_to] {
+    match (endpoint_call_word_carrying(reply_to, service,
+                                       TARGET_SECTOR * OPCODE_SPAN + OP_READ)) {
+        Ok(answer) => {
+            if (answer.length != REQUEST_BYTES) { return -21i64; }
+            if (answer.word >= REFUSED) { return -22i64; }
+            let mut seen: i64 = READ_ANSWERED;
+            match (endpoint_receive_region(inbox)) {
+                Ok(payload) => {
+                    seen = seen + REGION_ARRIVED;
+                    if (agreeing(borrow payload) == SECTOR_COUNT) {
+                        seen = seen + EVERY_BYTE;
+                    }
+                }
+                Err(status) => {
+                    if (status != E_CANCELLED) { return status - 400i64; }
+                    seen = seen + REGION_CANCELLED;
+                }
+            }
+            return seen;
+        }
+        Err(status) => {
+            if (status == E_CANCELLED) { return READ_CANCELLED; }
+            return status - 500i64;
+        }
+    }
+}
+
+pub fn main() -> i64 uses [service, inbox, reply_to, budget, system.memory.Region] {
+    let written: i64 = write();
+    if (written < 0i64) { return written; }
+    // **After a cancelled `WRITE` there is nothing this client may do that would
+    // tell it more**, and that is the observation: the service it would ask is
+    // gone, and a successor could only report what the device holds now, not
+    // whether this request put it there.
+    if (written == WRITE_CANCELLED) { return written; }
+    let got: i64 = read();
+    if (got < 0i64) { return got; }
+    return written + got;
+}

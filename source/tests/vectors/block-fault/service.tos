@@ -1,0 +1,2003 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The accepted `block.device.v1` service, ending where a policy module says.
+//
+// **This is `tests/vectors/block-protocol/service.tos` with one difference**, and
+// the difference is the whole fixture: at three named points of a request the
+// instance may end — `main` returns, and the process goes with everything it
+// holds, exactly as a crash would take it. Where, if anywhere, is decided by
+// `/system/policy/fault.tos`, which this module imports and which the capsule of
+// each boot of `host-tools/qemu-test/block-fault.sh` carries in a different form.
+// Everything a client can reach — the request word, the refusals, the ordering of
+// a READ's reply and region — is the accepted protocol, unchanged.
+//
+//   point 0   none: every request is served
+//   point 1   a WRITE's bytes are in device-visible memory; the device has not
+//             been told
+//   point 2   a WRITE has been performed and completed by the device; no reply
+//   point 3   a READ has been performed and answered with success; the region it
+//             owes has been built and not sent
+//
+// **Why each point, and what it can show.** Points 1 and 2 are ADR-0093's case D
+// from both sides: the device state differs and the caller's observation does
+// not, which is the ambiguity Stage 4 states rather than resolves. Point 3 is
+// `BLOCK_DEVICE_V1` §6a's incomplete `READ`: the caller was told a region is owed,
+// and must learn that it will not come through the ordinary liveness path, with no
+// region left on its answer endpoint.
+//
+// **An ending here is not a `give_up`.** The device is not reset, the window is
+// not released and nothing is answered: the instance simply stops, which is what
+// a service that crashed does, and what the nucleus reclaims is what it held.
+//
+// What the device half proves and does not prove is the accepted service's own
+// account, below and unchanged.
+//
+// ---- the accepted service's own header, unchanged ----
+//
+// The **normative** `block.device.v1` service: `BLOCK_DEVICE_V1`, spoken over the
+// accepted request word rather than over a fixture's own encoding.
+//
+// **The device work below is Stage 4D's, unchanged.** One real VirtIO block
+// function, one real split virtqueue, real `VIRTIO_BLK_T_IN` and
+// `VIRTIO_BLK_T_OUT`, real MSI-X completion. What is new is the **protocol**: the
+// three operations ADR-0093 §0 fixed and ADR-0098 gave a wire shape, with every
+// refusal `BLOCK_DEVICE_V1` §7 states, served from one receive that produces
+// everything a message carried.
+//
+//   word = sector * 4 + opcode        0 READ   1 WRITE   2 CAPACITY   3 reserved
+//
+//   READ       call carrying an answer endpoint
+//              -> device read -> reply success -> send exactly one region
+//   WRITE      one atomic call carrying the word **and** the region
+//              -> device write -> reply success
+//   CAPACITY   ordinary call -> reply the addressable sector count
+//
+// **Control precedes data, and that is the part a reader should check twice**
+// (`BLOCK_DEVICE_V1` §6a, ADR-0098 §2d). A read replies **before** it sends the
+// region. The reverse order admits an orphan response: the region is queued, the
+// service dies, the caller's call is cancelled by the liveness rule, and the
+// region stays on an answer endpoint that lives for the whole boot — where a later
+// holder of `receive` could take it as the answer to its own request.
+//
+// **A write is one message and not two.** A region sent and then a call is correct
+// only where one client is serialized against itself; with two clients the region
+// of one request and the word of another are indistinguishable in one queue. So the
+// payload arrives in the same message as the word, through
+// `endpoint_receive_call_region`.
+//
+// **And the boot proves that is where it came from.** The client sends a **decoy**
+// region — different bytes, no call behind it — just before the write. Any service
+// whose payload came from a region that arrived *earlier* rather than from this
+// call's own writes the decoy, and the client's 512-byte read-back fails. That is
+// the whole difference between "the region attached to this call" and "some region
+// that happened to be around", which the two-message shape could not state.
+//
+// **The decoy is also why a non-call message has to be survivable.** A plain send
+// carries no reply capability, so there is nothing to answer; this module notices
+// that its reply was refused, releases whatever the message carried, and goes on.
+// A service that trapped or gave up on a stray message would be a service any
+// client could stop.
+//
+// **`capacity` is the device's, not this module's.** It is read from the device
+// configuration structure under §2.5.1's generation protocol and clamped as
+// `BLOCK_DEVICE_V1` §6c requires, so nothing here is compiled in — the gate proves
+// that by running the same module against a device of a different size.
+//
+// **What this does not claim.** No power-loss durability, no `VIRTIO_BLK_F_FLUSH`,
+// no crash consistency, no exactly-once write, no more than one sector per
+// request, no batching, no filesystem, and nothing about `state.store.v1`, which is
+// the layer above and is `state-store.sh`'s.
+//
+// **The launcher wires it.** This module publishes nothing and knows no registry:
+// ADR-0093 case C and the publication path are proved by `block-lifecycle` and are
+// not re-proved here.
+
+module system.service.block version 1.5 profile full;
+
+// Where this instance ends, if it ends early. A module like any other: the
+// policy is canonical text, and which one this boot carries is in its identity.
+import system.policy.fault as fault;
+
+import capability platform.pci.Bus as device;
+import capability system.memory.Authority as budget;
+// The IPC half, and it is one capability: the endpoint this service receives its
+// requests on. It publishes nothing — the launcher hands its clients a `call`
+// name for the same object — so there is no `advertise` here and no registry.
+import capability system.ipc.Endpoint as serve;
+
+resource [
+    fuel: 4194304,
+    stack: 32KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 12
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [device];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_bar_map_write(
+    cap: platform.pci.FunctionConfig,
+    bar: u64,
+    offset: size,
+    length: size
+) -> Result<MmioRegionMut, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_interrupt_claim(
+    cap: platform.pci.FunctionConfig,
+    entry: u64
+) -> Result<platform.irq.Source, i64> uses [platform.pci.FunctionConfig];
+
+extern fn dma_region_allocate(
+    function: platform.pci.FunctionConfig,
+    authority: system.memory.Authority,
+    bytes: size
+) -> Result<DmaRegion<mut u8>, i64> uses [platform.pci.FunctionConfig, budget];
+
+extern fn irq_wait(cap: platform.irq.Source) -> i64 uses [platform.irq.Source];
+
+extern fn dma_device_address(
+    region: platform.dma.Region,
+    offset: size
+) -> Result<u64, i64> uses [platform.dma.Region];
+
+const OK: i64 = 0i64;
+
+// --- the device's capability list (PCI, and VIRTIO §4.1.4.1) ------------------
+//
+// A well-formed chain has at most this many entries in 256 bytes.
+const MAX_CAPABILITIES: u64 = 64u64;
+const FIRST_CAPABILITY: u64 = 64u64;
+const LAST_CAPABILITY: u64 = 240u64;
+const CAPABILITY_POINTER: u64 = 52u64;
+const UNREADABLE: u64 = 256u64;
+
+// `struct virtio_pci_cap`: cap_vndr, cap_next, cap_len, cfg_type, bar, id,
+// padding[2], le32 offset, le32 length. `cap_vndr` 0x09 is a vendor-specific
+// capability and `cfg_type` 1 is VIRTIO_PCI_CAP_COMMON_CFG.
+const CAP_VENDOR: u64 = 9u64;
+const CFG_TYPE_COMMON: u64 = 1u64;
+const CAP_CFG_TYPE: u64 = 3u64;
+const CAP_BAR: u64 = 4u64;
+const CAP_OFFSET: u64 = 8u64;
+const CAP_LENGTH: u64 = 12u64;
+
+// --- the common configuration (VIRTIO §4.1.4.3) --------------------------------
+//
+//   0x00 device_feature_select  0x04 device_feature
+//   0x08 driver_feature_select  0x0C driver_feature
+//   0x10 config_msix_vector     0x12 num_queues
+//   0x14 device_status          0x15 config_generation
+//   0x16 queue_select           0x18 queue_size
+//   0x1A queue_msix_vector      0x1C queue_enable
+//   0x1E queue_notify_off       0x20 queue_desc
+//   0x28 queue_driver           0x30 queue_device
+//
+// Version 1.4 adds `queue_notif_config_data` at 0x38 and `queue_reset` at 0x3A,
+// each live only under a feature this module does not negotiate, and the
+// administration-queue fields after them. **Nothing here reaches past 0x38**,
+// so the fields this module touches are the ones every modern device has.
+const DEVICE_FEATURE_SELECT: size = 0B;
+const DEVICE_FEATURE: size = 4B;
+const DRIVER_FEATURE_SELECT: size = 8B;
+const DRIVER_FEATURE: size = 12B;
+const DEVICE_STATUS: size = 20B;
+const QUEUE_SELECT: size = 22B;
+const QUEUE_SIZE: size = 24B;
+const QUEUE_MSIX_VECTOR: size = 26B;
+const QUEUE_ENABLE: size = 28B;
+const QUEUE_DESC: size = 32B;
+const QUEUE_DRIVER: size = 40B;
+const QUEUE_DEVICE: size = 48B;
+// The last byte this module reads or writes, one past the end of `queue_device`.
+const COMMON_CFG_USED: u64 = 56u64;
+
+const STATUS_ACKNOWLEDGE: u64 = 1u64;
+const STATUS_DRIVER: u64 = 2u64;
+const STATUS_DRIVER_OK: u64 = 4u64;
+const STATUS_FEATURES_OK: u64 = 8u64;
+const STATUS_FAILED: u64 = 128u64;
+
+// `VIRTIO_F_VERSION_1` is feature bit 32 — bit 0 of the high dword (§6.3).
+// **Exactly one feature is accepted.** Every optional ring feature changes the
+// layout or the notification rules, and a queue that silently depended on one
+// the driver never accepted would be a queue nobody could reason about.
+const VERSION_1_IN_HIGH_DWORD: u64 = 1u64;
+
+// The MSI-X table entry this driver gives the queue. An entry index of this
+// function, never a CPU vector.
+const QUEUE_ENTRY: u64 = 0u64;
+const NO_VECTOR: u64 = 65535u64;
+
+// --- this driver's own bounds --------------------------------------------------
+//
+// **A Stage 4 driver cap, not an architectural maximum.** 128 descriptors is a
+// real, useful queue whose whole split-ring substrate fits one 4 KiB DMA
+// region: 2048 + 262 + (2 padding) + 1030 = 3342 bytes.
+const QUEUE_CAP: u64 = 128u64;
+const QUEUE_FLOOR: u64 = 4u64;
+const REGION_BYTES: size = 4096B;
+const QUEUE_ENABLED: u64 = 1u64;
+
+// The reference profile's assertion about where the common configuration is
+// (Stage 4 profile revision 2). The capability structure is what the module
+// reads; this is what it requires that structure to say, so a device that put
+// it elsewhere is refused rather than silently accommodated.
+const PROFILE_COMMON_OFFSET: u64 = 0u64;
+
+// `VIRTIO_PCI_CAP_NOTIFY_CFG` (§4.1.4.1), and the `le32 notify_off_multiplier`
+// that follows the common capability header (§4.1.4.4). A capability shorter
+// than that does not carry the extra field, and this module refuses it rather
+// than reading whatever follows.
+const CFG_TYPE_NOTIFY: u64 = 2u64;
+
+// `VIRTIO_F_NOTIFICATION_DATA` is feature bit 38 — bit 6 of the high dword.
+//
+// **Two clauses turn on this feature and they ask different questions.**
+// §4.1.4.4.1 selects the notification *capability* requirements by whether the
+// device **offers** it; §4.1.5.2.1 selects a 16- or 32-bit driver notification
+// by whether the driver **negotiated** it. Collapsing the two would be reading
+// the capability under the wrong rule, or writing the wrong notification width
+// — so this module reads the offered bit for the first and uses its own
+// negotiation for the second.
+const NOTIFICATION_DATA_IN_HIGH_DWORD: u64 = 64u64;
+const CAP_LENGTH_BYTE: u64 = 2u64;
+const NOTIFY_CAP_BYTES: u64 = 20u64;
+const CAP_NOTIFY_MULTIPLIER: u64 = 16u64;
+const QUEUE_NOTIFY_OFF: size = 30B;
+
+// **One window over the whole BAR**, because the common configuration and the
+// Queue Notify address live in the same one — measured at 0x0000 and 0x3000 of
+// BAR 4 on the reference endpoint. One mapping, page-granular, through the
+// accepted path; the notification offset inside it is derived at run time.
+const WINDOW_BYTES: size = 16384B;
+const WINDOW_LIMIT: u64 = 16384u64;
+
+// This driver's own bound on where a notification may live. It exists so that
+// the conversion below is bounded by something this module decided rather than
+// by a device-reported `le32`.
+const NOTIFY_CHUNK: u64 = 256u64;
+
+// --- the request (VIRTIO §5.2.6) ----------------------------------------------
+//
+//   struct virtio_blk_req { le32 type; le32 reserved; le64 sector; u8 data[];
+//                           u8 status; }
+//
+// `VIRTIO_BLK_T_IN` reads sectors into `data`, in multiples of 512 bytes, from
+// the offset `sector` multiplied by 512.
+const BLK_T_IN: u64 = 0u64;
+const BLK_S_OK: u64 = 0u64;
+const HEADER_BYTES: size = 16B;
+// The IPC half of this service, over the accepted schema.
+//
+// **One receive row, and it has to be the superset** (ADR-0098 §2a): this module
+// cannot know before receiving whether the next call carries a region (`WRITE`),
+// an answer endpoint (`READ`) or neither (`CAPACITY`), so the row that serves the
+// protocol produces all of it. Both optional positions are `Option`, and for the
+// region that is the only safe form — an indexed access to a region this process
+// holds no mapping for is a trap, not a refusal.
+extern fn endpoint_receive_call_region(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCallRegion, i64> uses [serve];
+
+// The sector's bytes leave this process as an **ordinary immutable region**
+// (ADR-0097). Three operations: make one out of the budget this service was
+// granted, freeze it so it may travel at all (`IPC_V1` §5), and send it to the
+// channel the client handed over in its request.
+//
+// **A reply cannot carry a region**, any more than it can carry a capability:
+// `ipc::hand` copies payload bytes and touches neither the transfer table nor the
+// region area. So the answer's bytes go as a message and the reply says only how
+// many there were.
+// What the client sends: one immutable region. **Received before the call**,
+// because a message queue is first-in-first-out and the client sends the region
+// and then calls — so this is the older of the two messages and the call is the
+// newer.
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [serve];
+
+// And how a region this instance is finished with stops occupying a mapping slot
+// (ADR-0085 §8a). A read ignores what the client sent; holding it would keep a
+// window this process has no use for.
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+// And how an **endpoint** a request handed over stops occupying a table entry.
+//
+// **Resource hygiene, not a wire rule.** `BLOCK_DEVICE_V1` says a read delegates a
+// channel to be answered on; it says nothing about what the service does with the
+// name afterwards, because there is nothing to say — a capability this process is
+// finished with is one it should not be holding. `MAX_CAPABILITIES` is sixteen and
+// this process holds seven things of its own before a request arrives, so a service
+// that kept one name per request would stop being able to accept a message. That is
+// a client's ability to exhaust a service by attaching authority it does not need,
+// and the answer is to let go of everything a request hands over and this protocol
+// does not keep.
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn region_allocate(
+    cap: system.memory.Authority, bytes: size
+) -> Result<Region<mut u8>, i64> uses [budget];
+
+extern fn region_freeze(
+    cap: system.memory.Region
+) -> Result<Region<u8>, i64> uses [system.memory.Region];
+
+extern fn endpoint_send_region(
+    cap: system.ipc.Endpoint, region: system.memory.Region
+) -> i64 uses [system.ipc.Endpoint, system.memory.Region];
+
+// The answer carries a number, so it carries it where `IPC_V1` §3 puts a
+// payload. **Not as the reply's length**: the nucleus copies exactly as many
+// bytes as a length declares, §3 bounds that at 256, and this service's answer
+// is 512 — a number no inline length could state at all.
+extern fn endpoint_reply_word(
+    cap: system.ipc.Reply, word: u64
+) -> i64 uses [system.ipc.Reply];
+
+// --- the accepted protocol (`BLOCK_DEVICE_V1` §3, §4, §5, §7) ------------------
+//
+// **These are the contract's constants, not this fixture's.** A request is eight
+// payload bytes carrying one word; the opcode is its low two bits and the sector
+// is the rest.
+const REQUEST_BYTES: u64 = 8u64;
+
+const OP_READ: u64 = 0u64;
+const OP_WRITE: u64 = 1u64;
+const OP_CAPACITY: u64 = 2u64;
+const OPCODE_SPAN: u64 = 4u64;
+
+// `2^62 - 1`: the largest sector this encoding can name, stated rather than left
+// to overflow. A device reporting more has the excess unreachable in v1.
+const MAX_SECTOR: u64 = 4611686018427387903u64;
+
+// Bit 63 of a reply word marks a refusal, so a refusal code and a capacity never
+// share a value space (§5). A success word is always below it.
+const REFUSED: u64 = 9223372036854775808u64;
+
+const BLK_OPCODE: u64 = 1u64;
+const BLK_RANGE: u64 = 2u64;
+const BLK_MALFORMED: u64 = 3u64;
+const BLK_NO_REGION: u64 = 4u64;
+const BLK_NO_ANSWER: u64 = 5u64;
+const BLK_DEVICE: u64 = 6u64;
+
+// **What a device failure looks like on the way back up.** A negative return from
+// the device half means "this driver's own arithmetic or the queue contract did not
+// hold", and those are defects that stop the service; this one value means "the
+// device answered, and its answer was a failure", which is a refusal the client is
+// told about. One distinguished number rather than a second return channel, and it
+// is outside every status the ABI produces.
+const DEVICE_REFUSED: i64 = -1000000i64;
+
+// --- the device configuration structure (VIRTIO §4.1.4.6, §5.2.4, §2.5.1) -----
+const CFG_TYPE_DEVICE: u64 = 4u64;
+// `le64 capacity` is the mandatory prefix of `struct virtio_blk_config`.
+const CONFIG_GENERATION: size = 21B;
+// A generation that will not settle inside a bound is a refusal, because a retry
+// without a bound is not a bound.
+const MAX_GENERATION_TRIES: u64 = 8u64;
+
+// `VIRTIO_BLK_T_OUT` (§5.2.6): the driver's data is device-*readable*, so the
+// data descriptor carries no `DESC_F_WRITE`, and the device writes only the
+// status byte — so `used.len` is 1 rather than 513.
+const BLK_T_OUT: u64 = 1u64;
+const WRITE_USED_LEN: u64 = 1u64;
+const READ_USED_LEN: u64 = 513u64;
+
+const SECTOR_BYTES: size = 512B;
+const SECTOR_COUNT: u64 = 512u64;
+const STATUS_BYTES: size = 1B;
+
+// **The sentinels.** `VIRTIO_BLK_T_IN` is 0, `VIRTIO_BLK_S_OK` is 0 and the
+// `VIRTIO_BLK_S_OK` is 0, so a zero status byte proves nothing on its own, and a
+// zero data byte proves nothing either — the image's sector 0 is zero-filled,
+// which is why this slice never asks for it. These are what the device has to
+// replace: the status with `VIRTIO_BLK_S_OK`, and every data byte with the seeded
+// byte the requested sector holds.
+const DATA_SENTINEL: u64 = 165u64;
+const STATUS_SENTINEL: u64 = 255u64;
+
+// Descriptor flags (§2.7.5). `INDIRECT` is not used and not negotiated.
+const DESC_F_NEXT: u64 = 1u64;
+const DESC_F_WRITE: u64 = 2u64;
+const DESC_BYTES: size = 16B;
+const CHAIN_HEAD: u64 = 0u64;
+
+// How many wakes this driver will tolerate before giving up. A wake is a
+// delivery fact and not a completion (ADR-0082 §7), and §2.7.7.1 requires a
+// driver to handle spurious notifications — so this counts them rather than
+// assuming the first one means the request finished.
+const MAX_WAKES: u64 = 16u64;
+
+fn byte_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 1u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return UNREADABLE; }
+    }
+}
+
+fn dword_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 4u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 4294967296u64; }
+    }
+}
+
+// Where the device says its common configuration is: the capability list is
+// walked, and the first `VIRTIO_PCI_CAP_COMMON_CFG` decides. Returns the
+// capability's own offset in configuration space, or 0 when there is none.
+fn common_capability(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = byte_at(function, CAPABILITY_POINTER);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 0u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (byte_at(function, at) == CAP_VENDOR) {
+                if (byte_at(function, at + CAP_CFG_TYPE) == CFG_TYPE_COMMON) {
+                    found = at;
+                    steps = MAX_CAPABILITIES;
+                }
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = byte_at(function, at + 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
+}
+
+// Rounds a size up to a multiple of `to`, with the language's checked
+// arithmetic. VIRTIO §2.7 gives each ring part a minimum alignment, and every
+// offset below is placed by this rather than by a constant somebody computed.
+fn align_up(value: size, to: size) -> size {
+    let rest: size = value % to;
+    if (rest == 0B) {
+        return value;
+    }
+    return (value - rest) + to;
+}
+
+// Multiplies a size by a device-reported count.
+//
+// **A loop rather than an operator**, and the reason is a real boundary rather
+// than a preference: `size` is the exact type of every region index and every
+// bounded offset, and TOS Core V1 has no checked conversion whose destination
+// is `size` (`docs/40` §3 fixes the set at `to_i8`..`to_u64`). So a count the
+// device reported cannot enter the `size` domain by conversion, and it enters
+// by counting instead. Bounded by the caller's own cap, checked at every step.
+fn scale(unit: size, count: u64) -> size {
+    let mut total: size = 0B;
+    let mut done: u64 = 0u64;
+    while (done < count) {
+        total = total + unit;
+        done = done + 1u64;
+    }
+    return total;
+}
+
+// Whether a device-reported queue size is one this driver will use: nonzero, a
+// power of two (VIRTIO §4.1.4.3.1, absent `VIRTIO_F_RING_PACKED`), and not
+// below this driver's floor.
+fn usable_queue(maximum: u64) -> bool {
+    if (maximum == 0u64) {
+        return false;
+    }
+    if ((maximum & (maximum - 1u64)) != 0u64) {
+        return false;
+    }
+    return maximum >= QUEUE_FLOOR;
+}
+
+// **Adds status bits, and never replaces the byte** (VIRTIO §2.1.1).
+//
+// "The driver MUST update device status, setting bits to indicate the completed
+// steps of the driver initialization sequence ... The driver MUST NOT clear a
+// device status bit."
+//
+// So every non-zero transition is a read, an OR and a write — of the *device's*
+// current byte, not of the history this module remembers. That distinction is
+// the whole reason this reads the register rather than reconstructing it:
+// `DEVICE_NEEDS_RESET` is set by the **device** (§2.1.2), and a driver that
+// rebuilt the byte from its own expected sequence would erase it and then rely
+// on a device that had asked to be reset.
+//
+// Explicit reset writes 0 directly, which is what §2.1.1 means by reinitialized
+// and is the one write that is not additive.
+//
+// Returns the status the device reports afterwards, so a caller checks the bit
+// it asked for rather than assuming the write took.
+fn add_status(borrow mut window: MmioRegionMut, bits: u64) -> u64 {
+    let current: u64 = mmio_read_u8(window, DEVICE_STATUS);
+    mmio_write_u8(window, DEVICE_STATUS, current | bits);
+    return mmio_read_u8(window, DEVICE_STATUS);
+}
+
+// Sets the FAILED status bit, which §3.1.1 permits after initialization has
+// begun and irrecoverably failed. It is a statement to the device and not a TOS
+// mechanism: nothing in the system's authority depends on it.
+//
+// **Additive, like every other transition.** An earlier version of this wrote
+// `STATUS_FAILED` alone, which turned ACKNOWLEDGE|DRIVER|FEATURES_OK into
+// FAILED and cleared three bits §2.1.1 forbids clearing.
+fn give_up(borrow mut window: MmioRegionMut) -> unit {
+    let ignored: u64 = add_status(borrow mut window, STATUS_FAILED);
+}
+
+// Zeroes the whole region, byte by byte.
+//
+// **Written rather than assumed.** A driver that relied on freshly allocated
+// pages being zero would be depending on an allocator property no accepted
+// document states, and the ring's flags and indices must be zero before the
+// device is allowed to look at them.
+fn zero_region(borrow mut region: DmaRegion<mut u8>, extent: size) -> unit {
+    let mut at: size = 0B;
+    while (at < extent) {
+        region[at] = 0u8;
+        at = at + 1B;
+    }
+}
+
+// Writes one little-endian 16-bit value into the region.
+//
+// **The protocol representation is bytes**, deliberately. A typed DMA record
+// would publish the frontend's layout choice as a binary format shared with a
+// device, which ADR-0081 §3 refuses.
+fn put_le16(borrow mut region: DmaRegion<mut u8>, at: size, value: u64) -> unit {
+    region[at] = to_le_low(value);
+    region[at + 1B] = to_le_high(value);
+}
+
+fn to_le_low(value: u64) -> u8 {
+    match (to_u8(value % 256u64)) {
+        Ok(byte) => { return byte; }
+        Err(bad) => { return 0u8; }
+    }
+}
+
+fn to_le_high(value: u64) -> u8 {
+    match (to_u8((value / 256u64) % 256u64)) {
+        Ok(byte) => { return byte; }
+        Err(bad) => { return 0u8; }
+    }
+}
+
+fn read_le16(borrow region: DmaRegion<mut u8>, at: size) -> u64 {
+    let low: u8 = region[at];
+    let high: u8 = region[at + 1B];
+    return (high as u64) * 256u64 + (low as u64);
+}
+
+// Brings the device up to the point where a queue may be configured: reset,
+// ACKNOWLEDGE, DRIVER, feature negotiation, FEATURES_OK — VIRTIO §3.1.1 steps
+// 1 through 6, in that order and no other.
+//
+// Returns 0, or a negative naming the step that did not hold.
+fn negotiate(borrow mut window: MmioRegionMut) -> i64 {
+    // Step 1. **Reset, and wait for the device to say so.** §4.1.4.3.2: after
+    // writing 0 the driver must wait for a read of device_status to return 0
+    // before reinitializing. Bounded: a device that never reports reset is a
+    // refusal rather than a hang.
+    mmio_write_u8(window, DEVICE_STATUS, 0u64);
+    let mut waited: u64 = 0u64;
+    let mut reset: bool = false;
+    while (waited < 1024u64) {
+        if (mmio_read_u8(window, DEVICE_STATUS) == 0u64) {
+            reset = true;
+            waited = 1024u64;
+        }
+        if (waited < 1024u64) {
+            waited = waited + 1u64;
+        }
+    }
+    if (!reset) {
+        return -11i64;
+    }
+
+    // Steps 2 and 3.
+    let acknowledged: u64 = add_status(borrow mut window, STATUS_ACKNOWLEDGE);
+    let driving: u64 = add_status(borrow mut window, STATUS_DRIVER);
+
+    // Step 4. The device must have offered `VERSION_1`; this driver accepts it
+    // and nothing else. Optional features the device offers and this driver
+    // does not select are not an error — they are simply not negotiated, and
+    // the queue below therefore depends on none of them.
+    mmio_write_le_u32(window, DEVICE_FEATURE_SELECT, 1u64);
+    let high: u64 = mmio_read_le_u32(window, DEVICE_FEATURE);
+    if ((high & VERSION_1_IN_HIGH_DWORD) == 0u64) {
+        give_up(borrow mut window);
+        return -12i64;
+    }
+    mmio_write_le_u32(window, DRIVER_FEATURE_SELECT, 0u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE, 0u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE_SELECT, 1u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE, VERSION_1_IN_HIGH_DWORD);
+
+    // Steps 5 and 6.
+    let offered: u64 = add_status(borrow mut window, STATUS_FEATURES_OK);
+    if ((offered & STATUS_FEATURES_OK) == 0u64) {
+        give_up(borrow mut window);
+        return -13i64;
+    }
+    return OK;
+}
+
+// --- little-endian encoding, as bytes (VIRTIO §2.7.5, §5.2.6) -----------------
+//
+// The protocol representation stays explicit bytes. A typed DMA record would
+// publish the frontend's layout choice as a binary format shared with a device,
+// which ADR-0081 §3 refuses.
+
+fn put_le32(borrow mut region: DmaRegion<mut u8>, at: size, value: u64) -> unit {
+    put_le16(borrow mut region, at, value % 65536u64);
+    put_le16(borrow mut region, at + 2B, (value / 65536u64) % 65536u64);
+}
+
+fn put_le64(borrow mut region: DmaRegion<mut u8>, at: size, value: u64) -> unit {
+    put_le32(borrow mut region, at, value % 4294967296u64);
+    put_le32(borrow mut region, at + 4B, value / 4294967296u64);
+}
+
+fn read_le32(borrow region: DmaRegion<mut u8>, at: size) -> u64 {
+    let low: u64 = read_le16(borrow region, at);
+    let high: u64 = read_le16(borrow region, at + 2B);
+    return high * 65536u64 + low;
+}
+
+// Where the device says its notification structure is. The capability list is
+// walked here exactly as the common configuration's is; the nucleus is told
+// nothing about what either means.
+fn notify_capability(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = byte_at(function, CAPABILITY_POINTER);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 0u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (byte_at(function, at) == CAP_VENDOR) {
+                if (byte_at(function, at + CAP_CFG_TYPE) == CFG_TYPE_NOTIFY) {
+                    found = at;
+                    steps = MAX_CAPABILITIES;
+                }
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = byte_at(function, at + 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
+}
+
+// Where the **device configuration** structure is, by the same walk (§4.1.4.6).
+//
+// One function rather than a parameterised one because a walk that took the type
+// it was looking for as an argument would be one function answering two questions,
+// and the bound below is the same either way.
+fn device_config_capability(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = byte_at(function, CAPABILITY_POINTER);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 0u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (byte_at(function, at) == CAP_VENDOR) {
+                if (byte_at(function, at + CAP_CFG_TYPE) == CFG_TYPE_DEVICE) {
+                    found = at;
+                    steps = MAX_CAPABILITIES;
+                }
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = byte_at(function, at + 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
+}
+
+// The device's own `le64 capacity`, read under §2.5.1's generation protocol and
+// clamped as `BLOCK_DEVICE_V1` §6c requires.
+//
+// **Two 32-bit reads between two reads of `config_generation`**, accepted only
+// when the generation did not move across them: that is the whole of what §2.5.1
+// offers for a multi-byte field, and a driver that read the field once would be
+// reading a value the device is allowed to change under it.
+//
+// **Clamped, not truncated.** A capacity above `MAX_SECTOR + 1` is reported as
+// `MAX_SECTOR + 1`, so every count a client receives is a count of sectors this
+// protocol can name. A device that large does not exist on the reference platform
+// and the clamp is still stated, because a bound that only holds for the devices
+// somebody tried is not a bound.
+//
+// Zero means the generation never settled; the caller refuses.
+fn device_capacity(borrow mut window: MmioRegionMut, config_at: size) -> u64
+    uses [platform.mmio.Region]
+{
+    let mut capacity: u64 = 0u64;
+    let mut tries: u64 = 0u64;
+    let mut settled: bool = false;
+    while (tries < MAX_GENERATION_TRIES) {
+        let before: u64 = mmio_read_u8(window, CONFIG_GENERATION);
+        let low: u64 = mmio_read_le_u32(window, config_at);
+        let high: u64 = mmio_read_le_u32(window, config_at + 4B);
+        let after: u64 = mmio_read_u8(window, CONFIG_GENERATION);
+        tries = tries + 1u64;
+        if (before == after) {
+            capacity = low + high * 4294967296u64;
+            settled = true;
+            tries = MAX_GENERATION_TRIES;
+        }
+    }
+    if (!settled) {
+        return 0u64;
+    }
+    if (capacity > MAX_SECTOR) {
+        return MAX_SECTOR;
+    }
+    return capacity;
+}
+
+// Whether a value is a power of two. Zero is not one, which matters because
+// §4.1.4.4.1 admits 0 as a *separate* alternative rather than as a power of two.
+fn is_power_of_two(value: u64) -> bool {
+    if (value == 0u64) {
+        return false;
+    }
+    return (value & (value - 1u64)) == 0u64;
+}
+
+// The `notify_off_multiplier` rule of §4.1.4.4.1, **both branches**, selected by
+// what the device *offers*:
+//
+//   not offering VIRTIO_F_NOTIFICATION_DATA
+//     "The device MUST either present notify_off_multiplier as an even power of
+//      2, or present notify_off_multiplier as 0."
+//
+//   offering VIRTIO_F_NOTIFICATION_DATA
+//     "The device MUST either present notify_off_multiplier as a number that is
+//      a power of 2 that is also a multiple 4, or present notify_off_multiplier
+//      as 0."
+//
+// **The rule is checked, not observed.** The reference device presents 4, which
+// satisfies both branches — and one conforming value is not the clause being
+// enforced.
+fn multiplier_admitted(multiplier: u64, notification_data: bool) -> bool {
+    if (multiplier == 0u64) {
+        return true;
+    }
+    if (!is_power_of_two(multiplier)) {
+        return false;
+    }
+    if (notification_data) {
+        return (multiplier % 4u64) == 0u64;
+    }
+    return (multiplier % 2u64) == 0u64;
+}
+
+// What the device offers, read from its own register. Selecting a feature dword
+// is a write the driver is permitted (§4.1.4.3.2 forbids writing
+// `device_feature` itself, not `device_feature_select`), and what comes back is
+// read-only.
+fn offered_high_dword(borrow mut window: MmioRegionMut) -> u64 {
+    mmio_write_le_u32(window, DEVICE_FEATURE_SELECT, 1u64);
+    return mmio_read_le_u32(window, DEVICE_FEATURE);
+}
+
+// Brings a device-reported offset into the `size` domain, **bounded twice**.
+//
+// TOS Core V1 has no checked conversion whose destination is `size` (`docs/40`
+// §3 fixes the set at `to_i8`..`to_u64`), and every window offset has exact type
+// `size`. This is the counting technique Stage 4D-1 recorded, made bounded by
+// something this module decided rather than by a device-reported `le32`: the
+// caller refuses any value outside the window it mapped, and the count is then
+// at most `WINDOW_LIMIT / NOTIFY_CHUNK` chunks plus `NOTIFY_CHUNK - 1` bytes —
+// 64 + 255 steps for a 16 KiB window, not 16384.
+//
+// **It is not a conversion and does not pretend to be one.** A value the caller
+// has not bounded cannot reach here.
+fn window_offset(value: u64) -> size {
+    let chunks: u64 = value / NOTIFY_CHUNK;
+    let rest: u64 = value % NOTIFY_CHUNK;
+    return scale(256B, chunks) + scale(1B, rest);
+}
+
+// Everything the boot proved, one bit each. The first fourteen are Stage 4D-1's
+// queue facts, unchanged; the rest are this slice's request.
+const PROVED_RESET: i64 = 1i64;
+const PROVED_VERSION_1: i64 = 2i64;
+const PROVED_FEATURES_OK: i64 = 4i64;
+const PROVED_QUEUE_EXISTS: i64 = 8i64;
+const PROVED_SIZE_ACCEPTED: i64 = 16i64;
+const PROVED_LAYOUT_FITS: i64 = 32i64;
+const PROVED_ALIGNMENT: i64 = 64i64;
+const PROVED_DESC_READBACK: i64 = 128i64;
+const PROVED_DRIVER_READBACK: i64 = 256i64;
+const PROVED_DEVICE_READBACK: i64 = 512i64;
+const PROVED_MSIX_ACCEPTED: i64 = 1024i64;
+const PROVED_ENABLED: i64 = 2048i64;
+const PROVED_DRIVER_OK: i64 = 4096i64;
+const PROVED_REQUEST_FITS: i64 = 8192i64;
+const PROVED_NOTIFY_FOUND: i64 = 16384i64;
+const PROVED_USED_ADVANCED: i64 = 32768i64;
+const PROVED_USED_ID: i64 = 65536i64;
+const PROVED_LEN_COVERS_REQUEST: i64 = 131072i64;
+const PROVED_STATUS_OK: i64 = 262144i64;
+const PROVED_SECTOR_READ: i64 = 524288i64;
+// The whole set, so a partial run cannot produce it.
+const PROVED_ALL: i64 = 1048575i64;
+
+// --- and what serving the protocol proves, one bit each -----------------------
+//
+// **Composed so a partial run cannot produce the whole**, like every other
+// account in this tree, and so that a missing fact names itself. The device facts
+// above are OR'd across requests: a write proves the status byte and the used
+// length, a read proves those and that the sector's bytes changed.
+const PROVED_DEVICE_CFG_FOUND: i64 = 1048576i64;
+const PROVED_CAPACITY_STABLE: i64 = 2097152i64;
+const PROVED_SERVED_CAPACITY: i64 = 4194304i64;
+const PROVED_SERVED_WRITE: i64 = 8388608i64;
+const PROVED_SERVED_READ: i64 = 16777216i64;
+const PROVED_REFUSED_OPCODE: i64 = 33554432i64;
+const PROVED_REFUSED_RANGE: i64 = 67108864i64;
+const PROVED_REFUSED_MALFORMED: i64 = 134217728i64;
+const PROVED_REFUSED_NO_REGION: i64 = 268435456i64;
+const PROVED_REFUSED_NO_ANSWER: i64 = 536870912i64;
+const PROVED_DROPPED_NON_CALL: i64 = 1073741824i64;
+
+// **The one bit no boot on the reference platform sets.** `BLK_DEVICE` is in the
+// contract and the path that replies with it is implemented above, but the QEMU
+// reference endpoint answers every well-formed in-range request with
+// `VIRTIO_BLK_S_OK` — and no fake device is built to manufacture a failure. So this
+// bit is *absent* from what a green boot reports, the gate's expected total says so,
+// and the evidence class is static rather than pretended.
+const PROVED_REFUSED_DEVICE: i64 = 2147483648i64;
+
+// Everything this module can prove is `2^31 - 1`; the gate derives that sum from
+// the same bits rather than this module asserting its own total.
+
+// How many exchanges this service serves before it returns.
+//
+// **Two in this fixture**: the client writes one sector and reads it back, and an
+// instance that ends early serves fewer. The accepted service's own count and its
+// reasons are `block-protocol`'s.
+const REQUESTS: u64 = 2u64;
+
+// The three points, as `system.policy.fault` names them.
+const FAULT_BEFORE_DEVICE: u64 = 1u64;
+const FAULT_AFTER_DEVICE: u64 = 2u64;
+const FAULT_BEFORE_REGION: u64 = 3u64;
+// What `exchange` returns when this instance ends at one of them. Negative, so it
+// can never be mistaken for an account, and distinct from every failure code.
+const ENDED_BY_POLICY: i64 = -999999i64;
+// And the fact the instance reports on its way out: which point it ended at is
+// the policy's, and that it ended there rather than failing is this bit.
+const PROVED_ENDED_BY_POLICY: i64 = 4294967296i64;
+// **This account is a pure bitmask**, unlike the lifecycle fixture's composite.
+// Several requests are served in one boot and their facts are OR'd together, so a
+// packed field — `used.len`, the queue size, a flag at bit 56 — would be added to
+// itself as many times as a request proved it. What the device said is asserted
+// where it is read instead, and what leaves this module is which facts held.
+
+// **The device is ready; now the service exists.** This serves a fixed number of
+// `block.device.v1` requests against the real device and answers every one of
+// them, including the ones it refuses.
+//
+// **A fixed number and not a loop without an end**, because a fixture has to
+// finish: the client makes exactly `REQUESTS` exchanges and this serves exactly
+// that many. A production service would loop until its endpoint went away; what is
+// proved here is the protocol, and the count is the fixture's own arithmetic.
+//
+// **Every request is answered, including a refusal** (`BLOCK_DEVICE_V1` §7). A
+// service that dropped a malformed request would leave its caller blocked until the
+// liveness rule cancelled it, and a client could not tell a refusal from a dead
+// service.
+fn serve_requests(
+    borrow mut window: MmioRegionMut,
+    borrow mut region: DmaRegion<mut u8>,
+    source: platform.irq.Source,
+    notify_at: size,
+    desc_offset: size,
+    avail_offset: size,
+    used_offset: size,
+    queue_end: size,
+    chosen: u64,
+    notification_data: bool,
+    capacity: u64,
+    proved_so_far: i64
+) -> i64
+    uses [platform.dma.Region, platform.irq.Source, serve, budget,
+          system.ipc.Endpoint, system.ipc.Reply, system.memory.Region]
+{
+    let mut proved: i64 = proved_so_far;
+    let mut served: u64 = 0u64;
+    // **Only the requests that reached the device advance the rings.** A refusal
+    // touches nothing, so counting receives instead would leave the driver's idea
+    // of `avail.idx` ahead of the device's.
+    let mut submitted: u64 = 0u64;
+    while (served < REQUESTS) {
+        served = served + 1u64;
+        match (endpoint_receive_call_region(serve)) {
+            Ok(request) => {
+                let answered: i64 = answer_one(borrow mut window, borrow mut region,
+                    source,
+                    notify_at, desc_offset, avail_offset, used_offset, queue_end,
+                    chosen, notification_data, capacity, request, submitted);
+                // **Ended by policy, not failed.** No `give_up`, no reset, no
+                // reply: the instance returns holding everything, which is what a
+                // crash leaves for the nucleus to reclaim.
+                if (answered == ENDED_BY_POLICY) {
+                    return proved | PROVED_ENDED_BY_POLICY;
+                }
+                if (answered < 0i64) {
+                    give_up(borrow mut window);
+                    return answered;
+                }
+                if ((answered & (PROVED_SERVED_WRITE + PROVED_SERVED_READ)) != 0i64) {
+                    submitted = submitted + 1u64;
+                }
+                proved = proved | answered;
+            }
+            Err(refused) => {
+                give_up(borrow mut window);
+                return refused - 7200i64;
+            }
+        }
+    }
+    return proved;
+}
+
+// One request: validated, performed if it is valid, and answered either way.
+//
+// Returns the facts it proved as a bitmask, or a negative naming the step that did
+// not hold. **A refusal is not a negative**: refusing a malformed request is this
+// service working, and the bit it sets is the evidence.
+fn answer_one(
+    borrow mut window: MmioRegionMut,
+    borrow mut region: DmaRegion<mut u8>,
+    source: platform.irq.Source,
+    notify_at: size,
+    desc_offset: size,
+    avail_offset: size,
+    used_offset: size,
+    queue_end: size,
+    chosen: u64,
+    notification_data: bool,
+    capacity: u64,
+    request: system.ipc.ReceivedCallRegion,
+    submitted: u64
+) -> i64
+    uses [platform.dma.Region, platform.irq.Source, serve, budget,
+          system.ipc.Endpoint, system.ipc.Reply, system.memory.Region]
+{
+    // **The region first, because holding one costs a mapping slot.** Whatever
+    // this request turns out to be, a region that arrived with it is this
+    // process's until it is used or released — and this process already holds a
+    // device window and a DMA region.
+    let carried: Option<system.ipc.Endpoint> = request.carried;
+    let supplied: Option<Region<u8>> = request.region;
+    let reply: system.ipc.Reply = request.reply;
+    let word: u64 = request.word;
+    let length: u64 = request.length;
+
+    // --- a message that is not a call ---------------------------------------
+    // **A plain send carries no reply capability**, so there is nothing to answer
+    // and nothing this service can say. It is not an error of the protocol — a
+    // stray send is something any process holding `send` may do — so the message
+    // is dropped, whatever it carried is released, and the loop goes on. A service
+    // that gave up here would be a service any client could stop.
+    //
+    // **The test is the attempt.** A reply handle of all zeros names nothing in
+    // any table (`CAPABILITY_V1` §7), so the nucleus refuses the reply and says
+    // so; there is nothing to inspect beforehand and nothing that could be forged.
+    if (length != REQUEST_BYTES) {
+        if (endpoint_reply_word(reply, REFUSED + BLK_MALFORMED) != OK) {
+            // No reply capability: this was not a call. Release and continue.
+            return released(supplied, carried, PROVED_DROPPED_NON_CALL);
+        }
+        return released(supplied, carried, PROVED_REFUSED_MALFORMED);
+    }
+
+    let opcode: u64 = word % OPCODE_SPAN;
+    let sector: u64 = word / OPCODE_SPAN;
+
+    // --- the opcode ----------------------------------------------------------
+    if (opcode > OP_CAPACITY) {
+        if (endpoint_reply_word(reply, REFUSED + BLK_OPCODE) != OK) { return -7101i64; }
+        return released(supplied, carried, PROVED_REFUSED_OPCODE);
+    }
+
+    // --- `CAPACITY` ----------------------------------------------------------
+    // **The sector field must be zero** (§4): a request carrying a number nobody
+    // reads is a request two implementations could differ about.
+    if (opcode == OP_CAPACITY) {
+        if (sector != 0u64) {
+            if (endpoint_reply_word(reply, REFUSED + BLK_MALFORMED) != OK) { return -7102i64; }
+            return released(supplied, carried, PROVED_REFUSED_MALFORMED);
+        }
+        // The device's own number, clamped. Nothing here is compiled in.
+        if (endpoint_reply_word(reply, capacity) != OK) { return -7103i64; }
+        return released(supplied, carried, PROVED_SERVED_CAPACITY);
+    }
+
+    // --- the sector, before anything the device can see ----------------------
+    // **Range before presence**, and the order is this module's to fix because
+    // §7 states the codes and not their precedence: a request naming a sector the
+    // device does not have is wrong about the device, and that is the more
+    // specific thing to say.
+    if (sector >= capacity) {
+        if (endpoint_reply_word(reply, REFUSED + BLK_RANGE) != OK) { return -7104i64; }
+        return released(supplied, carried, PROVED_REFUSED_RANGE);
+    }
+
+    // --- what each direction needs the request to have carried ---------------
+    if (opcode == OP_WRITE) {
+        match (supplied) {
+            Some(payload) => {
+                return exchange(borrow mut window, borrow mut region, source,
+                    notify_at,
+                    desc_offset, avail_offset, used_offset, queue_end, chosen,
+                    notification_data, sector, true, reply, carried,
+                    Some(payload), submitted);
+            }
+            None => {
+                if (endpoint_reply_word(reply, REFUSED + BLK_NO_REGION) != OK) {
+                    return -7105i64;
+                }
+                return release_carried(carried, PROVED_REFUSED_NO_REGION);
+            }
+        }
+    }
+    match (carried) {
+        Some(answer_to) => {
+            return exchange(borrow mut window, borrow mut region, source,
+                notify_at,
+                desc_offset, avail_offset, used_offset, queue_end, chosen,
+                notification_data, sector, false, reply, Some(answer_to),
+                supplied, submitted);
+        }
+        None => {
+            if (endpoint_reply_word(reply, REFUSED + BLK_NO_ANSWER) != OK) {
+                return -7106i64;
+            }
+            // **Nothing carried to release here**, which the match has just
+            // established: this arm *is* the absence, and `carried` was consumed
+            // proving it.
+            return release_unused(supplied, PROVED_REFUSED_NO_ANSWER);
+        }
+    }
+}
+
+// Releases a region a refused request carried, and passes the account through.
+//
+// **A refusal that kept the region would leak a mapping slot** — this process
+// holds a device window and a DMA region already, and `MAX_CAPABILITIES` is 16.
+// Releasing retires the mapping as well as the handle (ADR-0085 §8a).
+fn release_unused(supplied: Option<Region<u8>>, account: i64) -> i64
+    uses [system.memory.Region]
+{
+    match (supplied) {
+        Some(unused) => {
+            if (capability_release(unused) != OK) { return -7620i64; }
+            return account;
+        }
+        None => { return account; }
+    }
+}
+
+// And the same for an **endpoint** a request carried that this protocol has no use
+// for.
+//
+// **Every shape but a read has one.** `BLOCK_DEVICE_V1` gives an answer endpoint a
+// meaning only for `READ`; a `WRITE`, a `CAPACITY` or any refused request that
+// carried one handed over authority nobody asked for. Keeping it would let a client
+// fill this service's table with names it will never use, which is a denial of
+// service spelled as generosity — so it goes, and no new refusal code is invented
+// for it, because the contract does not make attaching one an error.
+fn release_carried(carried: Option<system.ipc.Endpoint>, account: i64) -> i64
+    uses [system.ipc.Endpoint]
+{
+    match (carried) {
+        Some(unused) => {
+            if (capability_release(unused) != OK) { return -7660i64; }
+            return account;
+        }
+        None => { return account; }
+    }
+}
+
+// Both at once, which is the form every answer that is not a read uses.
+//
+// **One function rather than two calls at each site**, because two calls are two
+// chances to remember one and forget the other — and the one that would have been
+// forgotten is the endpoint, since a region is obviously a resource and a capability
+// handle does not look like one.
+fn released(
+    supplied: Option<Region<u8>>,
+    carried: Option<system.ipc.Endpoint>,
+    account: i64
+) -> i64
+    uses [system.memory.Region, system.ipc.Endpoint]
+{
+    let regions: i64 = release_unused(supplied, account);
+    if (regions < 0i64) { return regions; }
+    return release_carried(carried, regions);
+}
+
+// The same forced copy, the other way: the client's ordinary region into
+// device-visible memory, for a write.
+fn copy_in(
+    borrow from: Region<u8>,
+    borrow mut into: DmaRegion<mut u8>,
+    at: size
+) -> unit {
+    let mut moved: size = 0B;
+    while (moved < SECTOR_BYTES) {
+        into[at + moved] = from[moved];
+        moved = moved + 1B;
+    }
+}
+
+// The one forced copy: device-visible memory into ordinary memory.
+//
+// `ADR-0037` makes `DmaRegion<T>` and `DmaRegion<mut T>` neither shareable nor
+// transferable in either mode, so a client cannot be handed device-visible memory
+// and a driver cannot be handed the client's. Exactly one copy therefore exists
+// between the two, which is what `docs/35` budgets and what
+// `STAGE4_DATA_PATH_BOUNDARY.md` §1 records as forced rather than chosen.
+fn copy_out(
+    borrow from: DmaRegion<mut u8>,
+    at: size,
+    borrow mut into: Region<mut u8>
+) -> unit {
+    let mut moved: size = 0B;
+    while (moved < SECTOR_BYTES) {
+        into[moved] = from[at + moved];
+        moved = moved + 1B;
+    }
+}
+
+// Where the request's three buffers sit, from where the ring actually ended.
+//
+// **Three functions over one rule** rather than three numbers threaded through
+// four signatures: the header's `le64 sector` field wants natural alignment, so
+// the header and the data buffer are placed on 16-byte boundaries, and the status
+// byte needs none. They are functions and not constants because the ring's end
+// depends on the queue size the device admitted.
+fn header_at(queue_end: size) -> size {
+    return align_up(queue_end, 16B);
+}
+
+fn data_at(queue_end: size) -> size {
+    return align_up(header_at(queue_end) + HEADER_BYTES, 16B);
+}
+
+fn status_at(queue_end: size) -> size {
+    return data_at(queue_end) + SECTOR_BYTES;
+}
+
+// **One device request, and no IPC at all.**
+//
+// The split is deliberate: everything that talks to the device is here, and
+// everything that talks to a client is in [`answer_one`]. That is what makes the
+// control-before-data ordering of `BLOCK_DEVICE_V1` §6a readable — it is three
+// statements in one place rather than an order buried inside the driver.
+//
+// The payload of a write must already be in the data buffer when this is called;
+// the bytes of a read are in it when this returns.
+fn perform(
+    borrow mut window: MmioRegionMut,
+    borrow mut region: DmaRegion<mut u8>,
+    source: platform.irq.Source,
+    notify_at: size,
+    desc_offset: size,
+    avail_offset: size,
+    used_offset: size,
+    queue_end: size,
+    chosen: u64,
+    notification_data: bool,
+    sector: u64,
+    writing: bool,
+    // **How many device requests this instance has already made.** One queue
+    // serves several requests in this boot, so the ring positions advance with it:
+    // `avail.idx` and `used.idx` are counters the device compares against, and a
+    // driver that wrote 1 into both every time would be telling the device that its
+    // second request was its first. The descriptors themselves are reclaimed and
+    // reused, which is Stage 4D-3's fact and is what makes one chain enough.
+    submitted: u64
+) -> i64
+    uses [platform.dma.Region, platform.irq.Source]
+{
+    let mut proved: i64 = 0i64;
+    // Which entry of each ring this request occupies, and what the device's own
+    // counters must read afterwards. Both rings are `chosen` entries long and
+    // wrap; `idx` counts requests and does not.
+    let slot: u64 = submitted % chosen;
+    let expected_idx: u64 = submitted + 1u64;
+
+    // **The request storage is derived from where the ring actually ended**,
+    // not from a number copied out of the Stage 4D-1 evidence. The header's
+    // `le64 sector` field wants natural alignment, so both buffers are placed on
+    // 16-byte boundaries; the status byte needs none.
+    let header_offset: size = header_at(queue_end);
+    let data_offset: size = data_at(queue_end);
+    let status_offset: size = status_at(queue_end);
+    let request_end: size = status_offset + STATUS_BYTES;
+    if (request_end > REGION_BYTES) {
+        give_up(borrow mut window);
+        return -51i64;
+    }
+    proved = proved + PROVED_REQUEST_FITS;
+
+    // The three device addresses this request needs, each resolved by the
+    // nucleus from the same region and its own bounded offset (ADR-0084 §6b).
+    // Nothing here adds to an address.
+    let mut header_address: u64 = 0u64;
+    match (dma_device_address(region, header_offset)) {
+        Ok(address) => { header_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 340i64; }
+    }
+    let mut data_address: u64 = 0u64;
+    match (dma_device_address(region, data_offset)) {
+        Ok(address) => { data_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 350i64; }
+    }
+    let mut status_address: u64 = 0u64;
+    match (dma_device_address(region, status_offset)) {
+        Ok(address) => { status_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 360i64; }
+    }
+
+    // The request header (§5.2.6): type, reserved, sector.
+    let mut kind: u64 = BLK_T_IN;
+    if (writing) { kind = BLK_T_OUT; }
+    put_le32(borrow mut region, header_offset, kind);
+    put_le32(borrow mut region, header_offset + 4B, 0u64);
+    // **The client's number, and the only thing it decides.** It reaches the
+    // device as the header's `le64 sector` and nothing else in this request is
+    // the client's to choose.
+    put_le64(borrow mut region, header_offset + 8B, sector);
+
+    // **What goes into the data buffer depends on the direction, and only that.**
+    //
+    // A write's bytes are already there: [`answer_one`] copied them out of the
+    // client's region before calling this, which is the one copy ADR-0037 forces
+    // — a client cannot be handed device-visible memory and this driver cannot be
+    // handed the client's. A read puts a sentinel there, because what comes back
+    // has to differ from what was there or nothing was proved.
+    let mut at: size = 0B;
+    if (!writing) {
+        while (at < SECTOR_BYTES) {
+            region[data_offset + at] = to_le_low(DATA_SENTINEL);
+            at = at + 1B;
+        }
+    }
+    region[status_offset] = to_le_low(STATUS_SENTINEL);
+
+    // The three-descriptor chain (§2.7.5). Header device-readable; data
+    // device-writable; status device-writable and last.
+    put_le64(borrow mut region, desc_offset, header_address);
+    put_le32(borrow mut region, desc_offset + 8B, 16u64);
+    put_le16(borrow mut region, desc_offset + 12B, DESC_F_NEXT);
+    put_le16(borrow mut region, desc_offset + 14B, 1u64);
+
+    // **The data descriptor's direction is the request's direction.** A write's
+    // data is device-*readable*, so it carries no `DESC_F_WRITE`; a read's is
+    // device-writable. That flag and the request type are the only two places the
+    // direction appears in what the device is told.
+    let mut data_flags: u64 = DESC_F_WRITE | DESC_F_NEXT;
+    if (writing) { data_flags = DESC_F_NEXT; }
+    put_le64(borrow mut region, desc_offset + DESC_BYTES, data_address);
+    put_le32(borrow mut region, desc_offset + DESC_BYTES + 8B, SECTOR_COUNT);
+    put_le16(borrow mut region, desc_offset + DESC_BYTES + 12B, data_flags);
+    put_le16(borrow mut region, desc_offset + DESC_BYTES + 14B, 2u64);
+
+    put_le64(borrow mut region, desc_offset + DESC_BYTES + DESC_BYTES, status_address);
+    put_le32(borrow mut region, desc_offset + DESC_BYTES + DESC_BYTES + 8B, 1u64);
+    put_le16(borrow mut region, desc_offset + DESC_BYTES + DESC_BYTES + 12B,
+        DESC_F_WRITE);
+    put_le16(borrow mut region, desc_offset + DESC_BYTES + DESC_BYTES + 14B, 0u64);
+
+    // Step 2 of §2.7.13: the chain head goes into the next available ring entry.
+    // `avail.ring` starts after `flags` and `idx`.
+    put_le16(borrow mut region, avail_offset + 4B + scale(2B, slot), CHAIN_HEAD);
+
+    // **Step 4 — the first publication point.** Descriptors, request bytes and
+    // the ring entry become visible to the device *before* the marker that
+    // exposes them. §2.7.13.3.1: "The driver MUST perform a suitable memory
+    // barrier before the idx update, to ensure the device sees the most
+    // up-to-date copy."
+    dma_publish(region);
+
+    // Step 5: the ownership marker. From here the device MAY read the chain.
+    put_le16(borrow mut region, avail_offset + 2B, expected_idx);
+
+    // **Step 6 — the second publication point**, and it is not the same one.
+    // A device may observe `avail.idx` without being notified, so the marker
+    // has to be visible before the transaction that notifies it. The two are
+    // kept apart deliberately: x86 tolerating their collapse is not a reason to
+    // write a driver that depends on the tolerance (ADR-0086 §6b).
+    dma_publish(region);
+
+    // Step 7: notify. **Always** — §2.7.10.1 makes not notifying a SHOULD NOT
+    // when `used.flags` is 1, and §2.7.10 requires the device to handle a
+    // spurious notification from the driver. `VIRTIO_F_EVENT_IDX` is not
+    // negotiated, `used.flags` is never read, and no store-to-load barrier is
+    // needed because nothing is read to decide this. Correctness over an
+    // optimisation this slice has no way to measure.
+    mmio_write_le_u16(window, notify_at, 0u64);
+
+    // Completion. **A wake is a delivery fact, not a visibility fact**
+    // (ADR-0082 §7), and §2.7.7.1 requires a driver to handle a spurious
+    // notification — so every wake is followed by a consume and a look at
+    // `used.idx`, and a wake that did not complete the request is waited past.
+    let mut wakes: u64 = 0u64;
+    let mut seen: u64 = 0u64;
+    while (wakes < MAX_WAKES) {
+        let woken: i64 = irq_wait(source);
+        if (woken != OK) {
+            give_up(borrow mut window);
+            return woken - 600i64;
+        }
+        // **Before any of the device's writes are read.** Nothing below is
+        // valid without this (ADR-0086 §7).
+        dma_consume(region);
+        seen = read_le16(borrow region, used_offset + 2B);
+        wakes = wakes + 1u64;
+        if (seen == expected_idx) {
+            wakes = MAX_WAKES;
+        }
+    }
+    if (seen != expected_idx) {
+        give_up(borrow mut window);
+        return -52i64;
+    }
+    proved = proved + PROVED_USED_ADVANCED;
+
+    // The used element names the chain this driver made available (§2.7.8).
+    let used_id: u64 = read_le32(borrow region, used_offset + 4B + scale(8B, slot));
+    if (used_id != CHAIN_HEAD) {
+        give_up(borrow mut window);
+        return -53i64;
+    }
+    proved = proved + PROVED_USED_ID;
+
+    // `len` is the number of bytes the device wrote into the device-writable
+    // part of the chain, which here is the 512-byte data buffer **followed by
+    // the one-byte status**. Two different bounds apply to it, and they come
+    // from two different clauses about two different parties.
+    //
+    // **The protocol bound, from §2.7.8.2**: "The device MUST write at least
+    // `len` bytes to descriptor, beginning at the first device-writable
+    // buffer." This chain's device-writable extent is exactly 513 bytes, so a
+    // device reporting more than that would be claiming to have written past
+    // the buffers it was given. No conforming device can report `len > 513`
+    // **for this chain**.
+    //
+    // **The consumption requirement, from §2.7.8.3**: "The driver MUST NOT make
+    // assumptions about data in device-writable buffers beyond the first `len`
+    // bytes." This driver reads all 512 data bytes and the status byte, so it
+    // may only do so when `len >= 513`.
+    //
+    // Together those force `len == 513` for an **accepted** completion of this
+    // particular request. That is not a general VirtIO claim and must not be
+    // read as one: §2.7.8.2 still permits `len` to underestimate what was
+    // actually written, and all that means here is that this driver cannot
+    // consume the full 513-byte result when it does — so it refuses rather than
+    // reading bytes the contract will not stand behind.
+    // **And how much the device may say it wrote depends on the direction.** A
+    // read's chain exposes 512 data bytes plus the status byte; a write's exposes
+    // the status byte alone, because the data went the other way.
+    let mut wanted_len: u64 = READ_USED_LEN;
+    if (writing) { wanted_len = WRITE_USED_LEN; }
+    let used_len: u64 = read_le32(borrow region, used_offset + 8B + scale(8B, slot));
+    if (used_len > wanted_len) {
+        give_up(borrow mut window);
+        return -59i64;
+    }
+    if (used_len < wanted_len) {
+        give_up(borrow mut window);
+        return -54i64;
+    }
+    proved = proved + PROVED_LEN_COVERS_REQUEST;
+
+    // **A device that reports a failure is a refusal, not a collapse.**
+    // `BLOCK_DEVICE_V1` §7's `BLK_DEVICE` reports what the device did, and §7 also
+    // makes every refusal a *reply* — so this returns a distinguished sentinel and
+    // lets [`exchange`] answer the client, rather than tearing the device down and
+    // leaving the caller to the liveness rule. The window is deliberately **not**
+    // given up: one refused request is not a reason to stop serving.
+    //
+    // **Unexercised on the reference platform, and recorded as such.** The QEMU
+    // reference endpoint answers a well-formed request of a sector inside its
+    // capacity with `VIRTIO_BLK_S_OK`, and no fake device is built to manufacture a
+    // failure — the same evidence class `virtio-queue.sh` records for the MSI-X
+    // negative it attempted and withdrew. The path exists because the contract
+    // states the code, not because a boot reaches it.
+    let status_byte: u64 = region[status_offset] as u64;
+    if (status_byte != BLK_S_OK) {
+        return DEVICE_REFUSED;
+    }
+    proved = proved + PROVED_STATUS_OK;
+
+    // **What the direction leaves to prove, and it is different in each case.**
+    //
+    // A read: the data buffer held a 0xA5 sentinel in every byte before the
+    // request, so a device that wrote nothing leaves all 512 of them. At least one
+    // byte differing is what says DMA reached this region — and **which** bytes
+    // they should be is the client's to check, not this service's. A service that
+    // asserted the content would be asserting what it had been asked to fetch.
+    //
+    // A write: there is nothing returned to inspect. Its evidence is the status
+    // byte and a `used.len` of one, both already proved above.
+    if (!writing) {
+        let mut checked: size = 0B;
+        let mut changed: u64 = 0u64;
+        while (checked < SECTOR_BYTES) {
+            if (region[data_offset + checked] != to_le_low(DATA_SENTINEL)) {
+                changed = changed + 1u64;
+            }
+            checked = checked + 1B;
+        }
+        if (changed == 0u64) {
+            give_up(borrow mut window);
+            return -56i64;
+        }
+        proved = proved + PROVED_SECTOR_READ;
+    }
+    return proved;
+}
+
+// **The client-facing half of one request**, and the place `BLOCK_DEVICE_V1` §6a's
+// ordering lives.
+//
+// A write copies the client's bytes into device-visible memory, releases the
+// region, performs the device request, and replies. A read performs the device
+// request, builds the answer region, **replies**, and *then* sends it.
+fn exchange(
+    borrow mut window: MmioRegionMut,
+    borrow mut region: DmaRegion<mut u8>,
+    source: platform.irq.Source,
+    notify_at: size,
+    desc_offset: size,
+    avail_offset: size,
+    used_offset: size,
+    queue_end: size,
+    chosen: u64,
+    notification_data: bool,
+    sector: u64,
+    writing: bool,
+    answer: system.ipc.Reply,
+    answer_to: Option<system.ipc.Endpoint>,
+    supplied: Option<Region<u8>>,
+    submitted: u64
+) -> i64
+    uses [platform.dma.Region, platform.irq.Source, system.ipc.Reply, budget,
+          system.ipc.Endpoint, system.memory.Region]
+{
+    let data_offset: size = data_at(queue_end);
+
+    // --- a write: the client's bytes into device-visible memory ---------------
+    // **The one copy ADR-0037 forces**, made before the device is told anything,
+    // and the client's region released as soon as it has been read: holding it
+    // would keep a mapping slot this process needs for its window and its DMA
+    // region.
+    if (writing) {
+        match (supplied) {
+            Some(payload) => {
+                copy_in(borrow payload, borrow mut region, data_offset);
+                if (capability_release(payload) != OK) {
+                    give_up(borrow mut window);
+                    return -7600i64;
+                }
+            }
+            None => {
+                give_up(borrow mut window);
+                return -7630i64;
+            }
+        }
+    } else {
+        // A read's request may still have carried one; it is not this service's
+        // and it is not needed.
+        match (supplied) {
+            Some(unused) => {
+                if (capability_release(unused) != OK) {
+                    give_up(borrow mut window);
+                    return -7601i64;
+                }
+            }
+            None => { }
+        }
+    }
+
+    // **Point 1.** The client's bytes are in device-visible memory and the device
+    // has been told nothing: a `WRITE` accepted and not performed.
+    if (writing && fault.point() == FAULT_BEFORE_DEVICE) {
+        return ENDED_BY_POLICY;
+    }
+
+    let done: i64 = perform(borrow mut window, borrow mut region, source,
+        notify_at,
+        desc_offset, avail_offset, used_offset, queue_end, chosen,
+        notification_data, sector, writing, submitted);
+    if (done == DEVICE_REFUSED) {
+        if (endpoint_reply_word(answer, REFUSED + BLK_DEVICE) != OK) {
+            give_up(borrow mut window);
+            return -7120i64;
+        }
+        return PROVED_REFUSED_DEVICE;
+    }
+    if (done < 0i64) {
+        return done;
+    }
+
+    // --- a write says only that it happened ----------------------------------
+    if (writing) {
+        // **Point 2.** The device has performed and completed the write, and the
+        // caller has not been told: a `WRITE` performed and not answered.
+        if (fault.point() == FAULT_AFTER_DEVICE) {
+            return ENDED_BY_POLICY;
+        }
+        if (endpoint_reply_word(answer, 0u64) != OK) {
+            give_up(borrow mut window);
+            return -71i64;
+        }
+        // A write has no answer channel, so anything the request carried is
+        // authority nobody asked for and this process should not keep it.
+        match (answer_to) {
+            Some(unused) => {
+                if (capability_release(unused) != OK) {
+                    give_up(borrow mut window);
+                    return -7670i64;
+                }
+            }
+            None => { }
+        }
+        return done + PROVED_SERVED_WRITE;
+    }
+
+    // --- a read: build the answer, reply, then send it ------------------------
+    // **This is the boundary `STAGE4_DATA_PATH_BOUNDARY.md` §1 draws.** The bytes
+    // are in device-visible memory, which ADR-0037 makes neither shareable nor
+    // transferable in either mode — so they are copied once into an ordinary
+    // region, the copy that note records as forced rather than chosen. Then the
+    // region is frozen, because `IPC_V1` §5 admits only the immutable form into a
+    // message.
+    //
+    // **The region is built before the reply and sent after it** (§6a): the reply
+    // means "the read succeeded and exactly one region is owed", so it must not be
+    // sent until there is a region to owe — and the region must not be queued
+    // before the reply, or a service that died in between would leave it on an
+    // endpoint that outlives the caller waiting for it.
+    match (answer_to) {
+        Some(channel) => {
+            match (region_allocate(budget, SECTOR_BYTES)) {
+                Ok(payload) => {
+                    copy_out(borrow region, data_offset, borrow mut payload);
+                    match (region_freeze(payload)) {
+                        Ok(frozen) => {
+                            if (endpoint_reply_word(answer, 0u64) != OK) {
+                                give_up(borrow mut window);
+                                return -7110i64;
+                            }
+                            // **Point 3.** The caller has been told a region is
+                            // owed; the region exists, frozen, and is not sent. It
+                            // goes with this process, and nothing is queued.
+                            if (fault.point() == FAULT_BEFORE_REGION) {
+                                return ENDED_BY_POLICY;
+                            }
+                            let delivered: i64 = endpoint_send_region(channel, frozen);
+                            // **Released whether the send worked or not**, and in
+                            // that order: the name has served its one purpose
+                            // either way, and a service that only tidied up on the
+                            // happy path would leak exactly when it was under
+                            // stress. A failed send is still a fault — the reply is
+                            // already spent, so it cannot become a refusal — and it
+                            // is reported after the release rather than instead of
+                            // it.
+                            if (capability_release(channel) != OK) {
+                                give_up(borrow mut window);
+                                return -7650i64;
+                            }
+                            if (delivered != OK) {
+                                give_up(borrow mut window);
+                                return -72i64;
+                            }
+                            return done + PROVED_SERVED_READ;
+                        }
+                        Err(unfrozen) => {
+                            give_up(borrow mut window);
+                            return unfrozen - 7700i64;
+                        }
+                    }
+                }
+                Err(unallocated) => {
+                    give_up(borrow mut window);
+                    return unallocated - 7800i64;
+                }
+            }
+        }
+        None => {
+            give_up(borrow mut window);
+            return -7640i64;
+        }
+    }
+}
+
+
+
+// Builds the queue exactly as Stage 4D-1 does, then runs one request through it.
+//
+// **The interrupt source is claimed by the caller and passed in**, because the
+// request waits on it long after the queue is configured. A capability is a
+// value here and reaching an operation with it is a use, not a consumption
+// (ADR-0085 §8), so the same binding serves `queue_msix_vector` and every
+// `irq_wait` below.
+fn drive(
+    borrow mut window: MmioRegionMut,
+    region: DmaRegion<mut u8>,
+    source: platform.irq.Source,
+    notify_at: size,
+    // Where the device configuration structure sits inside this window, found by
+    // walking the capability list in `main` (§4.1.4.6).
+    config_at: size,
+    notification_data: bool
+) -> i64
+    uses [platform.dma.Region, platform.irq.Source, platform.mmio.Region, serve,
+          budget, system.ipc.Endpoint, system.ipc.Reply, system.memory.Region]
+{
+    let mut proved: i64 = PROVED_RESET + PROVED_VERSION_1 + PROVED_FEATURES_OK
+        + PROVED_NOTIFY_FOUND;
+
+    mmio_write_le_u16(window, QUEUE_SELECT, 0u64);
+    let maximum: u64 = mmio_read_le_u16(window, QUEUE_SIZE);
+    if (!usable_queue(maximum)) {
+        give_up(borrow mut window);
+        return -21i64;
+    }
+    proved = proved + PROVED_QUEUE_EXISTS;
+
+    let mut chosen: u64 = QUEUE_CAP;
+    if (maximum < QUEUE_CAP) {
+        chosen = maximum;
+    }
+    if (chosen < QUEUE_FLOOR) {
+        give_up(borrow mut window);
+        return -22i64;
+    }
+
+    let desc_offset: size = align_up(0B, 16B);
+    let desc_bytes: size = scale(16B, chosen);
+    let avail_offset: size = align_up(desc_offset + desc_bytes, 2B);
+    let avail_bytes: size = 6B + scale(2B, chosen);
+    let used_offset: size = align_up(avail_offset + avail_bytes, 4B);
+    let used_bytes: size = 6B + scale(8B, chosen);
+    let queue_end: size = used_offset + used_bytes;
+    if (queue_end > REGION_BYTES) {
+        give_up(borrow mut window);
+        return -23i64;
+    }
+    proved = proved + PROVED_LAYOUT_FITS;
+
+    // §2.7.10.1 requires `used.flags` to be initialised to 0 when the used ring
+    // is allocated, and every other index and flag must be defined before the
+    // device is allowed to look. Zeroing the whole extent settles all of it.
+    zero_region(borrow mut region, REGION_BYTES);
+
+    dma_publish(region);
+
+    let mut desc_address: u64 = 0u64;
+    match (dma_device_address(region, desc_offset)) {
+        Ok(address) => { desc_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 300i64; }
+    }
+    let mut driver_address: u64 = 0u64;
+    match (dma_device_address(region, avail_offset)) {
+        Ok(address) => { driver_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 310i64; }
+    }
+    let mut device_address: u64 = 0u64;
+    match (dma_device_address(region, used_offset)) {
+        Ok(address) => { device_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 320i64; }
+    }
+    if ((desc_address % 16u64) != 0u64) {
+        give_up(borrow mut window);
+        return -25i64;
+    }
+    if ((driver_address % 2u64) != 0u64) {
+        give_up(borrow mut window);
+        return -26i64;
+    }
+    if ((device_address % 4u64) != 0u64) {
+        give_up(borrow mut window);
+        return -27i64;
+    }
+    proved = proved + PROVED_ALIGNMENT;
+
+    mmio_write_le_u16(window, QUEUE_SIZE, chosen);
+    if (mmio_read_le_u16(window, QUEUE_SIZE) != chosen) {
+        give_up(borrow mut window);
+        return -28i64;
+    }
+    proved = proved + PROVED_SIZE_ACCEPTED;
+
+    mmio_write_le_u64(window, QUEUE_DESC, desc_address);
+    if (mmio_read_le_u64(window, QUEUE_DESC) != desc_address) {
+        give_up(borrow mut window);
+        return -29i64;
+    }
+    proved = proved + PROVED_DESC_READBACK;
+
+    mmio_write_le_u64(window, QUEUE_DRIVER, driver_address);
+    if (mmio_read_le_u64(window, QUEUE_DRIVER) != driver_address) {
+        give_up(borrow mut window);
+        return -30i64;
+    }
+    proved = proved + PROVED_DRIVER_READBACK;
+
+    mmio_write_le_u64(window, QUEUE_DEVICE, device_address);
+    if (mmio_read_le_u64(window, QUEUE_DEVICE) != device_address) {
+        give_up(borrow mut window);
+        return -31i64;
+    }
+    proved = proved + PROVED_DEVICE_READBACK;
+
+    mmio_write_le_u16(window, QUEUE_MSIX_VECTOR, QUEUE_ENTRY);
+    if (mmio_read_le_u16(window, QUEUE_MSIX_VECTOR) != QUEUE_ENTRY) {
+        give_up(borrow mut window);
+        return -32i64;
+    }
+    proved = proved + PROVED_MSIX_ACCEPTED;
+
+    mmio_write_le_u16(window, QUEUE_ENABLE, QUEUE_ENABLED);
+    if (mmio_read_le_u16(window, QUEUE_ENABLE) != QUEUE_ENABLED) {
+        give_up(borrow mut window);
+        return -33i64;
+    }
+    proved = proved + PROVED_ENABLED;
+
+    let live: u64 = add_status(borrow mut window, STATUS_DRIVER_OK);
+    if ((live & STATUS_DRIVER_OK) == 0u64) {
+        give_up(borrow mut window);
+        return -34i64;
+    }
+    proved = proved + PROVED_DRIVER_OK;
+
+    // --- the device's own capacity, before a client can ask for it -----------
+    // **Read here and not per request**, because `BLOCK_DEVICE_V1` §6c answers a
+    // client with the device's number and §2.5.1's generation protocol is what
+    // makes reading a 64-bit field once safe. A zero means the generation never
+    // settled inside this driver's bound, which is a refusal and not a device with
+    // no sectors — the reference endpoint always has some.
+    let capacity: u64 = device_capacity(borrow mut window, config_at);
+    if (capacity == 0u64) {
+        give_up(borrow mut window);
+        return -42i64;
+    }
+    proved = proved + PROVED_DEVICE_CFG_FOUND + PROVED_CAPACITY_STABLE;
+
+    // **Everything above is initialization.** The region was allocated once,
+    // the ring was written once, and the requests below allocate only a read's
+    // answer.
+    return serve_requests(borrow mut window, borrow mut region, source, notify_at,
+        desc_offset, avail_offset, used_offset, queue_end, chosen,
+        notification_data, capacity, proved);
+}
+
+// The whole boot.
+pub fn main() -> i64
+    uses [device, budget, platform.pci.FunctionConfig, platform.irq.Source,
+          platform.dma.Region, platform.mmio.Region, serve,
+          system.ipc.Endpoint, system.ipc.Reply, system.memory.Region]
+{
+    match (pci_function_claim(device, 1u64, 0u64, 0u64)) {
+        Ok(function) => {
+            let cap_at: u64 = common_capability(function);
+            if (cap_at == 0u64) {
+                return -1i64;
+            }
+            let bar: u64 = byte_at(function, cap_at + CAP_BAR);
+            let offset: u64 = dword_at(function, cap_at + CAP_OFFSET);
+            let length: u64 = dword_at(function, cap_at + CAP_LENGTH);
+            if (bar > 5u64) {
+                return -2i64;
+            }
+            if (offset != PROFILE_COMMON_OFFSET) {
+                return -3i64;
+            }
+            if (length < COMMON_CFG_USED) {
+                return -4i64;
+            }
+
+            // **Where to notify, discovered rather than assumed.** The
+            // capability is validated before its extra field is read: a
+            // structure shorter than `virtio_pci_cap` plus one `le32` does not
+            // carry `notify_off_multiplier`, and reading past it would be
+            // reading whatever capability comes next (§4.1.4.4).
+            let notify_at_cap: u64 = notify_capability(function);
+            if (notify_at_cap == 0u64) {
+                return -5i64;
+            }
+            if (byte_at(function, notify_at_cap + CAP_LENGTH_BYTE) < NOTIFY_CAP_BYTES) {
+                return -6i64;
+            }
+            // One window serves both structures, so they must be in one BAR.
+            if (byte_at(function, notify_at_cap + CAP_BAR) != bar) {
+                return -7i64;
+            }
+            let notify_offset: u64 = dword_at(function, notify_at_cap + CAP_OFFSET);
+            let notify_length: u64 = dword_at(function, notify_at_cap + CAP_LENGTH);
+            let multiplier: u64 = dword_at(function, notify_at_cap + CAP_NOTIFY_MULTIPLIER);
+
+            match (pci_bar_map_write(function, bar, 0B, WINDOW_BYTES)) {
+                Ok(window) => {
+                    let ready: i64 = negotiate(borrow mut window);
+                    if (ready != OK) {
+                        return ready;
+                    }
+                    // **Which branch of §4.1.4.4.1 applies is the device's
+                    // to decide, and it decides it by offering the feature or
+                    // not** — never by what this driver went on to negotiate.
+                    let offered: u64 = offered_high_dword(borrow mut window);
+                    let mut notification_data: bool = false;
+                    if ((offered & NOTIFICATION_DATA_IN_HIGH_DWORD) != 0u64) {
+                        notification_data = true;
+                    }
+                    let mut wanted_alignment: u64 = 2u64;
+                    let mut wanted_room: u64 = 2u64;
+                    if (notification_data) {
+                        wanted_alignment = 4u64;
+                        wanted_room = 4u64;
+                    }
+
+                    // "The cap.offset MUST be 2-byte aligned" — or 4-byte, on
+                    // the other branch. **Of `cap.offset` itself**, as the
+                    // clause states it, and not only of the address derived
+                    // from it: a conforming derived address does not make a
+                    // non-conforming capability conforming.
+                    if ((notify_offset % wanted_alignment) != 0u64) {
+                        give_up(borrow mut window);
+                        return -11i64;
+                    }
+                    if (!multiplier_admitted(multiplier, notification_data)) {
+                        give_up(borrow mut window);
+                        return -12i64;
+                    }
+
+                    // `queue_notify_off` belongs to the queue, so it is read
+                    // after selecting it (§4.1.4.4).
+                    mmio_write_le_u16(window, QUEUE_SELECT, 0u64);
+                    let notify_off: u64 = mmio_read_le_u16(window, QUEUE_NOTIFY_OFF);
+                    // §4.1.4.4.1: `cap.length >= queue_notify_off * multiplier`
+                    // plus 2 on the not-offering branch and 4 on the other.
+                    let within: u64 = notify_off * multiplier;
+                    if (notify_length < within + wanted_room) {
+                        give_up(borrow mut window);
+                        return -8i64;
+                    }
+                    // §4.1.4.4: Queue Notify = cap.offset + queue_notify_off *
+                    // notify_off_multiplier. Bounded by this driver's own window
+                    // before it is allowed into the `size` domain.
+                    let notify_address: u64 = notify_offset + within;
+                    if (notify_address + wanted_room > WINDOW_LIMIT) {
+                        give_up(borrow mut window);
+                        return -9i64;
+                    }
+                    if ((notify_address % wanted_alignment) != 0u64) {
+                        give_up(borrow mut window);
+                        return -10i64;
+                    }
+                    let notify_at: size = window_offset(notify_address);
+
+                    // **Where the device configuration structure is** (§4.1.4.6),
+                    // found by the same capability walk and bounded by the same
+                    // window before it is allowed into the `size` domain. One
+                    // window serves every structure this driver reaches, so this
+                    // one must be in the same BAR — a capability pointing into a
+                    // BAR nobody mapped is a capability this driver cannot use.
+                    let config_cap: u64 = device_config_capability(function);
+                    if (config_cap == 0u64) {
+                        give_up(borrow mut window);
+                        return -12i64;
+                    }
+                    if (byte_at(function, config_cap + CAP_BAR) != bar) {
+                        give_up(borrow mut window);
+                        return -13i64;
+                    }
+                    let config_offset: u64 = dword_at(function, config_cap + CAP_OFFSET);
+                    let config_length: u64 = dword_at(function, config_cap + CAP_LENGTH);
+                    // `le64 capacity` is the mandatory prefix, so eight bytes of it
+                    // must be inside what the capability declares and inside the
+                    // window this driver mapped.
+                    if (config_length < 8u64) {
+                        give_up(borrow mut window);
+                        return -14i64;
+                    }
+                    if (config_offset + 8u64 > WINDOW_LIMIT) {
+                        give_up(borrow mut window);
+                        return -15i64;
+                    }
+                    let config_at: size = window_offset(config_offset);
+
+                    match (dma_region_allocate(function, budget, REGION_BYTES)) {
+                        Ok(region) => {
+                            match (pci_interrupt_claim(function, QUEUE_ENTRY)) {
+                                Ok(source) => {
+                                    return drive(borrow mut window, region, source,
+                                        notify_at, config_at, notification_data);
+                                }
+                                Err(status) => {
+                                    give_up(borrow mut window);
+                                    return status - 330i64;
+                                }
+                            }
+                        }
+                        Err(status) => {
+                            give_up(borrow mut window);
+                            return status - 100i64;
+                        }
+                    }
+                }
+                Err(status) => {
+                    return status - 200i64;
+                }
+            }
+        }
+        Err(status) => {
+            return status - 400i64;
+        }
+    }
+}

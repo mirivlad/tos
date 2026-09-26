@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Where the `block-fault` service instance ends, as canonical policy text.
+//
+// **before-region**: a READ is performed by the device and answered with
+// success, and the service ends before it sends the region it owes.
+//
+// A separate module so that the service's own source is one file in every boot
+// of `host-tools/qemu-test/block-fault.sh`, and what differs between the boots
+// is this one number — chosen by which file the capsule carries at
+// `/system/policy/fault.tos`, and recorded in the capsule's own identity.
+
+module system.policy.fault version 1.0 profile bootstrap;
+
+resource [
+    fuel: 1024,
+    stack: 4KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 0
+]
+
+pub fn point() -> u64 {
+    return 3u64;
+}
