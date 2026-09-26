@@ -411,6 +411,17 @@ qemu_virtio_mmio() {
 qemu_dma_region() {
     bash "$ROOT/source/host-tools/qemu-test/dma-region.sh"
 }
+# ADR-0084 §8's teardown obligations, exercised: DMA regions released while an
+# interrupt source keeps the function mastering stay quarantined and charged; a
+# third allocation from a two-frame budget is refused while the parent still funds
+# one (the churn case); the runs and the charge come back only once mastering has
+# stopped and Transactions Pending has been read clear. Against a device whose
+# Device Status never clears, nothing comes back, the assignment stays pinned and
+# the same BDF is refused. Also P1 on a qualified conventional function and the
+# four ordering bits beside their writable neighbours.
+qemu_dma_quarantine() {
+    bash "$ROOT/source/host-tools/qemu-test/dma-quarantine.sh"
+}
 # Stage 4D-1: one real split virtqueue on the reference endpoint, configured by
 # canonical TOS text and left empty and enabled. It proves the device accepted
 # the substrate, and deliberately not that the device performed DMA through it.
@@ -791,6 +802,7 @@ gate qemu       full-only "QEMU textual VirtIO register read"           qemu_vir
 gate qemu       full-only "QEMU a claimed function cannot be relocated"   qemu_pci_placement
 gate qemu       full-only "QEMU a device interrupt wakes its driver"    qemu_irq_routed
 gate qemu       full-only "QEMU a textual driver makes and frees a DMA region" qemu_dma_region
+gate qemu       full-only "QEMU DMA memory stays out until the device is quiet" qemu_dma_quarantine
 gate qemu       full-only "QEMU a textual driver configures one virtqueue"  qemu_virtio_queue
 gate qemu       full-only "QEMU a textual driver reads one real sector"    qemu_virtio_block_read
 gate qemu       full-only "QEMU one queue serves more than one request"    qemu_virtio_block_reuse

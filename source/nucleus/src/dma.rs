@@ -168,10 +168,15 @@ unsafe fn quarantine() -> &'static mut [Quarantined; MAX_QUARANTINED] {
 pub enum Refused {
     /// A length that is zero, unaligned, or past what this contract allocates.
     BadArgument,
-    /// The assignment has gone, or the function is not DMA-capable: without the
-    /// PCI Express capability there is no `Transactions Pending` bit, so a
-    /// region's reclaim could never be proved (ADR-0084 §5c, P1).
+    /// The assignment has gone.
     OutOfScope,
+    /// The function is not DMA-capable: without the PCI Express capability
+    /// there is no `Transactions Pending` bit, so a region's reclaim could never
+    /// be proved (ADR-0084 §5c, P1). **Its own variant because it is its own
+    /// status**: `SYSTEM_ABI_V1` row 30 answers it `E_BAD_ARGUMENT` — the
+    /// function named is live and correctly held, and is not one this operation
+    /// can serve — where a gone assignment is `E_NO_CAPABILITY`.
+    NotExpress,
     /// No slot, no contiguous memory, no quarantine room, or the authority's
     /// budget is spent.
     Limit,
@@ -199,7 +204,7 @@ pub fn allocate(
         // **P1, checked and not assumed** (ADR-0084 §5c). A function whose
         // reclaim could never be proved must not be given memory to reach.
         if !pci::supports_dma(assignment, assignment_generation) {
-            return Err(Refused::OutOfScope);
+            return Err(Refused::NotExpress);
         }
     } else {
         return Err(Refused::OutOfScope);

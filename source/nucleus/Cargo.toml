@@ -145,6 +145,19 @@ test-dma-region = []
 # constant that ran this boot must not tell a reader of ring 0 which device
 # class the module drives: the nucleus does not know, and a feature name is code.
 test-dma-driver = []
+# ADR-0084 §8's teardown obligations, exercised: the driver's endowment, and one
+# more function the profile qualifies — a conventional one with no PCI Express
+# capability, so that P1 refuses it on its own (§8.9a). The module releases DMA
+# regions while an interrupt source keeps the function mastering, and asks the
+# budget, the pool and the assignment what came back.
+test-dma-quarantine = []
+# **A device that never goes quiet**, for §8.13a. The function's Device Status
+# reports Transactions Pending on every read, so `DRAINED` cannot be established
+# and the quarantine must hold: frames out, charge outstanding, assignment pinned.
+# An observation injected at the one read the proof rests on, and nothing else:
+# every decision after it is the production code's. Orthogonal to endowment, so it
+# is built beside `test-dma-quarantine` rather than instead of it.
+test-device-never-quiescent = []
 # The same boot with one fact changed: the function binding is answered by a
 # handle naming a **process** rather than an assignment, under the object kind
 # the schema declares. Everything static is right — the interface, the effect,

@@ -111,16 +111,17 @@ bash "$HERE/run.sh" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.TRAP" \
     > /dev/null
 
-# **P1 first, because everything below depends on it and it is the one thing
-# this machine does not currently provide.** ADR-0084 §5c requires a PCI Express
-# capability on the function DMA is granted for: it is what makes a reclaim
-# provable. On the accepted Stage 4 reference machine the function reports
-# `express=0`, so operation 30 refuses with `E_NO_CAPABILITY` and no DMA
-# authority can be granted through the accepted mechanism at all.
+# **P1 first, because everything below depends on it.** ADR-0084 §5c requires a
+# PCI Express capability on the function DMA is granted for: it is what makes a
+# reclaim provable. Profile revision 1 put the endpoint directly on the root
+# complex, where it has none, and operation 30 refused every allocation — the
+# STOP recorded in `docs/evidence/STAGE4C2_CAPABILITY_REPRESENTATION.md` §6.
+# Revision 2 moved it behind a PCIe root port (ADR-0084 revision 5), and this
+# check is what would say so first if the topology ever regressed.
 #
-# This is checked before the module's own report so the failure names the cause
-# rather than a status. **It is a profile decision, not a bug**: see
-# `docs/evidence/STAGE4C2_CAPABILITY_REPRESENTATION.md` §6.
+# Checked before the module's own report so the failure names the cause rather
+# than a status. The refusal itself — a qualified function with no Express
+# capability — is exercised by `dma-quarantine.sh`.
 grep -q "TOS.RUN.PCI_ASSIGNED .*express=1" "$OUT/live/events.log" || {
     grep "TOS.RUN.PCI_ASSIGNED" "$OUT/live/events.log" >&2 || true
     fail "the reference function has no PCI Express capability, so ADR-0084 §5c's P1

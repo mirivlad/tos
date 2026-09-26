@@ -1666,6 +1666,7 @@ fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64)
             Ok(made) => made,
             Err(crate::dma::Refused::BadArgument) => return Answer::status(E_BAD_ARGUMENT),
             Err(crate::dma::Refused::OutOfScope) => return Answer::status(E_NO_CAPABILITY),
+            Err(crate::dma::Refused::NotExpress) => return Answer::status(E_BAD_ARGUMENT),
             Err(crate::dma::Refused::Limit) => return Answer::status(E_LIMIT),
             Err(crate::dma::Refused::Paging) => return Answer::status(E_LIMIT),
         };
@@ -1751,7 +1752,8 @@ fn report_dma_region(caller: usize, index: u32, generation: u32, length: u64, he
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
     feature = "test-dma-no-spend",
-    feature = "test-dma-driver"
+    feature = "test-dma-driver",
+    feature = "test-dma-quarantine"
 ))]
 fn report_dma_qualification(index: u32, generation: u32) {
     tos_serial::puts(b" express=");
@@ -1771,7 +1773,8 @@ fn report_dma_qualification(index: u32, generation: u32) {
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
     feature = "test-dma-no-spend",
-    feature = "test-dma-driver"
+    feature = "test-dma-driver",
+    feature = "test-dma-quarantine"
 )))]
 fn report_dma_qualification(_index: u32, _generation: u32) {}
 
@@ -1803,7 +1806,8 @@ fn report_dma_qualification(_index: u32, _generation: u32) {}
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
     feature = "test-dma-no-spend",
-    feature = "test-dma-driver"
+    feature = "test-dma-driver",
+    feature = "test-dma-quarantine"
 ))]
 fn report_region_identity(caller: usize, index: u32, generation: u32, held_before: usize) {
     let held_now = capability::held(caller);
@@ -1815,6 +1819,14 @@ fn report_region_identity(caller: usize, index: u32, generation: u32, held_befor
     let names = capability::names_held(caller, Object::DmaRegion { index, generation });
     tos_serial::puts(b" aliases=");
     tos_serial::put_u32_decimal(names.saturating_sub(1) as u32);
+    // **What the pool holds once this region's run has left it**, so that a
+    // boot can be held to "the pool has lost exactly the quarantined frames"
+    // (ADR-0084 §8.12) inside itself. Across two builds the figure is not
+    // comparable — the pool is whatever the image left of the machine — so the
+    // only honest baseline is this boot's own first region.
+    tos_serial::puts(b" pool_available=");
+    // SAFETY: single-context nucleus; a read of the pool's counters.
+    tos_serial::put_u32_decimal(unsafe { crate::memory::frames() }.available() as u32);
 }
 
 #[cfg(not(any(
@@ -1822,7 +1834,8 @@ fn report_region_identity(caller: usize, index: u32, generation: u32, held_befor
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
     feature = "test-dma-no-spend",
-    feature = "test-dma-driver"
+    feature = "test-dma-driver",
+    feature = "test-dma-quarantine"
 )))]
 fn report_region_identity(_caller: usize, _index: u32, _generation: u32, _held_before: usize) {}
 
