@@ -572,6 +572,17 @@ qemu_carried_call_answer() {
 # reader holding no way to address a sector gets object 2 and checks all 512 bytes in
 # canonical text. `get(3)`, an id never created, is refused as absent and its sector is
 # never read — presence is the occupancy bitmap and nothing else.
+# A `block.device.v1` service ends in the middle of a request (ADR-0093 case D,
+# `BLOCK_DEVICE_V1` §6a). Four boots of one canonical text, differing only in the
+# policy module that says where the instance ends: served in full; a WRITE's bytes
+# in device-visible memory and the device not told; the WRITE performed and not
+# answered; a READ answered and its region never sent. The caller's observation of
+# the two case-D boots is identical while the device's state is not — read by the
+# nucleus's completion count and by the harness from the image after QEMU exits —
+# and the incomplete READ's receive is cancelled with nothing queued.
+qemu_block_fault() {
+    bash "$ROOT/source/host-tools/qemu-test/block-fault.sh"
+}
 qemu_state_store() {
     bash "$ROOT/source/host-tools/qemu-test/state-store.sh"
 }
@@ -815,6 +826,7 @@ gate qemu       full-only "QEMU a region payload crosses IPC"    region_ipc_payl
 gate qemu       full-only "QEMU a sector crosses IPC as a region"  qemu_block_data_path
 gate qemu       full-only "QEMU a successor restarts the device path" qemu_block_lifecycle
 gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_block_protocol
+gate qemu       full-only "QEMU a service that ends mid-request"      qemu_block_fault
 gate qemu       full-only "QEMU a send-only name for an endpoint"    qemu_endpoint_attenuation
 gate qemu       full-only "QEMU a carried call reads its reply"       qemu_carried_call_answer
 gate qemu       full-only "QEMU a persistent object store"             qemu_state_store
