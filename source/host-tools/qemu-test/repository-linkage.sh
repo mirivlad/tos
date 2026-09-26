@@ -84,8 +84,14 @@ TARGET="$ROOT/target/test-repository-linkage"
 REPOSITORY_FIRST_SECTOR=65
 
 # --- the accounts, one distinct value each -------------------------------------
-# The supervisor: three children in three phases, every ending collected.
-EXPECTED_SUPERVISOR="i64:31"
+# The supervisor: five children in five phases, every ending collected.
+EXPECTED_SUPERVISOR="i64:255"
+# The state store's initializer, twice: it formats a zeroed sector 0 before any
+# repository sector is read, and after every one of them it finds that header and
+# refuses to format. `STATE_STORE_V1` owns `[0, 65)` and the repository begins at
+# 65, and these two accounts are what says the traffic between them did not cross.
+EXPECTED_FORMATTED="i64:15"
+EXPECTED_REFUSED_TO_FORMAT="i64:19"
 # The reader, twice: every proof bit set and the class `REPO_OK`.
 #   1 identity read        16 table valid        128 blob verified
 #   2 identity is git      32 commit verified    256 linkage
@@ -96,18 +102,23 @@ EXPECTED_READER="i64:$((16 * PROVED_ALL))"
 # The block service: Stage 4D's twenty device-side facts, the configuration found, the
 # capacity stable under §2.5.1's generation protocol, and capacity and reads served.
 # Stage 4D's twenty device-side facts, the configuration found and the capacity
-# stable under §2.5.1's generation protocol; then `CAPACITY` and `READ` served —
-# and **no `WRITE`**, which is its own statement: nothing in this boot writes to
-# the device, and the bit that would say otherwise is absent. The last bit is the
-# liveness rule ending its receive once every client is gone.
+# stable under §2.5.1's generation protocol; then `CAPACITY`, `READ` and `WRITE`
+# served, and the liveness rule ending its receive once every client is gone.
+#
+# **The one write in this boot is the state store's header** — nothing on the
+# repository path writes anything, and the reader holds no authority that could.
+# The bit is here because the store's initializer is here, and it is the same bit
+# that would appear if a repository reader had written, which is why the counted
+# requests below say how many of each there were rather than only that some were.
 BLOCK_DEVICE_ALL=1048575
 DEVICE_CFG_FOUND=$((1 << 20))
 CAPACITY_STABLE=$((1 << 21))
 SERVED_CAPACITY=$((1 << 22))
+SERVED_WRITE=$((1 << 23))
 SERVED_READ=$((1 << 24))
 CLIENTS_GONE=$((1 << 32))
 EXPECTED_BLOCK="i64:$((BLOCK_DEVICE_ALL + DEVICE_CFG_FOUND + CAPACITY_STABLE + SERVED_CAPACITY \
-    + SERVED_READ + CLIENTS_GONE))"
+    + SERVED_WRITE + SERVED_READ + CLIENTS_GONE))"
 
 fail() {
     echo "repository-linkage: FAIL: $*" >&2
@@ -183,6 +194,7 @@ place source/system/boot/init.tos "$FIXTURE/init.tos"
 # and every object mutation needs one too because ordinary Git cannot walk to the
 # landing path of a commit whose trees are deliberately malformed.
 place source/tests/vectors/repository-linkage/init.tos "$FIXTURE/init.tos"
+place source/tests/vectors/repository-linkage/initializer.tos "$FIXTURE/initializer.tos"
 place source/tests/vectors/repository-linkage/identity.tos "$FIXTURE/identity.tos"
 place source/tests/vectors/repository-linkage/denied.tos "$FIXTURE/denied.tos"
 place source/tests/vectors/repository-linkage/block.tos "$FIXTURE/block.tos"
@@ -195,6 +207,7 @@ synthesise() {
     git -C "$WORK" read-tree "$HEAD_COMMIT"
     for pair in "source/system/boot/init.tos:$1" \
                 "source/tests/vectors/repository-linkage/init.tos:$FIXTURE/init.tos" \
+                "source/tests/vectors/repository-linkage/initializer.tos:$FIXTURE/initializer.tos" \
                 "source/tests/vectors/repository-linkage/identity.tos:$FIXTURE/identity.tos" \
                 "source/tests/vectors/repository-linkage/denied.tos:$FIXTURE/denied.tos" \
                 "source/tests/vectors/repository-linkage/reader-depth.tos:$OUT/reader-depth.tos" \
@@ -220,6 +233,8 @@ manifest() {
     printf '/system/service/block.tos\tsource/tests/vectors/repository-linkage/block.tos\n' \
         >> "$WORK/manifest.txt"
     printf '/system/repository/reader.tos\tsource/tests/vectors/repository-linkage/reader.tos\n' \
+        >> "$WORK/manifest.txt"
+    printf '/system/state/initializer.tos\tsource/tests/vectors/repository-linkage/initializer.tos\n' \
         >> "$WORK/manifest.txt"
 }
 
@@ -251,7 +266,10 @@ echo "$provisioned"
 EXTENT_SECTORS="$(printf '%s' "$provisioned" | sed -n 's/.*, \([0-9]*\) of [0-9]* sector(s).*/\1/p')"
 [ -n "$EXTENT_SECTORS" ] || fail "the provisioner did not report how much of the extent it used"
 READER_REQUESTS=$((1 + EXTENT_SECTORS))
-EXPECTED_REQUESTS=$((2 * READER_REQUESTS))
+# The store's initializer, twice: `CAPACITY` and sector 0 both times, plus the one
+# write the first run makes and the second refuses to.
+INITIALIZER_REQUESTS=$((2 + 3))
+EXPECTED_REQUESTS=$((2 * READER_REQUESTS + INITIALIZER_REQUESTS))
 # **The independent checker runs over every extent this gate hands to QEMU.** A negative
 # the canonical reader refuses with a class two independent readers agreed on is a
 # statement about the contract; one only the reader refuses is a statement about the
@@ -345,10 +363,10 @@ RESTART
        served; it reported: $(printf '%s ' $completed)"
 
 # --- 2: three modules, four processes, nothing stalled -------------------------
-grep -q '^TOS\.RUN\.BEGIN .* modules=3$' "$LOG" ||
-    fail "the boot did not run a set of three modules"
-[ "$(count '^TOS\.RUN\.BEGIN path=')" = 4 ] ||
-    fail "four processes did not begin: $(count '^TOS\.RUN\.BEGIN path=') did"
+grep -q '^TOS\.RUN\.BEGIN .* modules=4$' "$LOG" ||
+    fail "the boot did not run a set of four modules"
+[ "$(count '^TOS\.RUN\.BEGIN path=')" = 6 ] ||
+    fail "six processes did not begin: $(count '^TOS\.RUN\.BEGIN path=') did"
 # **Exactly one census, and it is the one that ends the boot.** When the only
 # things left are the supervisor waiting on its child relation and the block
 # service waiting for a message, nothing can satisfy either and `SYSTEM_ABI_V1`
@@ -359,10 +377,25 @@ stalls="$(count '^TOS\.RUN\.LIVENESS .*verdict=stalled')"
 [ "$stalls" = 1 ] ||
     fail "$stalls liveness censuses declared a stall; exactly one may — the one that ends
        the block service's receive once every client is collected"
-[ "$(count '^TOS\.RUN\.INTERFACE operation=process_create_funded status=0')" = 3 ] ||
-    fail "three children were not created"
-[ "$(count '^TOS\.RUN\.INTERFACE operation=process_wait_child status=0$')" = 3 ] ||
-    fail "three endings were not collected"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=process_create_funded status=0')" = 5 ] ||
+    fail "five children were not created"
+[ "$(count '^TOS\.RUN\.INTERFACE operation=process_wait_child status=0$')" = 5 ] ||
+    fail "five endings were not collected"
+
+# --- 2a: the state store's extent is unaffected by the repository reads --------
+#
+# §11c's last row, and §6b's boundary asserted from the device rather than from
+# either reader's word. The same module from the same sealed plan runs before any
+# repository sector is read and again after every one of them: it formats a zeroed
+# sector 0, then finds that header and refuses. Two different accounts, and
+# neither may be the other's.
+[ "$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_FORMATTED\$")" = 1 ] ||
+    fail "the state store's sector was not formatted exactly once before the
+       repository reads"
+[ "$(count "^TOS\.RUN\.COMPLETED value=$EXPECTED_REFUSED_TO_FORMAT\$")" = 1 ] ||
+    fail "after every repository read the store's initializer did not find its own
+       header and refuse to format; the two extents overlap, or the store's sector
+       did not survive (STATE_STORE_V1 §4.4, ADR-0102 §6b)"
 
 # --- 2b: exactly the requests the extent implies, and not one more --------------
 #
@@ -376,14 +409,14 @@ answered="$(count '^TOS\.RUN\.INTERFACE operation=endpoint_reply_word status=0$'
 [ "$answered" = "$EXPECTED_REQUESTS" ] ||
     fail "the block service answered $answered request(s) and this extent implies
        $EXPECTED_REQUESTS: one CAPACITY and $EXTENT_SECTORS sector read(s) per reader
-       generation, which is the header, the table and the sectors this extent's object
-       chain occupies"
+       generation — the header, the table and the sectors this extent's object chain
+       occupies — plus $INITIALIZER_REQUESTS for the store's two initializer runs"
 received="$(count '^TOS\.RUN\.INTERFACE operation=endpoint_receive_call_region status=0$')"
 [ "$received" -le "$answered" ] ||
     fail "the block service answered $answered request(s) and received $received; a
        service cannot answer fewer requests than it took"
-echo "repository-linkage: $answered device request(s) answered, which is two" \
-     "generation(s) of $READER_REQUESTS"
+echo "repository-linkage: $answered device request(s) answered: two generation(s)" \
+     "of $READER_REQUESTS, and $INITIALIZER_REQUESTS for the store's two runs"
 
 # --- 2c: the endowment accounting, counted by the launcher and the nucleus ------
 #
@@ -408,8 +441,10 @@ for line in events:
 #   6   the supervisor: two endpoints, the bus, the boot identity, its own control
 #       and the root remainder
 #   4   each reader generation, which is MAX_ENDOWMENT
-#   3   the block service: a budget, the endpoint it receives on, the bus
-expected = {6: 1, 4: 2, 3: 1}
+#   3   the block service — a budget, the endpoint it receives on, the bus — and
+#       each run of the store's initializer, which holds a budget, the block
+#       service's endpoint and an inbox
+expected = {6: 1, 4: 2, 3: 3}
 if dict(sizes) != expected:
     print(f"expected endowment sizes {expected}, saw {dict(sizes)}", file=sys.stderr)
     raise SystemExit(1)
@@ -447,10 +482,10 @@ expected = {
     ("block_serve_full", "system.ipc.Endpoint"): 1,
     ("reader_inbox_full", "system.ipc.Endpoint"): 1,
     ("boot_identity_full", "system.boot.Identity"): 1,
-    ("budget", "system.memory.Authority"): 3,
+    ("budget", "system.memory.Authority"): 5,
     ("serve", "system.ipc.Endpoint"): 1,
-    ("block", "system.ipc.Endpoint"): 2,
-    ("inbox", "system.ipc.Endpoint"): 2,
+    ("block", "system.ipc.Endpoint"): 4,
+    ("inbox", "system.ipc.Endpoint"): 4,
     ("identity", "system.boot.Identity"): 2,
     ("device", "platform.pci.Bus"): 2,
 }
@@ -460,6 +495,18 @@ if dict(seen) != expected:
     print(f"expected {expected}", file=sys.stderr)
     print(f"wrong: {missing}; unexpected: {extra}", file=sys.stderr)
     raise SystemExit(1)
+
+# **No process reached any other part of the machine** (§11b.7). The dictionary
+# above already refuses an unexpected pairing; these are named because they are
+# the claim — a reader that mapped a window, an interrupt or a DMA region of its
+# own would show here, and the bus above is requested by the supervisor and the
+# block service and by nobody else.
+for never in ("platform.pci.FunctionConfig", "platform.irq.Source",
+              "platform.dma.Region", "platform.mmio.Region"):
+    if any(f"interface={never} " in line for line in events if line.startswith(PREFIX)):
+        print(f"{never} was requested by name, and only the block service reaches "
+              f"the device in this boot", file=sys.stderr)
+        raise SystemExit(1)
 TOPOLOGY
 
 # --- 5: every address was inside the extent, proved by the device (§6b) --------
@@ -527,11 +574,21 @@ refusal_boot() {
         --require "TOS.NUCLEUS.ENTRY TOS.RUN.COMPLETED TOS.HALT" \
         --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.TRAP" \
         > /dev/null || fail "the $name boot did not reach a clean halt"
+    # **The reader's verdict is the account two processes reported.** Both reader
+    # generations meet the same extent and refuse identically, and nothing else in
+    # the boot reports the same number twice — the block service, the supervisor
+    # and each of the store's two initializer runs report one value each. Picking
+    # "the first positive account" instead would pick whichever process happened
+    # to finish first, which is a different thing that is usually the same.
     account="$(grep -a '^TOS\.RUN\.COMPLETED value=' "$OUT/refusal/events.log" |
-        sed 's/^TOS\.RUN\.COMPLETED value=i64://' | awk '$1 > 0 && $1 < 100000 { print; exit }')"
-    [ -n "$account" ] ||
-        fail "the $name boot produced no repository verdict; it reported:
-       $(grep -a '^TOS\.RUN\.COMPLETED value=' "$OUT/refusal/events.log" | tr '\n' ' ')"
+        sed 's/^TOS\.RUN\.COMPLETED value=i64://' |
+        awk '$1 > 0 { seen[$1]++ } END { for (v in seen) if (seen[v] == 2) print v }')"
+    case "$account" in
+        "" | *[!0-9]*)
+            fail "the $name boot produced no single repository verdict two reader
+       generations agreed on; it reported:
+       $(grep -a '^TOS\.RUN\.COMPLETED value=' "$OUT/refusal/events.log" | tr '\n' ' ')" ;;
+    esac
     got=$((account % 16))
     [ "$got" = "$want" ] ||
         fail "the $name boot was refused with class $got and ADR-0102 §11c names $want
@@ -544,19 +601,37 @@ refusal_boot() {
 # sector short of the layout: the reader asks `CAPACITY`, is answered below 2113,
 # and issues no repository-sector READ at all.
 refusal_boot capacity 2 "$OUT/capsule.bin" "" --stage4-block-sectors 2112
-python3 - "$OUT/refusal/events.log" <<'NOREAD' || fail "a repository sector was read on a device too small to hold the extent"
+python3 - "$OUT/refusal/events.log" "$INITIALIZER_REQUESTS" <<'NOREAD' || fail "a repository sector was read on a device too small to hold the extent"
 import sys
 
 events = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
-# The reader's own carrying calls are what a repository-sector READ is made of
-# (`BLOCK_DEVICE_V1` §6a); a `CAPACITY` is an `endpoint_call_word` and is
-# permitted, because it is how the fact is established.
-reads = sum(1 for line in events
-            if "operation=endpoint_call_word_carrying" in line)
-if reads:
-    print(f"{reads} repository-sector read(s) were issued", file=sys.stderr)
+initializer = int(sys.argv[2])
+
+# A repository-sector READ is a carrying call (`BLOCK_DEVICE_V1` §6a): the reader
+# delegates the channel its region comes back on. A `CAPACITY` is an
+# `endpoint_call_word` and is permitted, because it is how §6a1's fact is
+# established at all.
+#
+# The store's initializer reads sector 0 the same way, once per run, and those are
+# the **only** carrying calls this boot may contain. Every request the block
+# service answered is counted too, so a read that somehow reached it by another
+# shape is visible as well.
+carrying = sum(1 for line in events
+               if line == "TOS.RUN.INTERFACE operation=endpoint_call_word_carrying status=0")
+answered = sum(1 for line in events
+               if line == "TOS.RUN.INTERFACE operation=endpoint_reply_word status=0")
+# The initializer's two runs: `CAPACITY` and sector 0 each, and one write.
+store_reads = 2
+if carrying != store_reads:
+    print(f"{carrying - store_reads} repository-sector read(s) were issued", file=sys.stderr)
     raise SystemExit(1)
-print("no repository-sector read was issued")
+# Two readers, each of which asks `CAPACITY` and then stops.
+if answered != initializer + 2:
+    print(f"the block service answered {answered} request(s) and this boot implies "
+          f"{initializer + 2}: the store's runs and one CAPACITY per reader",
+          file=sys.stderr)
+    raise SystemExit(1)
+print("no repository-sector read was issued; only the store's own two sector reads")
 NOREAD
 
 # **The correct commit and the wrong boot blob** (§11c). The capsule's boot module

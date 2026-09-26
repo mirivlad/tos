@@ -490,9 +490,10 @@ stage: **persistent object storage** (ADR-0099, `STATE_STORE_V1`,
 `qemu_state_store`) and **the first half of the capsule-to-repository handoff**
 (ADR-0102, `qemu_repository_linkage`) — the linkage, which is the statement that
 the canonical text this machine booted is the `source/system/boot/init.tos` of the
-commit the boot chain verified. Its evidence is twenty-seven boots: one in which
-two successive reader generations each reach the witness from the same device,
-twenty-three refused with the exact class ADR-0102 §10a fixes, and three that hold
+commit the boot chain verified. Its evidence is twenty-eight boots: one in which
+two successive reader generations each reach the witness from the same device and
+the state store's own sector survives the traffic that went past it,
+twenty-four refused with the exact class ADR-0102 §10a fixes, and three that hold
 the boot identity to the rules every capability in this system obeys — a process
 not endowed it cannot read it, attenuation is intersection and an empty
 intersection is refused, and an endowment description of that object kind with a
