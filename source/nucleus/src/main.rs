@@ -125,6 +125,9 @@ compile_error!("these are different launcher constants, and a build must be one 
 ))]
 compile_error!("the IPC numerator must keep preemption active");
 
+/// A DMA-writing adversary, for the build that stands for one (`docs/34` X4.8).
+#[cfg(feature = "test-hostile-device")]
+mod adversary;
 #[cfg_attr(feature = "test-measurement-no-preemption", allow(dead_code))]
 mod apic;
 mod backing;

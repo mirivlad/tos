@@ -165,6 +165,12 @@ test-device-never-quiescent = []
 # completed block request cost. An observation added to a record and nothing else;
 # built beside an endowment constant rather than instead of one.
 test-request-cost = []
+# `docs/34` T7's DMA-capable hardware, for one build: at a routed delivery the
+# nucleus writes bytes the harness chose (`TOS_HOSTILE_DEVICE`, at build time) into
+# the DMA region of the assignment the delivery came from, before the waiter is
+# woken — as a bus master of that function could. It knows offsets and bytes, not
+# rings; every write is on the record. Built beside an endowment constant.
+test-hostile-device = []
 # The same boot with one fact changed: the function binding is answered by a
 # handle naming a **process** rather than an assignment, under the object kind
 # the schema declares. Everything static is right — the interface, the effect,

@@ -546,6 +546,40 @@ pub fn sweep(assignment: u32, generation: u32) {
     }
 }
 
+/// Writes `count` copies of `byte` at `offset` of the first live region of an
+/// assignment, as a bus master of that function could (`test-hostile-device`).
+///
+/// Refuses a range outside the region rather than clamping it. Returns whether it
+/// wrote.
+#[cfg(feature = "test-hostile-device")]
+pub fn overwrite(assignment: u32, generation: u32, offset: u64, byte: u8, count: u64) -> bool {
+    // SAFETY: single-context nucleus; a read of the table.
+    let slots = unsafe { table() };
+    let Some(region) = slots.iter().find(|region| {
+        region.live && region.assignment == assignment && region.assignment_generation == generation
+    }) else {
+        return false;
+    };
+    let length = region.run.end - region.run.start;
+    let Some(end) = offset.checked_add(count) else {
+        return false;
+    };
+    if end > length {
+        return false;
+    }
+    // SAFETY: the run is this region's live, identity-mapped backing, the range
+    // was checked against its length, and a device of this assignment may write
+    // any of it — which is the adversary this build stands for.
+    unsafe {
+        core::ptr::write_bytes(
+            core::ptr::with_exposed_provenance_mut::<u8>((region.run.start + offset) as usize),
+            byte,
+            count as usize,
+        )
+    };
+    true
+}
+
 /// Whether anything is still waiting on this assignment, which is what keeps the
 /// assignment itself alive (ADR-0084 §5d).
 ///

@@ -18,7 +18,9 @@
 # and two more boots of the control policy against a **device that fails**: QEMU's
 # `blkdebug` layer makes the reference endpoint complete the first WRITE, or the
 # first READ, of the target sector with a non-OK status — the only way a conforming
-# reference machine produces `BLOCK_DEVICE_V1` §7's `BLK_DEVICE` at all.
+# reference machine produces `BLOCK_DEVICE_V1` §7's `BLK_DEVICE` at all; and four
+# boots against a **device that lies**, where a test nucleus writes into the
+# driver's DMA memory what a bus master could, before the driver reads it.
 #
 # **What the pair of case-D boots proves is a boundary, not a guarantee.** The
 # client's observation is `E_CANCELLED` in both, bit for bit, and the device
@@ -175,8 +177,8 @@ boot() {
 # the service's. **Told apart by what each can say**, because the nucleus prints
 # every process's `COMPLETED` in the order they finish and not beside anything
 # naming the process: the service's account carries its device facts and is at
-# least 2^20; the supervisor's is one of 15 and 31; and no combination of the
-# client's seven bits is either. Three values, each claimed by exactly one reader,
+# least 2^20, or is the negative step it refused at; the supervisor's is one of 15
+# and 31; and no combination of the client's bits is either. Three values, each claimed by exactly one reader,
 # or the boot is not the one this gate knows how to read.
 accounts() {
     python3 - "$OUT/$1/events.log" <<'READ'
@@ -185,7 +187,7 @@ values = [int(m.group(1)) for l in open(sys.argv[1], encoding="utf-8", errors="r
           for m in [re.match(r"^TOS\.RUN\.COMPLETED value=i64:(-?\d+)\s*$", l)] if m]
 if len(values) != 3:
     sys.exit("%d account(s); three processes end" % len(values))
-service = [v for v in values if v >= 1 << 20]
+service = [v for v in values if v >= 1 << 20 or v < 0]
 supervisor = [v for v in values if v in (15, 31)]
 client = [v for v in values if v not in service and v not in supervisor]
 if len(service) != 1 or len(supervisor) != 1 or len(client) != 1:
@@ -312,4 +314,84 @@ echo "block-fault: device failures — a failed WRITE and a failed READ are each
      "BLK_DEVICE, the service serves the next request, a refused READ owes and sends no" \
      "region, and the image agrees with what the client was told"
 
-echo "block-fault: PASS (ADR-0093 case D as a stated boundary; BLOCK_DEVICE_V1 §6a's incomplete READ; BLK_DEVICE from a failing device)"
+# --- the device lies, and the driver does not believe it ----------------------------
+#
+# **`docs/34` T7, for one build at a time.** `test-hostile-device` makes the nucleus
+# write bytes the harness chose into the DMA region of the delivering function's
+# assignment at a named delivery, before the driver is woken — what a bus master of
+# that function could do, and the one thing the reference endpoint never does. The
+# nucleus knows an offset and a byte; which offset is a used-ring length is computed
+# here, from the service's own constants and the layout rule its text states, and a
+# wrong offset would show as a refusal code other than the one asserted.
+#
+# Each lie must be refused **at the step that checks it**, by the code the service's
+# text gives that step, with nothing handed to the client: the service gives the
+# device up and ends, and the client's pending call is released by the liveness rule.
+python3 - "$FIXTURE/service.tos" > "$OUT/layout.txt" <<'LAYOUT' || fail "the service's queue layout could not be read"
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+def const(name, suffix):
+    m = re.search(r"^const %s: \w+ = (\d+)%s;$" % (name, suffix), text, re.M)
+    if not m:
+        sys.exit("no constant " + name)
+    return int(m.group(1))
+cap = const("QUEUE_CAP", "u64")
+# The reference endpoint's queue 0 offers 256 entries (`STAGE4B_MMIO_BOUNDARY.md`,
+# `queue0_size=256`), and the service takes the smaller of that and its own cap.
+chosen = min(cap, 256)
+align = lambda value, to: (value + to - 1) // to * to
+avail = align(16 * chosen, 2)
+used = align(avail + 6 + 2 * chosen, 4)
+queue_end = used + 6 + 8 * chosen
+header = align(queue_end, 16)
+data = align(header + const("HEADER_BYTES", "B"), 16)
+# A used element is `le32 id, le32 len`, after `le16 flags, le16 idx`.
+print("USED_ID_SLOT0=%d" % (used + 4 + 8 * 0))
+print("USED_LEN_SLOT1=%d" % (used + 8 + 8 * 1))
+print("DATA=%d" % data)
+print("SENTINEL=%d" % const("DATA_SENTINEL", "u64"))
+LAYOUT
+# shellcheck source=/dev/null
+. "$OUT/layout.txt"
+
+hostile() {
+    local name="$1" rule="$2"
+    (cd "$ROOT" && TOS_HOSTILE_DEVICE="$rule" CARGO_TARGET_DIR="$HOSTILE" cargo build --release \
+        -p tos-nucleus --target x86_64-unknown-none \
+        --features test-block-protocol,test-hostile-device >/dev/null 2>&1) ||
+        fail "the nucleus does not build with test-hostile-device"
+    [ "$before" = "$(sha256sum "$PRODUCTION" | awk '{print $1}')" ] ||
+        fail "the production nucleus changed while building the hostile-device artifact"
+    NUCLEUS="$HOSTILE/x86_64-unknown-none/release/tos-nucleus" boot none "$name"
+    grep -q "^TOS\.RUN\.HOSTILE_DEVICE .* written=1 asserted_by=test-adversary\$" "$OUT/$name/events.log" ||
+        fail "$name: the adversary wrote nothing"
+}
+HOSTILE="$ROOT/target/test-block-fault-hostile"
+trap 'rm -rf "$TARGET" "$HOSTILE"' EXIT
+
+# name                  rule (delivery:offset:byte[:count])   refused at   client
+for lie in \
+    "hostile-id:1:$USED_ID_SLOT0:7:-53:2" \
+    "hostile-long:2:$USED_LEN_SLOT1:255:-59:9" \
+    "hostile-short:2:$USED_LEN_SLOT1:0:-54:9" \
+    "hostile-nothing:2:$DATA:$SENTINEL:512:-56:9"
+do
+    IFS=: read -r name delivery offset byte rest <<< "$lie"
+    case "$name" in
+        hostile-nothing) IFS=: read -r count refused expected <<< "$rest"; rule="$delivery:$offset:$byte:$count" ;;
+        *) IFS=: read -r refused expected <<< "$rest"; rule="$delivery:$offset:$byte" ;;
+    esac
+    hostile "$name" "$rule"
+    read -r client supervisor service <<< "$(accounts "$name")"
+    [ "$service" = "$refused" ] ||
+        fail "$name: the service reported $service; the step that checks this lie refuses with $refused"
+    [ "$client" = "$expected" ] ||
+        fail "$name: the client observed $client; with the device given up it is $expected"
+    [ "$supervisor" = 31 ] || fail "$name: the supervisor observed $supervisor, not both endings and one stall"
+    [ "$(region_sends "$name")" = 0 ] || fail "$name: a region was sent after the device lied"
+done
+echo "block-fault: hostile device — a completion naming a chain the driver never made (-53)," \
+     "a length past the buffers (-59) and short of them (-54), and a read that wrote nothing" \
+     "(-56) are each refused at the step that checks them, and no byte reaches the client"
+
+echo "block-fault: PASS (ADR-0093 case D as a stated boundary; BLOCK_DEVICE_V1 §6a's incomplete READ; BLK_DEVICE from a failing device; a lying device refused)"
