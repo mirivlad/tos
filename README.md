@@ -123,7 +123,7 @@ function, reads its configuration space, finds the VirtIO capability structures
 itself, derives a bounded window on the BAR they name, and reads the device's
 registers, with the nucleus holding mechanism only.
 
-**Stage 4C and Stage 4D are built and green, and neither is formally closed.**
+**Stage 4C and Stage 4D are formally closed** (Project Architect approval, 2026-09-26).
 Canonical TOS Core now derives a routed interrupt of a real PCI function and is
 woken by a real MSI-X message (4C-1), allocates a DMA region from two
 authorities and gives it back under a proved drain (4C-2), and orders its
@@ -465,14 +465,15 @@ handoff. **Stage 4B — BAR/MMIO and real textual VirtIO PCI capability discover
 `docs/evidence/STAGE4B_MMIO_BOUNDARY.md` and ADR-0081; that closure implies no
 IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 
-**Stage 4C and Stage 4D are built and gated but not closed**, and no closure is
-claimed for them here. The closure-readiness audit of the whole of Stage 4 is
+**Stage 4C and Stage 4D are formally closed** by the Project Architect on
+2026-09-26; their approval is archived in
+`source/legal/publication-records/stage4cd-closure-approval-2026-09-26.md`.
+The closure-readiness audit of the whole of Stage 4 is
 `docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
-**ready to close** on the evidence, and Stage 4 **blocked** by its performance
-contract — two `docs/35` hard budgets are exceeded by accepted design and the
-reference-platform budgets have no accepted measurement method
-(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`) — and by the Project Architect's
-decision on the Stage 4 patent review. Those are decisions, and none is taken here.
+**ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
+the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
+is archived separately. Stage 4 remains **open** pending fresh performance
+evidence (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -566,7 +567,7 @@ red, each on its own assertion.
 **What that does not mean.** No power-loss durability, no `VIRTIO_BLK_F_FLUSH`, no
 crash consistency, no journaling, no transactions, no exactly-once `PUT`, no delete, no
 enumeration, no second owner or store, no `docs/09` `/state` namespace, no path
-semantics — and **no Stage 4 closure**: Stage 4C, Stage 4D and Stage 4 remain open.
+semantics — and **no Stage 4 closure**: Stage 4 remains open.
 `ST_BLOCK` is implemented and **not** exercised by the store's gate, whose reference
 endpoint answers every well-formed in-range request successfully; the device failure
 below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint

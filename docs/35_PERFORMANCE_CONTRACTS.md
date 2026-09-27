@@ -242,7 +242,11 @@ does not bind both describes a platform it cannot name.
 
 Hard budgets after queue initialization:
 
-- zero dynamic allocation per completed block request on the steady-state path;
+- zero per-request allocation of DMA regions, queue/ring storage, descriptors,
+  endpoints, launch plans or driver-private working state; at most one newly
+  allocated ordinary Region for the immediate `BLOCK_DEVICE_V1` client/service
+  payload transfer, funded, bounded and consumed or released by the request
+  lifecycle so it cannot accumulate across requests (ADR-0103);
 - no more than one payload copy between client memory and device-visible memory; zero-copy is preferred where the DMA contract permits it;
 - no more than four address-space/scheduler handoffs per unbatched request;
 - one interrupt wakeup may complete a batch of requests; the implementation must not require one scheduling cycle per descriptor when batching is available;
@@ -261,15 +265,15 @@ Stage 4 reference-platform budgets:
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
 
-**Status, 2026-09-26** (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`; the counts are
-`qemu_stage4_request_cost`'s). The budgets above are unchanged and are **not met**:
-a completed `block.device.v1` READ costs one region allocation and eight scheduler
-handoffs before the timer's, against zero and four — both structural to the accepted
-protocol — while one payload copy, the batching rule and the lock rule hold. The three
-reference-platform budgets are **P0**: no accepted decision fixes their clock, oracle
-or workload shape. Closing Stage 4 therefore needs the Project Architect's decision
-under this section's own rule, and this paragraph records the state rather than making
-it.
+**Status, 2026-09-27.** ADR-0103 amends H1 explicitly: the one ordinary
+payload Region of a READ is an accounted IPC ownership-transfer cost, not hidden
+driver working-set growth. H2 remains unchanged, and H3 retains its four-handoff
+budget under ADR-0103's scheduler rule. ADR-0103 also fixes the R1–R3 clocks,
+oracle isolation and workload shapes without changing their thresholds. The
+pre-decision measurements in `docs/evidence/STAGE4_PERFORMANCE_REPORT.md` remain
+historical evidence. The post-decision H3 rerun still measures eight structural
+handoffs for eleven steady-state READs, above four; see that report's decision
+update. Stage 4 remains open. R1–R3 are not yet measured under the accepted method.
 
 ## Stage 5 — Repository and activation
 
