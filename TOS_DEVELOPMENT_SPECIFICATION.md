@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `7cc5260b430300aa2e56fe8c2fcc27940d11a5f934d0420fc903209e90d3cce0`\
+Source-manifest SHA-256: `242afe3bff0b88bc05b195199d734eb945ccfaa734f64eeb32c1d49c55514712`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -138,7 +138,7 @@ function, reads its configuration space, finds the VirtIO capability structures
 itself, derives a bounded window on the BAR they name, and reads the device's
 registers, with the nucleus holding mechanism only.
 
-**Stage 4C and Stage 4D are built and green, and neither is formally closed.**
+**Stage 4C and Stage 4D are formally closed** (Project Architect approval, 2026-09-26).
 Canonical TOS Core now derives a routed interrupt of a real PCI function and is
 woken by a real MSI-X message (4C-1), allocates a DMA region from two
 authorities and gives it back under a proved drain (4C-2), and orders its
@@ -480,14 +480,15 @@ handoff. **Stage 4B — BAR/MMIO and real textual VirtIO PCI capability discover
 `docs/evidence/STAGE4B_MMIO_BOUNDARY.md` and ADR-0081; that closure implies no
 IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 
-**Stage 4C and Stage 4D are built and gated but not closed**, and no closure is
-claimed for them here. The closure-readiness audit of the whole of Stage 4 is
+**Stage 4C and Stage 4D are formally closed** by the Project Architect on
+2026-09-26; their approval is archived in
+`source/legal/publication-records/stage4cd-closure-approval-2026-09-26.md`.
+The closure-readiness audit of the whole of Stage 4 is
 `docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
-**ready to close** on the evidence, and Stage 4 **blocked** by its performance
-contract — two `docs/35` hard budgets are exceeded by accepted design and the
-reference-platform budgets have no accepted measurement method
-(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`) — and by the Project Architect's
-decision on the Stage 4 patent review. Those are decisions, and none is taken here.
+**ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
+the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
+is archived separately. Stage 4 remains **open** pending fresh performance
+evidence (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -581,7 +582,7 @@ red, each on its own assertion.
 **What that does not mean.** No power-loss durability, no `VIRTIO_BLK_F_FLUSH`, no
 crash consistency, no journaling, no transactions, no exactly-once `PUT`, no delete, no
 enumeration, no second owner or store, no `docs/09` `/state` namespace, no path
-semantics — and **no Stage 4 closure**: Stage 4C, Stage 4D and Stage 4 remain open.
+semantics — and **no Stage 4 closure**: Stage 4 remains open.
 `ST_BLOCK` is implemented and **not** exercised by the store's gate, whose reference
 endpoint answers every well-formed in-range request successfully; the device failure
 below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
@@ -12747,7 +12748,11 @@ does not bind both describes a platform it cannot name.
 
 Hard budgets after queue initialization:
 
-- zero dynamic allocation per completed block request on the steady-state path;
+- zero per-request allocation of DMA regions, queue/ring storage, descriptors,
+  endpoints, launch plans or driver-private working state; at most one newly
+  allocated ordinary Region for the immediate `BLOCK_DEVICE_V1` client/service
+  payload transfer, funded, bounded and consumed or released by the request
+  lifecycle so it cannot accumulate across requests (ADR-0103);
 - no more than one payload copy between client memory and device-visible memory; zero-copy is preferred where the DMA contract permits it;
 - no more than four address-space/scheduler handoffs per unbatched request;
 - one interrupt wakeup may complete a batch of requests; the implementation must not require one scheduling cycle per descriptor when batching is available;
@@ -12766,15 +12771,15 @@ Stage 4 reference-platform budgets:
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
 
-**Status, 2026-09-26** (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`; the counts are
-`qemu_stage4_request_cost`'s). The budgets above are unchanged and are **not met**:
-a completed `block.device.v1` READ costs one region allocation and eight scheduler
-handoffs before the timer's, against zero and four — both structural to the accepted
-protocol — while one payload copy, the batching rule and the lock rule hold. The three
-reference-platform budgets are **P0**: no accepted decision fixes their clock, oracle
-or workload shape. Closing Stage 4 therefore needs the Project Architect's decision
-under this section's own rule, and this paragraph records the state rather than making
-it.
+**Status, 2026-09-27.** ADR-0103 amends H1 explicitly: the one ordinary
+payload Region of a READ is an accounted IPC ownership-transfer cost, not hidden
+driver working-set growth. H2 remains unchanged, and H3 retains its four-handoff
+budget under ADR-0103's scheduler rule. ADR-0103 also fixes the R1–R3 clocks,
+oracle isolation and workload shapes without changing their thresholds. The
+pre-decision measurements in `docs/evidence/STAGE4_PERFORMANCE_REPORT.md` remain
+historical evidence. The post-decision H3 rerun still measures eight structural
+handoffs for eleven steady-state READs, above four; see that report's decision
+update. Stage 4 remains open. R1–R3 are not yet measured under the accepted method.
 
 ## Stage 5 — Repository and activation
 
@@ -14819,8 +14824,11 @@ speedup.
 user-space interrupt, DMA and interpreted-driver mechanisms; `docs/24` §Review
 procedure is how. This section is steps 1–6 of that procedure for the mechanisms
 Stage 4 actually built. **It is engineering research, not a legal opinion, and it
-claims no mechanism is free of patents.** Step 8 — preserving a decision — is the
-Project Architect's, and nothing here is that decision. Statuses are what the
+claims no mechanism is free of patents.** The Project Architect's subsequent
+step-8 decision (2026-09-26) is recorded in
+`source/legal/publication-records/stage4-patent-engineering-review-2026-09-26.md`;
+it accepts the engineering review for the Stage-4 cross-stage gate without an
+FTO or non-infringement conclusion. Statuses are what the
 public aggregator showed on the date above and must be verified in the official
 register of each jurisdiction before anyone relies on them.
 
@@ -39659,6 +39667,88 @@ On acceptance, and not before:
   remains mandatory after formal Stage 4 closure and before Stage 5.**
 
 <!-- END docs/adr/0102-stage-4-capsule-to-repository-linkage.md -->
+
+---
+
+<!-- BEGIN docs/adr/0103-stage-4-performance-contract-reconciliation-and-measurement.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0103: Stage-4 performance contract reconciliation and measurement
+
+- Status: **Accepted**
+- Date and Project Architect approval: **2026-09-26**
+- Decision level: **2** — performance and scheduling contract clarification
+- Related: ADR-0040, ADR-0049, ADR-0066, ADR-0097, ADR-0098; `docs/35` §Stage 4
+
+## Decision
+
+After queue initialization, a completed block request performs zero per-request
+allocation of DMA regions, queue/ring storage, descriptors, endpoints, launch
+plans or driver-private working state. It may newly allocate at most one ordinary
+Region for the immediate client/service payload transfer required by
+`BLOCK_DEVICE_V1`. That transient Region is funded, bounded and consumed or
+released by the request lifecycle and cannot accumulate across requests. This
+IPC ownership-transfer cost remains measured and reported. Zero transient
+payload-Region allocation is preferable where a future compatible protocol
+permits it, but is not required for Stage 4. H2 is unchanged.
+
+A currently running context that remains runnable continues running. Making
+another context runnable does not itself force a switch. Round-robin selection
+occurs when the current context blocks, exits or faults, its fixed quantum
+expires, or another accepted explicit scheduling point requires selection.
+Selection begins after the current context and wraps. Timer preemption,
+CPU-bound peer progress and the single priority band remain as in ADR-0049.
+H3 remains at most four address-space/scheduler handoffs per unbatched request;
+timer-preemption noise is separately reported. If ordinary implementation work
+cannot meet H3, the structural sequence returns to the Project Architect.
+
+## Reference measurement
+
+The platform is QEMU q35, qemu64, one active vCPU, TCG, the same VirtIO-block
+device configuration, queue depth and byte-identical raw image copies, using
+release builds. Retained windows run without concurrent QEMU instances. Archive
+the exact QEMU, observer, host, runtime-engine and canonical-module identities,
+cache state, device configuration, image digest and scheduler quantum.
+
+Use an external observer as in ADR-0066, with measurement-only markers that do
+not alter production `block.device.v1`. Elapsed I/O uses
+`CLOCK_MONOTONIC_RAW`; CPU cost uses `CLOCK_PROCESS_CPUTIME_ID` for the complete
+QEMU process, including vCPU and device-model work. Do not subtract observer
+cost. Archive the observer and its build identity.
+
+The Rust VirtIO-block reference is a separately isolated minimal benchmark
+artifact that directly drives the same device. It is only an oracle: it is not
+linked into the production nucleus, is not a TOS driver or runtime dependency,
+and cannot satisfy the Stage-4 identity gate. Keep the production device
+vocabulary guard intact.
+
+| Metric | Fixed workload and calculation | Existing threshold |
+|---|---|---|
+| R1 | Queue depth 1, 512-byte requests, same sequential sectors; warm up 64 KiB, then retain 3 × 1 MiB READ windows. Total retained bytes divided by total retained wall time. | TOS throughput ≥ 35% of Rust reference |
+| R2 | One aligned random 4 KiB operation is eight consecutive 512-byte READs on both sides. Same deterministic seed and sector sequence; 3 warm-up and 300 retained logical operations. Nearest-rank p99 is rank 297. | TOS p99 ≤ 5 × Rust reference p99 |
+| R3 | R1's retained windows; complete QEMU-process CPU time divided by transferred MiB. | TOS CPU/MiB ≤ 8 × Rust reference CPU/MiB |
+
+Measure before changing any R1–R3 threshold. On a miss, decompose the profile,
+separate evidence-only overhead from production work, fix ordinary Level-1
+defects and rerun. A new ABI, language primitive, execution-engine semantic
+optimization, `BLOCK_DEVICE_V1` change, threshold or architectural boundary
+requires a further Project Architect decision. Stage 4 remains open meanwhile.
+
+## Architecture impact
+
+No TOS invariant, canonical representation, source identity, persistent format,
+trust boundary, owner recovery or rollback path changes. The production trusted
+base gains no dependency; Rust is a reference-oracle build dependency only.
+The QEMU/qemu64/TCG single-vCPU compatibility profile is the declared Stage-4
+measurement profile. Licensing and provenance of the separately built observer
+and oracle must be archived with the measurements. This decision itself adds no
+patent mechanism. The Stage-3 scheduler/preemption/IPC gates, Stage-4 gates and
+H1–H3 measurement enforce its implementation; R1–R3 require the archived
+paired-reference evidence. The Stage-4 threat model and negative device tests
+remain applicable and unchanged.
+
+<!-- END docs/adr/0103-stage-4-performance-contract-reconciliation-and-measurement.md -->
 
 ---
 

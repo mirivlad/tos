@@ -6,10 +6,11 @@ One map from every Stage 4 closure obligation to the contract that decides it an
 the gate that proves it, in the form `STAGE3_CLOSURE_AUDIT.md` took. It duplicates
 no ADR: where a decision is stated somewhere else, this points at it.
 
-> **This is a readiness audit, not a closure.** Stage 4, Stage 4C and Stage 4D are
-> formally open. The Project Architect decides their closure; §12 states the
-> evidence conclusion this audit supports and the exact obligations that stand in
-> the way.
+> **Historical readiness audit, 2026-09-26.** The Project Architect subsequently
+> closed Stage 4C and Stage 4D on this evidence. Stage 4 remains open; see
+> `source/legal/publication-records/stage4cd-closure-approval-2026-09-26.md`
+> and ADR-0103 for the later performance decision. The rows below retain their
+> pre-decision verdicts as audit history.
 
 **Verdicts** are one of four, and nothing else:
 

@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 530
+- files in the release package: 531
 - active system invariants: 21
-- architecture decision records: 102 (40 accepted)
+- architecture decision records: 103 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -146,6 +146,7 @@ Architecture decision records
 - docs/adr/0100-attenuating-an-endpoint-from-canonical-text.md — ADR-0100: Attenuating an endpoint from canonical text [**Accepted** (Project Architect-approved, 2026-09-24), and implemented on]
 - docs/adr/0101-a-carried-call-must-expose-its-reply.md — ADR-0101: A call that carries a capability must expose its reply [**Accepted**]
 - docs/adr/0102-stage-4-capsule-to-repository-linkage.md — ADR-0102: Stage-4 capsule-to-repository linkage [**Accepted**]
+- docs/adr/0103-stage-4-performance-contract-reconciliation-and-measurement.md — ADR-0103: Stage-4 performance contract reconciliation and measurement [**Accepted**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

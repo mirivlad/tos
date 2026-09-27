@@ -2,6 +2,40 @@
 
 # Stage 4 — performance contract report
 
+> **Decision update, 2026-09-26:** ADR-0103 explicitly amends H1, clarifies
+> scheduler selection while keeping H3 at four, and defines R1–R3 measurement.
+> The numbers and P0 verdict below describe the pre-decision run only. Fresh
+> measurements are required before any post-decision performance verdict.
+
+## Post-decision H3 check (2026-09-27)
+
+`bash source/host-tools/qemu-test/stage4-request-cost.sh` passed on the clean
+production scheduler. Across eleven steady-state 512-byte READ intervals it
+reported one ordinary `region_allocate`, zero `dma_region_allocate`, one routed
+delivery and one idle wait per interval. Every interval had nine scheduler
+handoffs including one timer preemption, hence **eight non-timer handoffs**,
+above H3's unchanged limit of four. H1 is within ADR-0103's amended budget;
+H2 remains the one-copy result below.
+
+Code inspection found that `process::wake` only marks a blocked context
+runnable. It does not invoke the scheduler. Normal syscalls return to their
+current context. `process::schedule` is entered when a context blocks, ends or
+explicitly yields; `process::preempt` selects on a timer tick. Its round-robin
+search after `CURRENT` therefore already implements ADR-0103's rule. A trial
+change that restated it in the scheduler produced the same count and was
+removed. No scheduler correction can save the remaining handoffs without
+changing an actual blocking or protocol boundary.
+
+The structural sequence remains: device completion wakes the service from an
+idle wait; the service's reply wakes the client but its separate Region send
+still has to complete; the client blocks to receive that Region; the service
+sends it, waking the client; subsequent client/service requests and receives
+re-enter through blocking points. The previous per-switch diagnostic trace in
+§3 gives the eight crossings. The smallest unresolved decision is whether to
+change the two-message READ, introduce another accepted explicit scheduling
+policy, or amend H3. None is taken here. R1–R3 oracle and observer work is
+stopped at this H3 decision boundary, as ADR-0103 requires.
+
 `docs/16` lists a *"Stage 4 performance contract report"* among Stage 4's
 deliverables and `docs/37` lists it among the Stage 4 identity evidence. This is
 that report. It measures what can be measured under the accepted contracts,

@@ -58,8 +58,11 @@
 user-space interrupt, DMA and interpreted-driver mechanisms; `docs/24` §Review
 procedure is how. This section is steps 1–6 of that procedure for the mechanisms
 Stage 4 actually built. **It is engineering research, not a legal opinion, and it
-claims no mechanism is free of patents.** Step 8 — preserving a decision — is the
-Project Architect's, and nothing here is that decision. Statuses are what the
+claims no mechanism is free of patents.** The Project Architect's subsequent
+step-8 decision (2026-09-26) is recorded in
+`source/legal/publication-records/stage4-patent-engineering-review-2026-09-26.md`;
+it accepts the engineering review for the Stage-4 cross-stage gate without an
+FTO or non-infringement conclusion. Statuses are what the
 public aggregator showed on the date above and must be verified in the official
 register of each jurisdiction before anyone relies on them.
 
