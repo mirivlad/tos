@@ -470,8 +470,14 @@ pub struct BundleLaunch {
 }
 
 /// The report region's header: the runtime writes `written`, the nucleus reads
-/// it and sets `drained`. One writer per field, and neither ever moves the
-/// other's.
+/// it and sets `drained`.
+///
+/// **One exception, at one moment.** When the nucleus has relayed every
+/// published byte it sets both counts to zero, so a bounded region serves a
+/// process for its whole life. It does so only while the process is inside the
+/// nucleus, where no line can be half-published, and a runtime therefore reads
+/// `written` afresh for every line rather than keeping a copy across a system
+/// call.
 #[repr(C)]
 pub struct ReportHeader {
     pub written: u64,

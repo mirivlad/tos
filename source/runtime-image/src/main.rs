@@ -604,9 +604,11 @@ impl Report {
         let start = size_of::<ReportHeader>() as u64 + header.written;
         let bytes = text.as_bytes();
         if start + bytes.len() as u64 + 1 > self.capacity {
-            // A full region drops the line rather than wrapping over one the
-            // nucleus has not read: a log that overwrites itself reports a run
-            // that did not happen.
+            // Only a line longer than the region can reach this, because the
+            // nucleus returns a fully relayed region to empty and every line is
+            // followed by an edge that relays it. Such a line is dropped rather
+            // than wrapped over one the nucleus has not read: a log that
+            // overwrites itself reports a run that did not happen.
             return;
         }
         for (offset, byte) in bytes.iter().enumerate() {
