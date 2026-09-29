@@ -642,8 +642,9 @@ extern "C" fn device_interrupt(slot: u32) {
     });
     tos_serial::puts(b" latched=");
     tos_serial::put_u32_decimal(u32::from(waiter.is_none()));
-    // What the scheduler has done so far, in the build that counts it: the
-    // difference between two deliveries is what one completed request cost.
+    // What the scheduler has done so far, in the build that counts it. A
+    // delivery-to-delivery delta straddles logical request boundaries; H3 is
+    // judged by the causal client-request trace instead.
     #[cfg(feature = "test-request-cost")]
     {
         let (dispatches, handoffs, idles, preemptions) = crate::process::request_cost();
@@ -657,6 +658,8 @@ extern "C" fn device_interrupt(slot: u32) {
         tos_serial::put_u32_decimal(preemptions as u32);
     }
     tos_serial::puts(b" asserted_by=nucleus\r\n");
+    #[cfg(feature = "test-request-trace")]
+    crate::process::trace_marker(b"irq_completion", usize::MAX, 0);
     if let Some(waiter) = waiter {
         // SAFETY: the waiter is a context blocked in `irq_wait`, and `OK` is the
         // answer to that call. `wake` names the table it writes and this handler

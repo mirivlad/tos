@@ -480,6 +480,18 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
     // is stable and this is when what it wrote reaches the log.
     crate::process::drain_report();
     let caller = crate::process::current();
+    #[cfg(feature = "test-request-trace")]
+    if matches!(
+        operation,
+        ENDPOINT_SEND
+            | ENDPOINT_RECEIVE
+            | ENDPOINT_CALL
+            | ENDPOINT_REPLY
+            | CAPABILITY_RELEASE
+            | IRQ_WAIT
+    ) {
+        crate::process::trace_marker(b"syscall_enter", caller, operation as u32);
+    }
     let arguments = &*frame;
     match operation {
         // The one operation that does not answer: the process is over, and the
@@ -1602,6 +1614,11 @@ fn irq_wait(caller: usize, handle: u64, frame: &TrapFrame) -> Answer {
         Ok(Object::IrqSource { index, generation }) => (index, generation),
         Ok(_) => return Answer::status(E_NO_CAPABILITY),
     };
+    #[cfg(feature = "test-request-trace")]
+    // The block-protocol trace fixture calls this immediately after its
+    // notify MMIO write, with no intervening scheduling point. It marks the
+    // completed submission boundary without adding a production ABI call.
+    crate::process::trace_marker(b"device_request_submitted", caller, IRQ_WAIT as u32);
     match crate::irq::begin_wait(index, generation, caller) {
         // The interrupt arrived before the driver got here, which is the race
         // the latch exists to lose harmlessly.
@@ -2070,6 +2087,14 @@ fn send_transaction(
 fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
     match send_transaction(caller, endpoint, frame.rsi, frame.r10, frame.r8, None) {
         Ok(()) => {
+            #[cfg(feature = "test-request-trace")]
+            if frame.r8 == 1 {
+                crate::process::trace_marker(
+                    b"region_send_committed",
+                    caller,
+                    ENDPOINT_SEND as u32,
+                );
+            }
             deliver_to_waiter(endpoint);
             Answer::status(OK)
         }
@@ -2122,6 +2147,8 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
         Some(reply),
     ) {
         Ok(()) => {
+            #[cfg(feature = "test-request-trace")]
+            crate::process::trace_marker(b"request_committed", caller, ENDPOINT_CALL as u32);
             deliver_to_waiter(endpoint);
             // SAFETY: this is the running context's own frame, and the handle
             // the wait is on was resolved above.
@@ -2159,6 +2186,8 @@ fn reply(replier: usize, asked: usize, handle: u64, length: u64) -> Answer {
     // SAFETY: the reply capability resolved, which is what says this context is
     // blocked waiting for exactly this answer.
     unsafe { crate::process::wake(asked, Answer::value(length)) };
+    #[cfg(feature = "test-request-trace")]
+    crate::process::trace_marker(b"success_reply_produced", replier, ENDPOINT_REPLY as u32);
     // Waking the caller moved the counter the reply capability names, so it has
     // already stopped resolving. Releasing the handle as well is not belt and
     // braces: it gives the slot back, and a table full of capabilities that name
@@ -2399,6 +2428,12 @@ fn release_capability(caller: usize, handle: u64) -> Answer {
     match capability::release(caller, handle) {
         Ok(()) => {
             drain_reclaims();
+            #[cfg(feature = "test-request-trace")]
+            if object.region().is_some() {
+                // The trace does not know which context is the client; the
+                // analyzer derives that from who received the service's Region.
+                crate::process::trace_marker(b"region_released", caller, CAPABILITY_RELEASE as u32);
+            }
             Answer::status(OK)
         }
         Err(refused) => refused.into(),
@@ -3217,6 +3252,13 @@ fn accept(receiver: usize, endpoint: u32, into: u64, pending: &ipc::Pending) -> 
     for entry in inbound[..pending.region_count].iter() {
         if let Some(region) = entry.object.region() {
             capability::release_region_from_transit(region);
+        }
+    }
+    #[cfg(feature = "test-request-trace")]
+    {
+        crate::process::trace_marker(b"message_received", receiver, 0);
+        if pending.region_count != 0 {
+            crate::process::trace_marker(b"region_received", receiver, 0);
         }
     }
     Some(length)

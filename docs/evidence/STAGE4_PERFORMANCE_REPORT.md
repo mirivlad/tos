@@ -2,39 +2,95 @@
 
 # Stage 4 — performance contract report
 
-> **Decision update, 2026-09-26:** ADR-0103 explicitly amends H1, clarifies
-> scheduler selection while keeping H3 at four, and defines R1–R3 measurement.
-> The numbers and P0 verdict below describe the pre-decision run only. Fresh
-> measurements are required before any post-decision performance verdict.
+## Current H3 attribution (2026-09-28)
 
-## Post-decision H3 check (2026-09-27)
+ADR-0103 keeps H3 at four handoffs. The earlier claim of eight unavoidable
+non-timer handoffs was incorrect. The `stage4-request-cost.sh` instrument took
+differences between consecutive IRQs, which cross the boundary between two
+logical READs. More decisively, `Report::line` in the runtime image called
+`context_yield` after **every** interface audit line. Those explicit yields,
+not `process::wake` or the two-message READ contract, caused the repeated
+client/service alternation. The current `process::wake` still only marks a peer
+runnable; the scheduler and protocol were not redesigned.
 
-`bash source/host-tools/qemu-test/stage4-request-cost.sh` passed on the clean
-production scheduler. Across eleven steady-state 512-byte READ intervals it
-reported one ordinary `region_allocate`, zero `dma_region_allocate`, one routed
-delivery and one idle wait per interval. Every interval had nine scheduler
-handoffs including one timer preemption, hence **eight non-timer handoffs**,
-above H3's unchanged limit of four. H1 is within ADR-0103's amended budget;
-H2 remains the one-copy result below.
+The Level-1 correction keeps each interface audit line visible before the call
+returns by entering the nucleus through the self-only non-scheduling
+`time_monotonic` operation. Stage/progress lines retain their existing yield,
+which preserves their pre-stage visibility. A fixed-size trace buffer in an
+isolated test nucleus records scheduler transitions and logical READ markers,
+and emits them after all processes end so serial output does not perturb the
+request. `source/host-tools/qemu-test/analyze-stage4-read-trace.py` retains
+**every** event of all twelve repeated READs in
+`docs/evidence/stage4-h3-logical-read-trace.json` and the gate output's
+`logical-read-trace.json`. It does not choose a favorable request or subtract
+time. It derives the two roles from the boot's own records rather than from
+launch order: the service is the one process the nucleus reports
+`TOS.RUN.PCI_ASSIGNED` for, and the client is the one context that receives the
+Regions the service sends.
 
-Code inspection found that `process::wake` only marks a blocked context
-runnable. It does not invoke the scheduler. Normal syscalls return to their
-current context. `process::schedule` is entered when a context blocks, ends or
-explicitly yields; `process::preempt` selects on a timer tick. Its round-robin
-search after `CURRENT` therefore already implements ADR-0103's rule. A trial
-change that restated it in the scheduler produced the same count and was
-removed. No scheduler correction can save the remaining handoffs without
-changing an actual blocking or protocol boundary.
+The archived run used QEMU 10.0.13, q35/qemu64, one vCPU and TCG; its capsule
+digest is `ea524b14aaae3703f13f4ddc2654652eac2a0603a42ea51db51d1fde8a549a60`,
+and the reported runtime-engine digest is
+`8574e30befeb98e57e82ffc493c86283ed34799455bc4c87e780a4a2f79e3806`.
+The trace nucleus was an isolated build with `test-block-protocol` and
+`test-request-trace`; the production nucleus artifact was hash-checked against
+mutation. The canonical service and client digests are
+`cd1a708eaf48078bec1231c66fc87b0ad12618933d7d7988346ae0e034dabffe`
+and `7768b17ea850b9bc31be7284ad1c04781fa4f6d72bf364b381cc98d4972b65ce`.
 
-The structural sequence remains: device completion wakes the service from an
-idle wait; the service's reply wakes the client but its separate Region send
-still has to complete; the client blocks to receive that Region; the service
-sends it, waking the client; subsequent client/service requests and receives
-re-enter through blocking points. The previous per-switch diagnostic trace in
-§3 gives the eight crossings. The smallest unresolved decision is whether to
-change the two-message READ, introduce another accepted explicit scheduling
-policy, or amend H3. None is taken here. R1–R3 oracle and observer work is
-stopped at this H3 decision boundary, as ADR-0103 requires.
+A timer-free logical READ, from client request commit through client receipt of
+the owed Region, has exactly these four scheduler transitions. The sequence
+numbers are READ 2 of the archived trace (request commit 597, Region received
+620, client Region release 622):
+
+| Sequence | From → to | Cause |
+|---|---|---|
+| 601 | client → service | the caller blocks waiting for the reply (`ENDPOINT_CALL`) |
+| 605 | service → idle | the service blocks in `irq_wait`; no context is runnable |
+| 608 | idle → service | the real IRQ wakes the service |
+| 617 | service → client | after replying and sending the Region, the service blocks waiting for the next request |
+
+Entry into and return from idle each count as one scheduling transition. The
+old counter reset `LAST_RUN` to idle but charged only the return, so it also
+under-counted one half of that pair. The corrected counter charges both. A
+conformance request before the repeated READs may finish before the service
+enters `irq_wait`; that IRQ is latched rather than waking a waiter. The
+IRQ-to-IRQ cross-check accepts either valid completion form. A READ's protocol
+completion is the transfer of the owed Region to the client;
+its subsequent byte check, Region release and the terminal fixture's service
+teardown are archived but are not block-service work. The client's Region
+release closes each retained window. In the archived run, five of twelve
+requests had no timer handoff and measured exactly 4/4. Seven had one timer
+handoff each, recorded separately; in five of them the tick replaced one of the
+four structural transitions (three structural plus one timer). In the other two
+(READs 9 and 10) the timer ran the client after the success reply but before
+the service sent the Region, so the client's receive blocked and added one
+client → service transition. The analyzer accepts that extra transition only in
+that exact causal order; it is a consequence of the preemption, not a step of
+the unpreempted READ. Timer-free/timer-interleaved proportions vary from run to
+run with where the tick lands; the structural skeleton does not.
+
+The gate is a regression check on the correction, not only a record of it:
+restoring `context_yield` after interface audit lines (a one-line mutation of
+`Report::interface_line`) turns `stage4-request-cost.sh` red with
+`READ 1: unexplained non-timer handoff`.
+
+**Current hard-budget verdict:** H1 meets ADR-0103 (one funded ordinary Region,
+zero per-request DMA Regions); H2 remains one payload copy; **H3 meets four**
+under the corrected logical-request attribution; H4 and H5 are unchanged.
+R1–R3 remain unmeasured under ADR-0103's accepted method, so Stage 4 stays open.
+
+Reproduce the H1/H3 evidence with:
+
+```sh
+bash source/host-tools/qemu-test/stage4-request-cost.sh
+```
+
+## Historical report before attribution correction
+
+The following pre-decision and first post-decision observations are retained to
+show the error's provenance. Their H1/H3 verdicts and P0 measurement-method
+claim are superseded by ADR-0103 and the current section above.
 
 `docs/16` lists a *"Stage 4 performance contract report"* among Stage 4's
 deliverables and `docs/37` lists it among the Stage 4 identity evidence. This is

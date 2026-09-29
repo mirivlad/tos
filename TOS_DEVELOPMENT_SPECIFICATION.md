@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `242afe3bff0b88bc05b195199d734eb945ccfaa734f64eeb32c1d49c55514712`\
+Source-manifest SHA-256: `53cf6a1c36500d137e8541331e6e3203df5e02ed3423b471f7e7b3dc2991b0d2`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -487,8 +487,9 @@ The closure-readiness audit of the whole of Stage 4 is
 `docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
 **ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
 the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
-is archived separately. Stage 4 remains **open** pending fresh performance
-evidence (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
+is archived separately. The corrected logical-request trace now meets H3 at
+four handoffs; Stage 4 remains **open** pending R1–R3 reference measurements
+(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -588,7 +589,7 @@ endpoint answers every well-formed in-range request successfully; the device fai
 below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
 fail a real request and the block service answers `BLK_DEVICE`.
 
-**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-26):
+**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-28):
 
 - **built and gated**: PCI discovery, the interrupt/MMIO/DMA contracts, the VirtIO
   block textual driver, persistent object/state storage, and the first half of the
@@ -598,9 +599,9 @@ fail a real request and the block service answers `BLK_DEVICE`.
   boundary it is and an incomplete `READ` (`block-fault.sh`); a device that fails
   a request, lies about its ring or never goes quiet (`block-fault.sh`,
   `dma-quarantine.sh`);
-- **the performance contract report exists and says the contract is not met**:
-  one allocation and eight scheduler handoffs per completed READ against budgets of
-  zero and four, and no accepted method for the reference-platform ratios;
+- **the performance contract report exists**: ADR-0103 funds one ordinary
+  payload Region per READ and defines the reference method; the corrected
+  logical-request trace meets H3 at four handoffs; R1–R3 remain unmeasured;
 - the **closure decision** is the Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
@@ -12771,15 +12772,18 @@ Stage 4 reference-platform budgets:
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
 
-**Status, 2026-09-27.** ADR-0103 amends H1 explicitly: the one ordinary
+**Status, 2026-09-28.** ADR-0103 amends H1 explicitly: the one ordinary
 payload Region of a READ is an accounted IPC ownership-transfer cost, not hidden
 driver working-set growth. H2 remains unchanged, and H3 retains its four-handoff
 budget under ADR-0103's scheduler rule. ADR-0103 also fixes the R1–R3 clocks,
 oracle isolation and workload shapes without changing their thresholds. The
-pre-decision measurements in `docs/evidence/STAGE4_PERFORMANCE_REPORT.md` remain
-historical evidence. The post-decision H3 rerun still measures eight structural
-handoffs for eleven steady-state READs, above four; see that report's decision
-update. Stage 4 remains open. R1–R3 are not yet measured under the accepted method.
+historical IRQ-to-IRQ counts in `docs/evidence/STAGE4_PERFORMANCE_REPORT.md`
+were misattributed. A causal trace found an explicit runtime yield after every
+interface audit line; the corrected runtime flushes those lines without a
+scheduling handoff. A logical READ now
+measures four structural transitions, including both entry into and return from
+idle, so H3 is met. R1–R3 remain unmeasured under the accepted method; Stage 4
+remains open.
 
 ## Stage 5 — Repository and activation
 
@@ -13642,10 +13646,6 @@ Mitigation:
 - first professional patent/FTO review scope, and the recorded decision on the three
   items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
   §Stage 4 engineering review);
-- the Stage 4 performance contract: the measurement method for `docs/35`'s
-  reference-platform budgets (clock, oracle, workload shape), and the two hard
-  budgets the accepted `block.device.v1` design exceeds — one allocation and eight
-  handoffs per completed READ (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §6);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes

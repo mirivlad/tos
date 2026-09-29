@@ -265,15 +265,18 @@ Stage 4 reference-platform budgets:
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
 
-**Status, 2026-09-27.** ADR-0103 amends H1 explicitly: the one ordinary
+**Status, 2026-09-28.** ADR-0103 amends H1 explicitly: the one ordinary
 payload Region of a READ is an accounted IPC ownership-transfer cost, not hidden
 driver working-set growth. H2 remains unchanged, and H3 retains its four-handoff
 budget under ADR-0103's scheduler rule. ADR-0103 also fixes the R1–R3 clocks,
 oracle isolation and workload shapes without changing their thresholds. The
-pre-decision measurements in `docs/evidence/STAGE4_PERFORMANCE_REPORT.md` remain
-historical evidence. The post-decision H3 rerun still measures eight structural
-handoffs for eleven steady-state READs, above four; see that report's decision
-update. Stage 4 remains open. R1–R3 are not yet measured under the accepted method.
+historical IRQ-to-IRQ counts in `docs/evidence/STAGE4_PERFORMANCE_REPORT.md`
+were misattributed. A causal trace found an explicit runtime yield after every
+interface audit line; the corrected runtime flushes those lines without a
+scheduling handoff. A logical READ now
+measures four structural transitions, including both entry into and return from
+idle, so H3 is met. R1–R3 remain unmeasured under the accepted method; Stage 4
+remains open.
 
 ## Stage 5 — Repository and activation
 

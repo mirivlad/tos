@@ -165,6 +165,9 @@ test-device-never-quiescent = []
 # completed block request cost. An observation added to a record and nothing else;
 # built beside an endowment constant rather than instead of one.
 test-request-cost = []
+# Isolated, verbose causal trace. The ordinary request-cost gate stays free of
+# serial tracing so it measures the production scheduling path.
+test-request-trace = ["test-request-cost"]
 # `docs/34` T7's DMA-capable hardware, for one build: at a routed delivery the
 # nucleus writes bytes the harness chose (`TOS_HOSTILE_DEVICE`, at build time) into
 # the DMA region of the assignment the delivery came from, before the waiter is

@@ -1,0 +1,3581 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "service_process": 1,
+  "client_process": 2,
+  "samples": [
+    {
+      "read": 1,
+      "begin_sequence": 568,
+      "complete_sequence": 595,
+      "protocol_complete_sequence": 588,
+      "structural_skeleton": 3,
+      "timer_handoffs": 1,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "568",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "569",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "570",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "571",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "572",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "573",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "574",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "575",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "576",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "577",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "578",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "579",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "580",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "581",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "582",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "583",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "584",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "585",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "586",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "587",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "588",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "589",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "590",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "591",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "592",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "593",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "594",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "595",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 2,
+      "begin_sequence": 597,
+      "complete_sequence": 622,
+      "protocol_complete_sequence": 620,
+      "structural_skeleton": 4,
+      "timer_handoffs": 0,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "597",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "598",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "599",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "600",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "601",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "602",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "603",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "604",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "605",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "606",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "607",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "608",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "609",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "610",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "611",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "612",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "613",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "614",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "615",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "616",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "617",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "618",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "619",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "620",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "621",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "622",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 3,
+      "begin_sequence": 624,
+      "complete_sequence": 651,
+      "protocol_complete_sequence": 645,
+      "structural_skeleton": 3,
+      "timer_handoffs": 1,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "624",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "625",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "626",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "627",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "628",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "629",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "630",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "631",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "632",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "633",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "634",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "635",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "636",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "637",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "638",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "639",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "640",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "641",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "642",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "643",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "644",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "645",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "646",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "647",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "648",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "649",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "650",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "651",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 4,
+      "begin_sequence": 653,
+      "complete_sequence": 678,
+      "protocol_complete_sequence": 676,
+      "structural_skeleton": 4,
+      "timer_handoffs": 0,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "653",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "654",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "655",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "656",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "657",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "658",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "659",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "660",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "661",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "662",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "663",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "664",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "665",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "666",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "667",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "668",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "669",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "670",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "671",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "672",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "673",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "674",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "675",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "676",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "677",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "678",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 5,
+      "begin_sequence": 680,
+      "complete_sequence": 705,
+      "protocol_complete_sequence": 703,
+      "structural_skeleton": 4,
+      "timer_handoffs": 0,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "680",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "681",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "682",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "683",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "684",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "685",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "686",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "687",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "688",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "689",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "690",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "691",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "692",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "693",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "694",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "695",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "696",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "697",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "698",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "699",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "700",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "701",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "702",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "703",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "704",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "705",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 6,
+      "begin_sequence": 707,
+      "complete_sequence": 732,
+      "protocol_complete_sequence": 730,
+      "structural_skeleton": 4,
+      "timer_handoffs": 0,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "707",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "708",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "709",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "710",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "711",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "712",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "713",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "714",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "715",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "716",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "717",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "718",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "719",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "720",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "721",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "722",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "723",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "724",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "725",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "726",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "727",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "728",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "729",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "730",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "731",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "732",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 7,
+      "begin_sequence": 734,
+      "complete_sequence": 761,
+      "protocol_complete_sequence": 754,
+      "structural_skeleton": 3,
+      "timer_handoffs": 1,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "734",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "735",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "736",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "737",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "738",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "739",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "740",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "741",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "742",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "743",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "744",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "745",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "746",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "747",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "748",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "749",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "750",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "751",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "752",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "753",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "754",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "755",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "756",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "757",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "758",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "759",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "760",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "761",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 8,
+      "begin_sequence": 763,
+      "complete_sequence": 790,
+      "protocol_complete_sequence": 783,
+      "structural_skeleton": 3,
+      "timer_handoffs": 1,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "763",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "764",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "765",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "766",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "767",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "768",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "769",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "770",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "771",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "772",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "773",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "774",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "775",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "776",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "777",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "778",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "779",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "780",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "781",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "782",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "783",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "784",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "785",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "786",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "787",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "788",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "789",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "790",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 9,
+      "begin_sequence": 792,
+      "complete_sequence": 821,
+      "protocol_complete_sequence": 814,
+      "structural_skeleton": 3,
+      "timer_handoffs": 1,
+      "timer_interleaved_extra": 1,
+      "raw_charged_handoffs": 5,
+      "events": [
+        {
+          "sequence": "792",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "793",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "794",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "795",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "796",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "797",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "798",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "799",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "800",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "801",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "802",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "803",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "804",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "805",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "806",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "807",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "808",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "809",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "810",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "811",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "812",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "813",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "814",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "815",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "816",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "817",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "818",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "819",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "820",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "821",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 10,
+      "begin_sequence": 823,
+      "complete_sequence": 852,
+      "protocol_complete_sequence": 845,
+      "structural_skeleton": 3,
+      "timer_handoffs": 1,
+      "timer_interleaved_extra": 1,
+      "raw_charged_handoffs": 5,
+      "events": [
+        {
+          "sequence": "823",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "824",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "825",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "826",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "827",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "828",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "829",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "830",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "831",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "832",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "833",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "834",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "835",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "836",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "837",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "838",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "839",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "840",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "841",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "842",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "843",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "844",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "845",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "846",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "847",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "848",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "849",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "850",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "851",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "852",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 11,
+      "begin_sequence": 854,
+      "complete_sequence": 879,
+      "protocol_complete_sequence": 877,
+      "structural_skeleton": 4,
+      "timer_handoffs": 0,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "854",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "855",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "856",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "857",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "858",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "859",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "860",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "861",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "862",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "863",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "864",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "865",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "866",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "867",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "868",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "869",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "870",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "871",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "872",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "873",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "874",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "receiver_request_or_region_wait",
+          "operation": "2",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "875",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "876",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "877",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "878",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "879",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    },
+    {
+      "read": 12,
+      "begin_sequence": 881,
+      "complete_sequence": 921,
+      "protocol_complete_sequence": 902,
+      "structural_skeleton": 3,
+      "timer_handoffs": 1,
+      "timer_interleaved_extra": 0,
+      "raw_charged_handoffs": 4,
+      "events": [
+        {
+          "sequence": "881",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "request_committed",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "882",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "883",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "884",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "885",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "caller_reply_wait",
+          "operation": "3",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "886",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "887",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "device_request_submitted",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "888",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "889",
+          "kind": "idle_enter",
+          "from": "1",
+          "to": "idle",
+          "reason": "service_irq_wait",
+          "operation": "29",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "890",
+          "kind": "marker",
+          "from": "idle",
+          "to": "idle",
+          "reason": "irq_completion",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "891",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "wake_blocked_context",
+          "operation": "29",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "892",
+          "kind": "dispatch",
+          "from": "idle",
+          "to": "1",
+          "reason": "resume_after_idle",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "893",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "894",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "wake_blocked_context",
+          "operation": "3",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "895",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "success_reply_produced",
+          "operation": "4",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "896",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "897",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "region_send_committed",
+          "operation": "1",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "898",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "899",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "900",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "2",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "901",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "message_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "902",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_received",
+          "operation": "0",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "903",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "904",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "905",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "906",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "907",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "908",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "909",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "910",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "911",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "912",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "explicit_yield",
+          "operation": "10",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "913",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "explicit_yield",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "914",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "915",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "explicit_yield",
+          "operation": "10",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "916",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "explicit_yield",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "917",
+          "kind": "dispatch",
+          "from": "2",
+          "to": "1",
+          "reason": "timer_quantum_expired",
+          "operation": "0",
+          "timer": "1",
+          "charged": "1"
+        },
+        {
+          "sequence": "918",
+          "kind": "marker",
+          "from": "1",
+          "to": "1",
+          "reason": "explicit_yield",
+          "operation": "10",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "919",
+          "kind": "dispatch",
+          "from": "1",
+          "to": "2",
+          "reason": "explicit_yield",
+          "operation": "10",
+          "timer": "0",
+          "charged": "1"
+        },
+        {
+          "sequence": "920",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "syscall_enter",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        },
+        {
+          "sequence": "921",
+          "kind": "marker",
+          "from": "2",
+          "to": "2",
+          "reason": "region_released",
+          "operation": "6",
+          "timer": "0",
+          "charged": "0"
+        }
+      ]
+    }
+  ]
+}
