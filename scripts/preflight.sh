@@ -362,6 +362,12 @@ qemu_module_operation() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/module-operation.sh \
         target/preflight-qemu/module-operation)
 }
+# A long-lived process says more than its report region holds and every line
+# arrives: the nucleus returns a fully relayed region to empty.
+qemu_report_reclaim() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/report-reclaim.sh \
+        target/preflight-qemu/report-reclaim)
+}
 qemu_process_control() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/process-control.sh \
         target/preflight-qemu/process-control)
@@ -816,6 +822,7 @@ gate qemu       full-only "QEMU what one request/reply costs"          qemu_exch
 gate qemu       full-only "QEMU confused deputy"                       qemu_deputy
 gate qemu       full-only "QEMU one endpoint has one receiver"         qemu_second_receiver
 gate qemu       full-only "QEMU a module performs an operation"        qemu_module_operation
+gate qemu       full-only "QEMU a long-lived process keeps its report" qemu_report_reclaim
 gate qemu       full-only "QEMU a module ends its own process"         qemu_process_control
 gate qemu       full-only "QEMU a module launches a process"           qemu_process_launch
 gate qemu       full-only "QEMU a supervisor collects endings"          qemu_lifecycle

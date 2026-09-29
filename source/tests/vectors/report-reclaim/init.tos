@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A long-lived process says more than its report region holds, and every word of
+// it reaches the transport.
+//
+// **The defect this pins.** A process's report region is a fixed 64 KiB of its
+// charged footprint, and the runtime used to fill it front to back and then drop
+// every later line — so a service that had answered a hundred-odd requests went
+// silent for the rest of its life, audit trail and final account included, while
+// every count a gate read still looked plausible. The nucleus now returns a fully
+// relayed region to empty (`RUNTIME_OBSERVABILITY_V1` §7), and this module is the
+// evidence that it does.
+//
+// **Why a refused receive.** It is the cheapest interface operation that still
+// crosses the edge and leaves one fixed-text audit line behind it: the endowment
+// carries `send` and not `receive`, so every call is refused by the nucleus with
+// `E_NO_CAPABILITY` and changes nothing. Four thousand and ninety-six of them are
+// about three and a half regions' worth of lines — enough that the region must be
+// reused more than once, not merely once at the boundary.
+//
+// **The value is the module's own count of refusals**, so the gate can compare
+// what the module did with what reached the log line by line: a transport that
+// lost lines would show fewer than the module reports, and a module that stopped
+// early would report fewer than it was asked to make.
+
+module system.boot.init version 1.0 profile full;
+
+import capability system.ipc.Endpoint as endpoint;
+
+resource [
+    fuel: 1048576,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 1
+]
+
+extern fn endpoint_receive(cap: system.ipc.Endpoint) -> i64 uses [endpoint];
+
+const CALLS: u64 = 4096u64;
+const E_NO_CAPABILITY: i64 = -1i64;
+
+pub fn main() -> i64 uses [endpoint] {
+    let mut made: u64 = 0u64;
+    let mut refused: i64 = 0i64;
+    while (made < CALLS) {
+        if (endpoint_receive(endpoint) == E_NO_CAPABILITY) {
+            refused = refused + 1i64;
+        }
+        made = made + 1u64;
+    }
+    return refused;
+}

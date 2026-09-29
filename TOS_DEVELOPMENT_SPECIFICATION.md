@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `53cf6a1c36500d137e8541331e6e3203df5e02ed3423b471f7e7b3dc2991b0d2`\
+Source-manifest SHA-256: `704b73ab9d0d8adcd79e7c109a65ec30e1a1e9be445f43c9800360d81f58c30f`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2120,7 +2120,12 @@ drains whichever process just entered the edge, so the relative order of two
 processes' lines on the transport is the order the scheduler produced. A line is
 never split: a runtime publishes a line by advancing the region's `written`
 count after the bytes are in it, so a process interrupted mid-write has written
-nothing yet. Attributing a §3–§6 event to a process is therefore not something a
+nothing yet. The nucleus drains a region only while its process is inside the
+nucleus, and once every published byte is on the transport it returns both
+counts to zero, so the region's fixed size bounds what is in flight rather than
+what a process may say over its life. That reuses staging space the transport
+has already consumed; it is not a rollover, retention or storage policy for the
+diagnostic view, which §9.6 leaves undecided. Attributing a §3–§6 event to a process is therefore not something a
 reader can do from the transport alone — and nothing in this contract asks them
 to, because every claim that needs an owner is a nucleus event above, which
 carries one.

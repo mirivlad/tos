@@ -754,6 +754,25 @@ impl From<PagingRefused> for Unlaunchable {
 /// property true across the boundary: a line written before a call is on the
 /// log before the call returns, so a stage that never returns is still named by
 /// the last event.
+///
+/// **And a region relayed completely is empty again.** The region is a bounded
+/// staging transport, not a store: once every published byte is on the log,
+/// the space those bytes occupied holds nothing anybody will read, so both
+/// counts return to zero and the next line starts at the front. Without that, a
+/// process that outlived 64 KiB of lines lost every later one, its account and
+/// its completion included (`report-reclaim.sh`).
+///
+/// **Why resetting `written` cannot lose a line.** Both callers reach here with
+/// the current process inside the nucleus or over: `answer` at the entry of its
+/// own system call, and `retire` from the scheduler loop, which runs only after
+/// the current context blocked, yielded, ended or faulted — the timer path
+/// switches contexts without draining. The runtime publishes a line by writing
+/// its bytes and then advancing `written`, with no system call in between, so at
+/// either point there is no line half-published: every byte below `written` is
+/// a whole published line and nothing above it is. The runtime reads `written`
+/// afresh for each line, after the system call that follows the previous one.
+/// A region whose `written` was clamped here (a runtime that claimed more than
+/// the region holds) is not reset, because then not everything was relayed.
 pub fn drain_report() {
     // SAFETY: single-context nucleus with interrupts masked, and the current
     // slot is the process whose report this is.
@@ -765,9 +784,9 @@ pub fn drain_report() {
         return;
     }
     // SAFETY: `base` is a frame-aligned physical range the launcher allocated
-    // for this process and mapped into the nucleus's identity map; the header
-    // is written by the process and read here, and only `drained` is written
-    // back, which the process never reads.
+    // for this process and mapped into the nucleus's identity map. The process
+    // is not running (see above), so nothing writes the header while this
+    // reads it and writes back `drained`, or both counts on a full relay.
     let header =
         unsafe { &mut *core::ptr::with_exposed_provenance_mut::<ReportHeader>(base as usize) };
     let written = header
@@ -786,6 +805,10 @@ pub fn drain_report() {
         }
     }
     header.drained = at;
+    if at == header.written {
+        header.written = 0;
+        header.drained = 0;
+    }
 }
 
 /// Charges one timer tick to the running process and gives the processor to the
