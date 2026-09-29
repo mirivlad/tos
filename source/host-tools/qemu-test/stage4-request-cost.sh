@@ -4,21 +4,21 @@
 #
 # **`docs/35` §Stage 4's hard budgets are counts, and this is where they are
 # counted** rather than argued. The accepted protocol boot of `block-protocol.sh`
-# runs unchanged — its twelve repeated READs are the steady state — on a nucleus
-# whose one addition is that the scheduler counts what it does and reports the
-# running totals on every routed interrupt delivery:
+# runs unchanged — its twelve repeated READs are the steady state — on isolated
+# measurement nuclei. One counts scheduler activity and reports running totals
+# on every routed interrupt delivery; the other buffers a causal trace:
 #
 #   dispatches   the processor given to a context
 #   handoffs     those that give it to a different context than last had it; an
-#                idle wait counts as nobody, so a context woken out of one is a
-#                handoff
+#                entry into and return from idle each count as one transition
 #   idles        the machine waiting for an interrupt with nothing runnable
 #   preemptions  handoffs made by the timer rather than by a context giving the
 #                processor up
 #
-# Every repeated READ completes with exactly one delivery, so the difference
-# between two consecutive deliveries is exactly one request, and the runtime's own
-# per-operation lines between them say what that request asked the system for.
+# IRQ-to-IRQ deltas remain a useful allocation/accounting cross-check, but an
+# interval contains the tail of one READ and the head of the next. The separate
+# buffered trace below measures each READ from the client's committed call to
+# its receipt of the owed Region and archives the later release/completion.
 #
 # **What is asserted is what the accepted design makes deterministic**, and it is
 # asserted exactly, so that a change to it cannot pass unnoticed:
@@ -29,23 +29,13 @@
 #                         0 dma_region_allocate  the queue's one DMA region serves
 #                                                every request
 #                         1 routed delivery      one completion, one wake
-#                         1 idle wait            the device's time is nobody's
-#                         8 handoffs, before     the reply wakes the client and the
-#                           the timer's          region is a second message, and while
-#                                                both are runnable each system call
-#                                                returns through a round-robin turn;
-#                                                the timer adds at most two a tick
+#                         one device completion  the READ has one submitted request
 #
-# **Two of those exceed the budgets `docs/35` states** — "zero dynamic allocation
-# per completed block request" and "no more than four address-space/scheduler
-# handoffs per unbatched request" — and this gate does **not** turn that into a
-# pass. It pins what the design costs so the Stage 4 performance report can cite a
-# number the machine produced; the verdict against the budget is the report's, and
-# it says EXCEEDED (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
+# H1 follows ADR-0103's amended budget. H3 is decided by the logical-request
+# trace, including both directions through idle, not by IRQ-to-IRQ subtraction.
 #
-# Timer preemptions ride on top and vary from run to run with where the tick
-# lands; they are reported and not asserted. So are host wall-clock intervals,
-# which are observational: this is not the reference-platform measurement.
+# Timer preemptions and their follow-on transitions are retained separately.
+# Host wall-clock intervals remain observational, not the reference measurement.
 #
 #   bash host-tools/qemu-test/stage4-request-cost.sh [OUT_DIR]
 set -euo pipefail
@@ -111,11 +101,14 @@ for line in events:
     if m:
         operations[m.group(1)] = operations.get(m.group(1), 0) + 1
         continue
-    m = re.match(r"^TOS\.RUN\.IRQ_DELIVERED .* deliveries=(\d+) woke=1 latched=0 "
+    m = re.match(r"^TOS\.RUN\.IRQ_DELIVERED .* deliveries=(\d+) woke=([01]) latched=([01]) "
                  r"dispatches=(\d+) handoffs=(\d+) idles=(\d+) preemptions=(\d+) "
                  r"asserted_by=nucleus$", line)
     if m:
-        deliveries.append((tuple(int(x) for x in m.groups()), operations))
+        delivery, woke, latched, *counts = (int(x) for x in m.groups())
+        if woke + latched != 1:
+            sys.exit("delivery %d neither woke one waiter nor latched one IRQ" % delivery)
+        deliveries.append(((delivery, *counts), operations))
         operations = {}
 
 # The block-protocol boot reaches the device fourteen times: a conformance WRITE,
@@ -144,18 +137,9 @@ for (prev, _), (cur, ops) in zip(deliveries[2:], deliveries[3:]):
 problems = []
 for n, row in enumerate(rows):
     for key, want in (("region_allocate", 1), ("dma_region_allocate", 0), ("irq_wait", 1),
-                      ("endpoint_send_region", 1), ("idles", 1)):
+                      ("endpoint_send_region", 1)):
         if row[key] != want:
             problems.append("READ %d: %s=%d, the design's figure is %d" % (n + 1, key, row[key], want))
-    # A tick that lands inside a request moves the processor once and may cost
-    # one more handoff when the context it moved to gives it back — so the timer
-    # adds at most two per preemption, and never takes any away.
-    if not 8 <= row["handoffs"] <= 8 + 2 * row["preemptions"]:
-        problems.append("READ %d: %d handoffs with %d preemptions is outside 8..8+2p"
-                        % (n + 1, row["handoffs"], row["preemptions"]))
-# And the design's own figure is what a request the timer did not touch costs.
-if min(r["handoffs"] - r["preemptions"] for r in rows) != 8:
-    problems.append("no READ costs exactly the design's 8 handoffs once the timer is set aside")
 if problems:
     sys.exit("\n".join(problems))
 
@@ -169,8 +153,8 @@ walls = [(b - a) / 1e6 for a, b in zip(completions[2:], completions[3:])]
 handoffs = sorted(r["handoffs"] for r in rows)
 preempt = sorted(r["preemptions"] for r in rows)
 print("  %d steady-state READs of 512 bytes through block.device.v1, each:" % len(rows))
-print("    1 region_allocate, 0 dma_region_allocate, 1 routed delivery, 1 idle wait")
-print("    handoffs %d..%d: 8 from the design, the rest from %d..%d timer preemptions"
+print("    1 region_allocate, 0 dma_region_allocate, 1 routed delivery")
+print("    IRQ-to-IRQ handoffs %d..%d, including %d..%d timer preemptions; not H3 boundaries"
       % (handoffs[0], handoffs[-1], preempt[0], preempt[-1]))
 print("    dispatches %d..%d" % (min(r["dispatches"] for r in rows), max(r["dispatches"] for r in rows)))
 print("  observational, not a budget: host wall-clock between completions median %.2f ms, "
@@ -178,4 +162,27 @@ print("  observational, not a budget: host wall-clock between completions median
       % (statistics.median(walls), min(walls), max(walls), len(walls)))
 COUNT
 
-echo "stage4-request-cost: PASS (the counts are the design's; docs/35's verdict on them is the Stage 4 performance report's)"
+echo "stage4-request-cost: allocation cross-check PASS"
+
+# A second isolated nucleus records causal events in a fixed buffer and emits
+# them only after all processes end. This avoids serial I/O inside the measured
+# request and gives the logical READ its own begin/end markers.
+(cd "$ROOT" && CARGO_TARGET_DIR="$TARGET/trace" cargo build --release \
+    -p tos-nucleus --target x86_64-unknown-none \
+    --features test-block-protocol,test-request-trace >/dev/null 2>&1) ||
+    fail "the isolated causal-trace nucleus does not build"
+[ "$before" = "$(sha256sum "$PRODUCTION" | awk '{print $1}')" ] ||
+    fail "the production nucleus changed while building the trace artifact"
+bash "$HERE/run.sh" \
+    --out "$OUT/trace-boot" \
+    --capsule "$OUT/capsule.bin" \
+    --nucleus "$TARGET/trace/x86_64-unknown-none/release/tos-nucleus" \
+    --stage4-block-device --expect 33 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.PCI_ROOT TOS.RUN.IRQ_DELIVERED TOS.RUN.COMPLETED TOS.HALT" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.TRAP TOS.RUN.REFUSED TOS.TRACE.OVERFLOW" \
+    > /dev/null || fail "the causal-trace boot did not complete"
+python3 "$HERE/analyze-stage4-read-trace.py" \
+    "$OUT/trace-boot/events.log" "$OUT/logical-read-trace.json" ||
+    fail "logical READ attribution failed"
+
+echo "stage4-request-cost: PASS (H1 within ADR-0103, H3 structural skeleton <= 4)"

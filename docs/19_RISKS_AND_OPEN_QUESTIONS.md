@@ -154,10 +154,6 @@ Mitigation:
 - first professional patent/FTO review scope, and the recorded decision on the three
   items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
   §Stage 4 engineering review);
-- the Stage 4 performance contract: the measurement method for `docs/35`'s
-  reference-platform budgets (clock, oracle, workload shape), and the two hard
-  budgets the accepted `block.device.v1` design exceeds — one allocation and eight
-  handoffs per completed READ (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §6);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes
@@ -259,4 +255,3 @@ Mitigation:
 - reference implementations remain oracles under ADR-0011;
 - performance failure triggers profiling or explicit ADR, not hidden relocation into nucleus;
 - identity gate and performance report are reviewed together.
-

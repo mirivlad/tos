@@ -472,8 +472,9 @@ The closure-readiness audit of the whole of Stage 4 is
 `docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
 **ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
 the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
-is archived separately. Stage 4 remains **open** pending fresh performance
-evidence (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
+is archived separately. The corrected logical-request trace now meets H3 at
+four handoffs; Stage 4 remains **open** pending R1–R3 reference measurements
+(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -573,7 +574,7 @@ endpoint answers every well-formed in-range request successfully; the device fai
 below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
 fail a real request and the block service answers `BLK_DEVICE`.
 
-**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-26):
+**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-28):
 
 - **built and gated**: PCI discovery, the interrupt/MMIO/DMA contracts, the VirtIO
   block textual driver, persistent object/state storage, and the first half of the
@@ -583,9 +584,9 @@ fail a real request and the block service answers `BLK_DEVICE`.
   boundary it is and an incomplete `READ` (`block-fault.sh`); a device that fails
   a request, lies about its ring or never goes quiet (`block-fault.sh`,
   `dma-quarantine.sh`);
-- **the performance contract report exists and says the contract is not met**:
-  one allocation and eight scheduler handoffs per completed READ against budgets of
-  zero and four, and no accepted method for the reference-platform ratios;
+- **the performance contract report exists**: ADR-0103 funds one ordinary
+  payload Region per READ and defines the reference method; the corrected
+  logical-request trace meets H3 at four handoffs; R1–R3 remain unmeasured;
 - the **closure decision** is the Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the

@@ -583,6 +583,18 @@ struct Report {
 
 impl Report {
     fn line(&self, text: &str) {
+        self.line_with_flush(text, true);
+    }
+
+    /// Interface-call records must be visible before the call returns, but
+    /// recording one must not donate the rest of the caller's quantum to a
+    /// peer it just woke. A self-only non-blocking call drains the report on
+    /// the ordinary nucleus edge without scheduling another context.
+    fn interface_line(&self, text: &str) {
+        self.line_with_flush(text, false);
+    }
+
+    fn line_with_flush(&self, text: &str, yield_after: bool) {
         // SAFETY: `report_base` names a writable mapping of `report_length`
         // bytes in this address space, made by the launcher, and this image is
         // its only writer.
@@ -612,11 +624,21 @@ impl Report {
                 .write(b'\n')
         };
         header.written += bytes.len() as u64 + 1;
-        // Give up the rest of the quantum. With one runnable context that
-        // returns immediately, and it is the moment the nucleus is running and
-        // the region is stable, so it is also when the line reaches the log.
-        // SAFETY: `context_yield` is self-only and takes no argument.
-        unsafe { call(CONTEXT_YIELD, 0, 0) };
+        // Either edge drains the newly committed line before returning. The
+        // stage/progress path still yields deliberately; an interface record
+        // uses the self-only time read solely as a non-scheduling drain point.
+        // SAFETY: both operations are self-only and take no argument.
+        unsafe {
+            call(
+                if yield_after {
+                    CONTEXT_YIELD
+                } else {
+                    TIME_MONOTONIC
+                },
+                0,
+                0,
+            )
+        };
     }
 }
 
@@ -2644,11 +2666,11 @@ impl System for Endowment<'_> {
         // the thing that can make text visible, not the thing that decides what
         // it says.
         match said {
-            Some(text) => self.report.line(&alloc::format!(
+            Some(text) => self.report.interface_line(&alloc::format!(
                 "TOS.RUN.INTERFACE operation={} status={status} said={text}",
                 call.operation
             )),
-            None => self.report.line(&alloc::format!(
+            None => self.report.interface_line(&alloc::format!(
                 "TOS.RUN.INTERFACE operation={} status={status}",
                 call.operation
             )),

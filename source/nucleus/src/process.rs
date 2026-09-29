@@ -857,7 +857,7 @@ pub unsafe fn preempt(frame: &mut TrapFrame, tick: u64) {
     // which run with interrupts masked and none of which is re-entrant.
     unsafe { CURRENT = next };
     #[cfg(feature = "test-request-cost")]
-    count_dispatch(next);
+    count_dispatch(next, b"timer_quantum_expired", 0, true);
     // And that this dispatch was the timer's rather than a context giving the
     // processor up, which is the distinction a handoff budget has to be read with.
     #[cfg(feature = "test-request-cost")]
@@ -887,15 +887,14 @@ static mut ENTRIES: u64 = 0;
 /// ```text
 /// dispatches   every time the processor is given to a context
 /// handoffs     those that give it to a different context than the one that
-///              last had it — idle counts as nobody, so a context woken out of
-///              an idle wait is a handoff
+///              last had it, including both entry into and return from idle
 /// idles        every time nothing could run and the machine waited for an
 ///              interrupt
 /// ```
 ///
 /// Observations only: nothing reads them to decide anything, and no operation
-/// reaches them. They are reported on each routed delivery, so the difference
-/// between two deliveries is one request's cost.
+/// reaches them. Routed deliveries report cumulative totals. Their deltas
+/// straddle two logical requests and are not themselves the H3 boundary.
 #[cfg(feature = "test-request-cost")]
 static mut DISPATCHES: u64 = 0;
 #[cfg(feature = "test-request-cost")]
@@ -906,16 +905,147 @@ static mut IDLES: u64 = 0;
 static mut LAST_RUN: usize = usize::MAX;
 #[cfg(feature = "test-request-cost")]
 static mut PREEMPTIONS: u64 = 0;
+#[cfg(feature = "test-request-trace")]
+static mut TRACE_COUNT: usize = 0;
+#[cfg(feature = "test-request-trace")]
+static mut TRACE_OVERFLOW: bool = false;
+#[cfg(feature = "test-request-trace")]
+#[derive(Clone, Copy)]
+struct TraceRecord {
+    kind: &'static [u8],
+    from: usize,
+    to: usize,
+    reason: &'static [u8],
+    operation: u32,
+    timer: bool,
+    charged: bool,
+}
+#[cfg(feature = "test-request-trace")]
+const EMPTY_TRACE: TraceRecord = TraceRecord {
+    kind: b"empty",
+    from: usize::MAX,
+    to: usize::MAX,
+    reason: b"none",
+    operation: 0,
+    timer: false,
+    charged: false,
+};
+#[cfg(feature = "test-request-trace")]
+static mut TRACE: [TraceRecord; 4096] = [EMPTY_TRACE; 4096];
+
+#[cfg(feature = "test-request-trace")]
+fn trace_context(index: usize) {
+    if index == usize::MAX {
+        tos_serial::puts(b"idle");
+    } else {
+        tos_serial::put_u32_decimal(index as u32);
+    }
+}
+
+#[cfg(feature = "test-request-trace")]
+fn trace_record(record: TraceRecord) {
+    // SAFETY: one CPU; these diagnostic paths run with interrupts masked.
+    unsafe {
+        if TRACE_COUNT < 4096 {
+            core::ptr::addr_of_mut!(TRACE)
+                .cast::<TraceRecord>()
+                .add(TRACE_COUNT)
+                .write(record);
+            TRACE_COUNT += 1;
+        } else {
+            TRACE_OVERFLOW = true;
+        }
+    }
+}
+
+#[cfg(feature = "test-request-trace")]
+fn dump_trace() {
+    // SAFETY: no process is runnable, so no writer can interleave the dump.
+    let count = unsafe { TRACE_COUNT };
+    for sequence in 0..count {
+        // SAFETY: sequence is below the number of initialized records.
+        let record = unsafe {
+            core::ptr::addr_of!(TRACE)
+                .cast::<TraceRecord>()
+                .add(sequence)
+                .read()
+        };
+        tos_serial::puts(b"TOS.TRACE sequence=");
+        tos_serial::put_u32_decimal((sequence + 1) as u32);
+        tos_serial::puts(b" kind=");
+        tos_serial::puts(record.kind);
+        tos_serial::puts(b" from=");
+        trace_context(record.from);
+        tos_serial::puts(b" to=");
+        trace_context(record.to);
+        tos_serial::puts(b" reason=");
+        tos_serial::puts(record.reason);
+        tos_serial::puts(b" operation=");
+        tos_serial::put_u32_decimal(record.operation);
+        tos_serial::puts(b" timer=");
+        tos_serial::put_u32_decimal(record.timer as u32);
+        tos_serial::puts(b" charged=");
+        tos_serial::put_u32_decimal(record.charged as u32);
+        tos_serial::puts(b"\r\n");
+    }
+    // SAFETY: the scheduler has finished and no trace writer remains.
+    if unsafe { TRACE_OVERFLOW } {
+        tos_serial::puts(b"TOS.TRACE.OVERFLOW capacity=4096\r\n");
+    }
+}
 
 #[cfg(feature = "test-request-cost")]
-fn count_dispatch(next: usize) {
+fn waiting_reason(waiting: Waiting) -> &'static [u8] {
+    match waiting {
+        Waiting::Nothing => b"none",
+        Waiting::Reply => b"caller_reply_wait",
+        Waiting::Message(_) => b"receiver_request_or_region_wait",
+        Waiting::Room(_) => b"queue_room_wait",
+        Waiting::Interrupt(_, _) => b"service_irq_wait",
+        Waiting::ChildOf(_) => b"child_wait",
+    }
+}
+
+#[cfg(feature = "test-request-trace")]
+pub fn trace_marker(label: &'static [u8], actor: usize, operation: u32) {
+    trace_record(TraceRecord {
+        kind: b"marker",
+        from: actor,
+        to: actor,
+        reason: label,
+        operation,
+        timer: false,
+        charged: false,
+    });
+}
+
+#[cfg(feature = "test-request-cost")]
+fn count_dispatch(next: usize, reason: &'static [u8], operation: u32, timer: bool) {
     // SAFETY: single-context nucleus with interrupts masked on every path here.
     unsafe {
         DISPATCHES = DISPATCHES.wrapping_add(1);
-        if LAST_RUN != next {
+        let from = LAST_RUN;
+        let charged = from != next;
+        if charged {
             HANDOFFS = HANDOFFS.wrapping_add(1);
         }
         LAST_RUN = next;
+        #[cfg(feature = "test-request-trace")]
+        trace_record(TraceRecord {
+            kind: b"dispatch",
+            from,
+            to: next,
+            reason: if from == usize::MAX {
+                b"resume_after_idle"
+            } else {
+                reason
+            },
+            operation,
+            timer,
+            charged,
+        });
+        #[cfg(not(feature = "test-request-trace"))]
+        let _ = (from, charged, reason, operation, timer);
     }
 }
 
@@ -1067,6 +1197,8 @@ pub unsafe fn yield_now(frame: &TrapFrame) -> ! {
     // SAFETY: single-context nucleus with interrupts masked.
     unsafe {
         let table = table();
+        #[cfg(feature = "test-request-trace")]
+        trace_marker(b"explicit_yield", CURRENT, 10);
         table[CURRENT].frame = *frame;
         crate::syscall::Answer::status(crate::syscall::OK).into_frame(&mut table[CURRENT].frame);
         // It is still runnable: the scheduler may hand the processor straight
@@ -1160,6 +1292,8 @@ pub unsafe fn block(frame: &TrapFrame, waiting: Waiting, operation: u32) -> ! {
     // SAFETY: single-context nucleus with interrupts masked.
     unsafe {
         let table = table();
+        #[cfg(feature = "test-request-trace")]
+        trace_marker(waiting_reason(waiting), CURRENT, operation);
         table[CURRENT].frame = *frame;
         table[CURRENT].waiting = waiting;
         table[CURRENT].blocked_in = operation;
@@ -1248,6 +1382,8 @@ pub unsafe fn wake(index: usize, answer: crate::syscall::Answer) {
     if index >= MAX_PROCESSES || table[index].state != State::Blocked {
         return;
     }
+    #[cfg(feature = "test-request-trace")]
+    trace_marker(b"wake_blocked_context", index, table[index].blocked_in);
     answer.into_frame(&mut table[index].frame);
     if table[index].waiting == Waiting::Reply {
         // However this wait ended — answered, cancelled, or the caller taken
@@ -1349,6 +1485,24 @@ fn await_interrupt() {
     // SAFETY: single-context nucleus; the only writer.
     unsafe {
         IDLES = IDLES.wrapping_add(1);
+        if LAST_RUN != usize::MAX {
+            HANDOFFS = HANDOFFS.wrapping_add(1);
+        }
+        #[cfg(feature = "test-request-trace")]
+        let (reason, operation) = {
+            let slot = &table()[CURRENT];
+            (waiting_reason(slot.waiting), slot.blocked_in)
+        };
+        #[cfg(feature = "test-request-trace")]
+        trace_record(TraceRecord {
+            kind: b"idle_enter",
+            from: LAST_RUN,
+            to: usize::MAX,
+            reason,
+            operation,
+            timer: false,
+            charged: LAST_RUN != usize::MAX,
+        });
         LAST_RUN = usize::MAX;
     }
     // SAFETY: no context is running, the nucleus's own address space is live,
@@ -1523,6 +1677,16 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
         }
         // SAFETY: single-context nucleus; nothing else writes this.
         let current = unsafe { CURRENT };
+        #[cfg(feature = "test-request-cost")]
+        // SAFETY: single-context nucleus; the current slot cannot change here.
+        let (reason, operation) = unsafe {
+            let slot = &table()[current];
+            match slot.state {
+                State::Blocked => (waiting_reason(slot.waiting), slot.blocked_in),
+                State::Runnable => (b"explicit_yield" as &[u8], 10),
+                _ => (b"process_exit_or_fault" as &[u8], 0),
+            }
+        };
         let next = match next_runnable_after(current) {
             Some(next) => next,
             // Nothing to run, which is three states wearing one appearance
@@ -1537,7 +1701,11 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
                 let (blocked, routed) = blocked_census();
                 match liveness(blocked, routed) {
                     // Nothing is waiting: the boot's work is over.
-                    Liveness::Finished => return,
+                    Liveness::Finished => {
+                        #[cfg(feature = "test-request-trace")]
+                        dump_trace();
+                        return;
+                    }
                     // Something routed can still wake a blocked context, so the
                     // system is idle rather than stopped. Halting is the honest
                     // answer — there is nothing to run and something to wait for —
@@ -1593,7 +1761,7 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
         unsafe {
             CURRENT = next;
             #[cfg(feature = "test-request-cost")]
-            count_dispatch(next);
+            count_dispatch(next, reason, operation, false);
             let slot = addr_of_mut!(TABLE).cast::<Slot>().add(next);
             (*slot).quanta += 1;
             // SAFETY: the slot's space maps this nucleus at the addresses it is
