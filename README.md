@@ -117,7 +117,11 @@ canonical TOS Core source executes through the production reader, parser,
 checker, deterministic `tos-ir/v1` lowerer, independent verifier and bounded
 engine. **Stage 3 is formally closed** (2026-09-03) — capabilities, IPC,
 regions, funded process creation, the build-to-bundle lifecycle and a
-supervisor written in TOS Core. **Stage 4A and Stage 4B are closed**
+supervisor written in TOS Core. **Stage 4 is formally closed** (2026-09-30,
+`source/legal/publication-records/86c0f820e723477ff4f94865042174ab9d8141e6-stage4-closure-approval.md`):
+a canonical textual user-space driver moves persistent data through MMIO, IRQ, DMA
+and IPC boundaries, with a measured Bootstrap/TCG performance baseline and no
+production-performance claim. Its substages: **Stage 4A and Stage 4B are closed**
 (2026-09-04) — canonical TOS Core holds a platform root, claims a real PCI
 function, reads its configuration space, finds the VirtIO capability structures
 itself, derives a bounded window on the BAR they name, and reads the device's
@@ -176,7 +180,8 @@ hold the extent is not a store — and a second boot against a 64-sector image p
 answering every request `ST_STORE` and reading sector 0 not at all.
 
 **What that is not**: durability. No power-loss guarantee, no `FLUSH`, no crash
-consistency, no transactions — and no Stage 4 closure.
+consistency, no transactions. The store is one of Stage 4's deliverables, not
+what closes it.
 
 The publication authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095
 amended it: a dedicated publication endpoint whose identity fixes what may be
@@ -468,10 +473,11 @@ IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 **Stage 4C and Stage 4D are formally closed** by the Project Architect on
 2026-09-26; their approval is archived in
 `source/legal/publication-records/stage4cd-closure-approval-2026-09-26.md`.
+**Stage 4 is formally closed** by the Project Architect on 2026-09-30
+(`source/legal/publication-records/86c0f820e723477ff4f94865042174ab9d8141e6-stage4-closure-approval.md`).
 The closure audit of the whole of Stage 4 is
 `docs/evidence/STAGE4_CLOSURE_AUDIT.md`, reconciled on 2026-09-30: 72 obligations,
-67 PASS and 5 NONCLAIM by accepted decision, and **Stage 4 ready to close on the
-evidence**. ADR-0103 reconciled H1 and defined the H3 scheduling rule and the R1–R3
+67 PASS and 5 NONCLAIM by accepted decision. ADR-0103 reconciled H1 and defined the H3 scheduling rule and the R1–R3
 method. The corrected logical-request trace meets H3 at four handoffs. R1–R3 were
 measured at P1 and **missed** as the original research targets (R1 0.00375, R2 246,
 R3 224); ADR-0104 makes them characterization and regression evidence for the
@@ -574,7 +580,7 @@ red, each on its own assertion.
 **What that does not mean.** No power-loss durability, no `VIRTIO_BLK_F_FLUSH`, no
 crash consistency, no journaling, no transactions, no exactly-once `PUT`, no delete, no
 enumeration, no second owner or store, no `docs/09` `/state` namespace, no path
-semantics — and **no Stage 4 closure**: Stage 4 remains open.
+semantics. The store alone is not what closed Stage 4; the whole audit is.
 `ST_BLOCK` is implemented and **not** exercised by the store's gate, whose reference
 endpoint answers every well-formed in-range request successfully; the device failure
 below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
@@ -595,7 +601,8 @@ fail a real request and the block service answers `BLK_DEVICE`.
   224 against 0.35, 5 and 8), the cost decomposed to the service's interpreted
   per-byte loops, and under ADR-0104 the measured result is the regression-held
   Bootstrap/TCG baseline;
-- the **closure decision** is the Project Architect's, recorded separately.
+- **closed** by the Project Architect on 2026-09-30; the next stage is Stage 4E,
+  the interactive console, and neither it nor Stage 5 has started.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a

@@ -291,10 +291,13 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 является.** Всё остальное выше — датированные записи, верные на свою дату.
 
 **Формально закрыто** (approval в `source/legal/publication-records/`): Stage 1,
-Stage 1.5, Stage 2, Stage 3, Stage 4A, Stage 4B, Stage 4C, Stage 4D.
+Stage 1.5, Stage 2, Stage 3, Stage 4A, Stage 4B, Stage 4C, Stage 4D и **Stage 4**
+(2026-09-30, evidence commit `86c0f82`).
 
-**Stage 4 — READY TO CLOSE по свидетельству; закрытие — акт Project Architect,
-записываемый отдельно.** Все deliverables Stage 4 из `docs/16` построены и
+**Следующая стадия — Stage 4E, интерактивная консоль (`docs/16`). Не начата;
+Stage 5 не начат.**
+
+**Stage 4 закрыт на свидетельстве.** Все deliverables Stage 4 из `docs/16` построены и
 загейчены: PCI discovery, контракты прерываний/MMIO/DMA (4C-1…4C-3), текстовый
 драйвер VirtIO block (4D-1…4D-5), сервис и принятый протокол `block.device.v1`,
 persistent object/state storage (ADR-0099), первая половина capsule-to-repository
@@ -10087,3 +10090,35 @@ init 337 из ~171 800. Без аудита READ стоит 30.0 мс вмест
   `qemu_stage4_reference_performance` → PASS: R1 0.00370 (+1.4 %), R2 214.1 (−13.0 %),
   R3 225.7 (+0.9 %) против baseline. Два гейта Stage 3 требуют чистого дерева и
   прогоняются на этом коммите.
+
+### 2026-09-30 — Stage 4 закрыт
+
+Project Architect закрыл Stage 4 для evidence commit `86c0f82` после враждебного
+финального аудита закрытия и полного preflight на этом дереве. Протокол —
+`source/legal/publication-records/86c0f820e723477ff4f94865042174ab9d8141e6-stage4-closure-approval.md`.
+В нём прямо сказано: исходные исследовательские цели R1–R3 измерены и **пропущены**, а
+не выполнены; причины измерены и задокументированы; Stage 4 принимает измеренный
+baseline Bootstrap/TCG и не делает заявления о производительности для production;
+идентичность канонического текстового драйвера, полномочия MMIO/IRQ/DMA,
+persistent storage, repository linkage, crash/reset/adversarial и H1–H5 закрыты
+свидетельством; патентный инженерный обзор закрыт без FTO-заключения; ADR-0044
+остаётся открытым намеренно и не блокирует.
+
+**Враждебный финальный аудит**, что проверено и что исправлено: `docs/16`,
+`docs/19`, `docs/35`, `docs/37`, README, PROGRESS, отчёт о производительности, аудит
+закрытия, ссылки на патентный обзор (в `PATENT_LANDSCAPE.md` отмечено, что шаг 8
+выполнен 2026-09-26), индекс ADR и список открытых решений, сгенерированные
+спецификация, MANIFEST и SHA256SUMS. Найдено и исправлено: ADR-0096 и ADR-0104
+отсутствовали в `docs/SPECIFICATION_SOURCES.txt` (гейт `specification_manifest`);
+`PUBLICATION_AUTHORITY_CONFLICT.md` называл ADR-0096 Proposed без оговорки; две фразы
+README «no Stage 4 closure: Stage 4 remains open» в описании хранилища. Нового
+фактического блокера не найдено.
+
+Проверено:
+
+- `./scripts/preflight.sh --full` на дереве `86c0f82` → 122 из 125; `specification_manifest`
+  исправлен и перепрогнан (`--profile docs` 17 из 17); гейты Stage 3 на чистом
+  `86c0f82` с квалифицированным наблюдателем ADR-0066: наблюдатель → PASS, P1, 21/21,
+  sign p = 4.77e-07; IPC → PASS, P1, p99 153.069 мкс ≤ 200 мкс. Итого 125 из 125.
+- Коммит закрытия меняет только документацию и протокол: `--profile docs` и
+  `--profile selftest`.
