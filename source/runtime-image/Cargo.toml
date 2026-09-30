@@ -43,6 +43,13 @@ test-measurement-call = [
     "tos-engine/measurement-marks",
     "dep:tos-verifier",
 ]
+# ADR-0103's TOS side: the production runtime, plus marks on the ADR-0066 wire
+# around every call to a function named `measured_window` or
+# `measured_operation` — after one READY/GO handshake and the floor pairs — and
+# nothing else. The engine's measurement seam is the only addition; the Stage 3
+# channel (`test-measurement-port`) is not selected. Requires the nucleus built
+# with `test-measurement-port`, which permits CPL 3 COM1's ports.
+test-block-reference = ["dep:tos-engine", "tos-engine/measurement-marks"]
 # ADR-0066 numerator: the real two-process request/reply path, driven one
 # exchange at a time through the same COM1 marker protocol. The nucleus supplies
 # the endpoint and keeps timer preemption active; this feature only selects the

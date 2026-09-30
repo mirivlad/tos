@@ -205,8 +205,10 @@ tests() {
     (cd "$ROOT/source" && cargo test && cargo test -p tos-uefi-loader)
 }
 clippy_host() { (cd "$ROOT/source" && cargo clippy --all-targets -- -D warnings); }
+# The ADR-0103 oracle is a UEFI application too, and like the loader it is not a
+# default member, so nothing else would lint it.
 clippy_uefi() {
-    (cd "$ROOT/source" && cargo clippy -p tos-uefi-loader \
+    (cd "$ROOT/source" && cargo clippy -p tos-uefi-loader -p tos-virtio-block-oracle \
         --target x86_64-unknown-uefi -- -D warnings)
 }
 # Every declared feature of the freestanding binaries still type-checks. A
@@ -718,6 +720,11 @@ selftest_stage4_data_path_claims() {
 selftest_repository_extent() {
     bash "$ROOT/scripts/tests/check-repository-extent.sh"
 }
+# ADR-0103's window decoder: a plan-conforming trace is computed exactly and
+# every corruption invalidates the series.
+selftest_stage4_reference_decoder() {
+    python3 "$ROOT/source/host-tools/qemu-test/test-measure-stage4-reference.py"
+}
 selftest_measurement_observer() {
     python3 "$ROOT/source/host-tools/qemu-test/test-measure-channel.py"
     python3 "$ROOT/source/host-tools/qemu-test/test-qualify-observer.py"
@@ -782,6 +789,7 @@ gate selftest   default   "open-decision gate self-test"               selftest_
 gate selftest   default   "Stage 4 data-path claim gate self-test"     selftest_stage4_data_path_claims
 gate selftest   default   "repository extent tool self-test"           selftest_repository_extent
 gate selftest   default   "measurement observer self-test"             selftest_measurement_observer
+gate selftest   default   "Stage 4 reference decoder self-test"        selftest_stage4_reference_decoder
 gate selftest   default   "run-tos launcher self-test"                 run_tos_launcher
 gate selftest   default   "interactive QEMU mode self-test"            qemu_interactive_mode
 gate selftest   default   "QEMU event capture self-test"               qemu_event_capture

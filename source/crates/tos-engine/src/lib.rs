@@ -510,10 +510,14 @@ pub trait System {
     /// nothing, so a host that is not being measured says nothing by saying
     /// nothing.
     ///
-    /// An observation that could influence the call would not be one: these take
-    /// no argument, return nothing, and the engine ignores whatever they do.
+    /// An observation that could influence the call would not be one: these
+    /// return nothing, and the engine ignores whatever they do. The one thing
+    /// the opening mark is told is the callee's declared name, so a host that
+    /// marks only some calls — ADR-0103's reference client names its measured
+    /// functions — can tell which; the name is the module's own and was
+    /// verified with it.
     #[cfg(feature = "measurement-marks")]
-    fn mark_before_call(&mut self) {}
+    fn mark_before_call(&mut self, _callee: &str) {}
 
     /// Marks the instant after it.
     #[cfg(feature = "measurement-marks")]
@@ -2151,7 +2155,12 @@ impl Engine<'_> {
                             ));
                         }
                         #[cfg(feature = "measurement-marks")]
-                        self.system.mark_before_call();
+                        self.system.mark_before_call(
+                            module
+                                .functions
+                                .get(*index)
+                                .map_or("", |callee| callee.signature.name.as_str()),
+                        );
                         let arguments = match self.arguments(module, operands, values, source) {
                             Ok(arguments) => arguments,
                             Err(trap) => {

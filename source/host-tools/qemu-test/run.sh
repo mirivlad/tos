@@ -26,7 +26,7 @@
 #                                    [--stage4-block-overlay SECTOR:FILE]
 #                                    [--stage4-block-sectors N]
 #                                    [--stage4-block-fault BLKDEBUG_CONFIG]
-#                                    [--await-line REGEX --then-qmp JSON ...]
+#                                    [--await-line REGEX --then-qmp JSON ...] [--measure-stage4]
 #                                    [--interactive --display gtk|sdl] [--no-framebuffer]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
@@ -68,6 +68,11 @@ MEASUREMENT_EVIDENCE_STATUS="P1"
 MEASUREMENT_BUILD_MANIFEST=""
 MEASUREMENT_PAIRED_CALIBRATION=0
 MEASUREMENT_IPC=0
+# ADR-0103: the serial line is a duplex socket, the Stage 4 observer's window
+# event is armed over QMP, and `measure-stage4-reference.py` drives the
+# READY/GO handshake and decodes the trace. The machine is unchanged; the verdict
+# is `stage4-reference-report.py`'s, over this boot and its oracle twin.
+MEASURE_STAGE4=0
 PRODUCTION_NUCLEUS_BEFORE_SHA256=""
 PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256=""
 QEMU_ACCEL=""
@@ -96,6 +101,7 @@ while [ $# -gt 0 ]; do
         --measurement-build-manifest) MEASUREMENT_BUILD_MANIFEST="$2"; shift 2 ;;
         --measurement-paired-calibration) MEASUREMENT_PAIRED_CALIBRATION=1; shift ;;
         --measurement-ipc) MEASUREMENT_IPC=1; shift ;;
+        --measure-stage4) MEASURE_STAGE4=1; shift ;;
         --production-nucleus-before-sha256) PRODUCTION_NUCLEUS_BEFORE_SHA256="$2"; shift 2 ;;
         --production-runtime-image-before-sha256) PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256="$2"; shift 2 ;;
         --capsule)  CAPSULE_IN="$2"; shift 2 ;;
@@ -134,7 +140,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         gtk|sdl) ;;
         *) echo "--interactive requires --display gtk or --display sdl" >&2; exit 2 ;;
     esac
-    if [ -n "$EVENT_TIMESTAMPS" ] || [ -n "$MEASURE" ]; then
+    if [ -n "$EVENT_TIMESTAMPS" ] || [ -n "$MEASURE" ] || [ "$MEASURE_STAGE4" -eq 1 ]; then
         echo "--event-timestamps and --measure are not available with --interactive" >&2
         exit 2
     fi
@@ -298,7 +304,7 @@ QEMU_ARGS=(
 # preparation, firmware, device and event-capture path.
 if [ -n "$QEMU_ACCEL" ]; then
     QEMU_ARGS+=( -accel "$QEMU_ACCEL" )
-elif [ -n "$MEASURE" ]; then
+elif [ -n "$MEASURE" ] || [ "$MEASURE_STAGE4" -eq 1 ]; then
     # Evidence must name the accelerator explicitly rather than depend on a
     # host's QEMU default selection.
     QEMU_ARGS+=( -accel tcg )
@@ -498,6 +504,19 @@ else
             -serial chardev:tosserial -display none \
             -qmp "unix:$OUT/qmp.sock,server=on,wait=off" \
             -msg timestamp=on -trace "file=$OUT/serial.trace"
+    elif [ "$MEASURE_STAGE4" -eq 1 ]; then
+        # ADR-0103. The sockets are named relative to OUT because a UNIX socket
+        # path is limited to 108 bytes and OUT is wherever the caller put it.
+        ( cd "$OUT" && python3 "$ROOT/host-tools/qemu-test/measure-stage4-reference.py" \
+            --socket serial.sock --qmp-socket qmp.sock \
+            --serial-log "$OUT/serial.log" --stderr-log "$OUT/qemu.stderr" \
+            --trace "$OUT/serial.trace" --report "$OUT/measurement.json" \
+            --timeout "$QEMU_TIMEOUT" \
+            -- qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+            -chardev "socket,id=tosserial,path=serial.sock,server=on,wait=off" \
+            -serial chardev:tosserial -display none \
+            -qmp "unix:qmp.sock,server=on,wait=off" \
+            -trace "file=$OUT/serial.trace" )
     elif [ -n "$AWAIT_LINE" ]; then
         # ADR-0082 §13's positive evidence needs a **real** device event while
         # the guest is blocked, and the guest cannot cause one: a configuration
@@ -557,6 +576,13 @@ cat "$EVENTS" 2>/dev/null || echo "(no TOS events captured)"
 echo "-----------------------------"
 
 fail() { echo "QEMU-TEST FAIL: $*" >&2; exit 1; }
+
+# The measurement driver has already judged the protocol and the trace, and the
+# oracle boot has no TOS events to require; the pair is judged by
+# `stage4-reference-report.py`.
+if [ "$MEASURE_STAGE4" -eq 1 ]; then
+    exit "$RC"
+fi
 
 if [ "$RC" -eq 124 ]; then
     echo "QEMU-TEST FAIL: timed out after ${QEMU_TIMEOUT}s (no result code written)" >&2

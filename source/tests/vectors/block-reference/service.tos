@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The **normative** `block.device.v1` service, under a persistent object store.
+// The **normative** `block.device.v1` service, under the ADR-0103 reference workload.
 //
-// **This is `block-protocol/service.tos` with one constant changed.** The request
-// count is that constant, because a module cannot be told at launch how many requests
-// to expect, and this boot makes twelve where that one makes twenty-two. Everything
-// else — the protocol, the refusals, the ordering, the device work — is the same text,
-// and `block-protocol` is where it is proved. Here it is infrastructure: the real
-// device under ADR-0099's store.
-//
-// **Every request it serves here is well-formed and in range**, which is itself worth
-// stating: this instance's account carries the five device-side refusal bits **not at
-// all**, because nothing above it sends a malformed request. A store that reached the
-// device with a bad request would show as a refusal bit that is required to be absent.
+// **This is `block-protocol/service.tos` with two constants changed, and nothing
+// else.** A module cannot be told at launch how many requests to expect, so the
+// request count is a constant: here it is the 8696 READs of the reference plan —
+// 128 warm-up, 3 x 2048 for R1 and 303 x 8 for R2 — where that fixture serves
+// twenty-two. And fuel is a whole-run budget (`docs/41` §6), so a service that
+// answers four hundred times as many requests declares a budget that covers them.
+// The protocol, the refusals, the ring, the one payload copy, the interrupt wait and
+// every audit line are that text's, which is the point: ADR-0103 measures the
+// production `block.device.v1` path, and `block-protocol.sh` is where it is proved.
 //
 // The original header follows.
 //
@@ -85,7 +83,7 @@ import capability system.memory.Authority as budget;
 import capability system.ipc.Endpoint as serve;
 
 resource [
-    fuel: 4194304,
+    fuel: 268435456,
     stack: 32KiB,
     allocation: 4KiB,
     tasks: 1,
@@ -885,51 +883,29 @@ const PROVED_DROPPED_NON_CALL: i64 = 1073741824i64;
 // layer and completes it with a real non-OK status through the real ring.
 const PROVED_REFUSED_DEVICE: i64 = 2147483648i64;
 
-// **And one bit `block-protocol`'s service has no use for**: every client of this service
-// has finished, and the receive it was blocked on was ended by the liveness rule.
-//
-// `SYSTEM_ABI_V1` §6 ends a wait that nothing can satisfy, and a receive on an endpoint no
-// live process can send to is exactly that. It is not a failure. This fixture serves a
-// **constant** number of requests, and the boot in which the store above it could not open
-// asks for two of them — so the honest ending for that boot is "nobody has anything more
-// to ask", and this bit is what that looks like from inside. The ordinary boot never sets
-// it, because there the fourteenth request arrives.
-const PROVED_CLIENTS_GONE: i64 = 4294967296i64;
-const E_CANCELLED: i64 = -5i64;
-
 // Everything this module can prove is `2^31 - 1`; the gate derives that sum from
 // the same bits rather than this module asserting its own total.
 
 // How many exchanges this service serves before it returns. The client makes exactly
 // this many, and a fixture has to finish.
 //
-// **Fourteen, and every one of them is accounted for**, because a canonical module's
-// request count is a constant and this boot makes a different number from
-// `block-protocol`'s:
+// **Ten of conformance and twelve of repetition.** The ten are the protocol's
+// operations and refusals; the twelve are the same read again, and they are here
+// because a service that kept the answer endpoint each read delegates would run out
+// of capability-table entries long before the twelfth. `MAX_CAPABILITIES` is sixteen
+// and this process already holds a budget, a request endpoint, a PCI root, a
+// function, a window, a DMA region and an interrupt source.
 //
-//   initializer, first run    capacity, read sector 0, write the header        3
-//   state A                   capacity and read sector 0 to open, then two new
-//                             objects at two writes each                      6
-//   initializer, second run   capacity, read sector 0 — then it refuses        2
-//   state B                   capacity and read sector 0 to open, and one read of
-//                             the one present object it is asked for           3
-//
-// **Every `open` asks for the capacity as well as the header**, because
-// `STATE_STORE_V1` §9 makes "the device is too small" a reason a store is not open, and a
-// store that validated sector 0 and stopped would open on a device that cannot hold the
-// sectors the header describes. Six of the fourteen are `CAPACITY` or a header read for
-// that reason.
-//
-// **None of the store's refusals is in this count**, and that is the point of counting:
-// a reserved opcode, an id out of range, a length that is not eight, a `PUT` with no
-// region, a `GET` with no answer endpoint and a `GET` of an absent id are all refused
-// above this service, and if one of them reached the device the number would move.
-//
-// **The counting is the fixture's arithmetic and not a rule of the protocol.** A
-// production service loops until its endpoint goes away; what is proved here is
-// ADR-0099's store, and this instance has to finish so that its ending can be
-// collected like any other.
-const REQUESTS: u64 = 14u64;
+// **The tenth is a `READ` past the capacity** (ADR-0101): the same out-of-range
+// refusal as the sixth, but made with the row that carries an answer channel, so the
+// refusal is read from the reply of the row `BLOCK_DEVICE_V1` §6a names. Nothing
+// here changes to serve it — the range is checked before the request's carried parts
+// are looked at, so it lands in the same arm and OR's in the same bit.
+const CONFORMANCE_REQUESTS: u64 = 10u64;
+const REPEATED_READS: u64 = 12u64;
+// The reference plan's READs; see the header. The two above are the original's
+// arithmetic, kept so the text below them reads as it was written.
+const REQUESTS: u64 = 8696u64;
 // **This account is a pure bitmask**, unlike the lifecycle fixture's composite.
 // Several requests are served in one boot and their facts are OR'd together, so a
 // packed field — `used.len`, the queue size, a flag at bit 56 — would be added to
@@ -1000,12 +976,6 @@ fn serve_requests(
             }
             Err(refused) => {
                 give_up(borrow mut window);
-                if (refused == E_CANCELLED) {
-                    // **Every client is gone**, which the liveness rule is what tells this
-                    // service. What it has proved up to here is what it proved; the
-                    // requests it will never be asked for are not failures of its own.
-                    return proved + PROVED_CLIENTS_GONE;
-                }
                 return refused - 7200i64;
             }
         }

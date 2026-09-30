@@ -270,3 +270,7 @@ dependencies = [
  "tos-ir",
  "tos-predeclared",
 ]
+
+[[package]]
+name = "tos-virtio-block-oracle"
+version = "0.1.0"
