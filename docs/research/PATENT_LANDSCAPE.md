@@ -128,6 +128,13 @@ and none was charted element by element against TOS at claim-construction depth 
 but `docs/24` step 7 (counsel) and step 8 (the recorded decision) are the Project
 Architect's to take or to decline, and this review does not take them.
 
+*Step 8 was taken on 2026-09-26*
+(`source/legal/publication-records/stage4-patent-engineering-review-2026-09-26.md`):
+the engineering review is accepted as complete for the Stage-4 cross-stage gate,
+with no freedom-to-operate or non-infringement conclusion; step 7, qualified
+counsel, is deferred to the first applicable `docs/24` trigger; and the flagged
+families above remain in the risk register.
+
 ## Required follow-up searches
 
 Before Stage 4 — **performed 2026-09-26** as the engineering review above, with

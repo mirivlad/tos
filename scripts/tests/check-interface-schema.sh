@@ -180,6 +180,16 @@ kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     fail "the accepted schema and the frontend's table disagree about object kinds"
 }
 
+# --- ADR-0096 N1: no two accepted interfaces declare one object kind ------------
+#
+# Over the union of both accepted schemas, because the startup check compares an
+# endowed object's kind with the requested interface's and nothing else: a kind
+# declared twice is a pair of operation sets a launcher could exchange. The table
+# above already equals the documents, so checking the documents checks both.
+shared_kinds=$(printf '%s\n' "$kinds_in_doc" | cut -d' ' -f2- | sort | uniq -d)
+[ -z "$shared_kinds" ] ||
+    fail "ADR-0096: more than one accepted interface declares object kind(s): $(echo $shared_kinds)"
+
 # --- §4.3's capability representation, in all three places it is stated --------
 #
 # ADR-0085 separates an interface's identity from the class of TOS Core values

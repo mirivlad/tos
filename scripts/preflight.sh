@@ -606,6 +606,14 @@ qemu_block_fault() {
 qemu_stage4_request_cost() {
     bash "$ROOT/source/host-tools/qemu-test/stage4-request-cost.sh"
 }
+# ADR-0103's reference measurement under ADR-0104: both boots valid, the workloads
+# equivalent, and no ratio more than 30 % worse than the retained Bootstrap/TCG
+# baseline (`docs/35` §Regression policy). Needs the Stage 4 observer that
+# `build-stage4-observer.sh` builds, as the Stage 3 gates need theirs.
+qemu_stage4_reference_performance() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/stage4-reference-performance.sh \
+        target/preflight-qemu/stage4-reference)
+}
 qemu_state_store() {
     bash "$ROOT/source/host-tools/qemu-test/state-store.sh"
 }
@@ -859,6 +867,7 @@ gate qemu       full-only "QEMU a successor restarts the device path" qemu_block
 gate qemu       full-only "QEMU the accepted block.device.v1 protocol" qemu_block_protocol
 gate qemu       full-only "QEMU a service that ends mid-request"      qemu_block_fault
 gate qemu       full-only "QEMU what one block request costs"         qemu_stage4_request_cost
+gate qemu       full-only "Stage 4 reference ratios against the baseline" qemu_stage4_reference_performance
 gate qemu       full-only "QEMU a send-only name for an endpoint"    qemu_endpoint_attenuation
 gate qemu       full-only "QEMU a carried call reads its reply"       qemu_carried_call_answer
 gate qemu       full-only "QEMU a persistent object store"             qemu_state_store

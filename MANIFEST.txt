@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 534
+- files in the release package: 535
 - active system invariants: 21
-- architecture decision records: 103 (40 accepted)
+- architecture decision records: 104 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -139,7 +139,7 @@ Architecture decision records
 - docs/adr/0093-block-device-publication-and-lifetime.md — ADR-0093: Publication and lifetime of `block.device.v1` [**Accepted (option P3)** (Project Architect-approved, 2026-09-21), **amended 2026-09-23 by ADR-0095** — the publication authority is a]
 - docs/adr/0094-capability-transfer-from-canonical-text.md — ADR-0094: How a canonical textual module carries a capability in a message [**Resolved as §6.1's option A — textual schema and runtime only, over]
 - docs/adr/0095-publication-authority-is-a-dedicated-channel.md — ADR-0095: A publication authority is a dedicated channel, not a nominal type [**Accepted** (Project Architect-directed, 2026-09-23)]
-- docs/adr/0096-nominal-interface-identity-under-delegation.md — ADR-0096: Must a nominal interface survive delegation and endowment? [**Proposed** (raised 2026-09-23 on Project Architect direction; **not]
+- docs/adr/0096-nominal-interface-identity-under-delegation.md — ADR-0096: Must a nominal interface survive delegation and endowment? [**Accepted — option N1, the injectivity invariant** (Project Architect]
 - docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md — ADR-0097: The textual surface by which an ordinary `Region<T>` crosses IPC [**Accepted (option R-A)** (Project Architect-approved, 2026-09-23), with]
 - docs/adr/0098-the-block-device-v1-wire-protocol.md — ADR-0098: The `block.device.v1` wire protocol, and the atomic call that carries a region [**Accepted** (Project Architect-approved, 2026-09-24), and]
 - docs/adr/0099-stage-4-persistent-object-state-storage.md — ADR-0099: Stage 4 persistent object/state storage — a private native store, substrate first [**Accepted** (Project Architect-approved, 2026-09-24) and **implemented**]
@@ -147,6 +147,7 @@ Architecture decision records
 - docs/adr/0101-a-carried-call-must-expose-its-reply.md — ADR-0101: A call that carries a capability must expose its reply [**Accepted**]
 - docs/adr/0102-stage-4-capsule-to-repository-linkage.md — ADR-0102: Stage-4 capsule-to-repository linkage [**Accepted**]
 - docs/adr/0103-stage-4-performance-contract-reconciliation-and-measurement.md — ADR-0103: Stage-4 performance contract reconciliation and measurement [**Accepted**]
+- docs/adr/0104-stage-4-bootstrap-tcg-reference-ratios-are-characterization.md — ADR-0104: Stage-4 Bootstrap/TCG reference ratios are characterization and regression evidence, not closure thresholds [**Accepted**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

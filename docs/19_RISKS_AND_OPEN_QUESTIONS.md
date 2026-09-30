@@ -34,6 +34,28 @@ about 40 ms per 512-byte READ through `block.device.v1` under TCG, dominated by
 byte-at-a-time loops in interpreted canonical text. The risk is realized at Stage 4,
 not hypothetical.
 
+**Measured under ADR-0103 on 2026-09-30 (P1, `3708ea7`):** R1 0.00375, R2 246.1,
+R3 223.6 against an isolated Rust oracle, after two Level-1 fixes; ~92 % of process
+time is the block service's interpreted per-byte loops (the −56 sentinel and the
+one forced copy). ADR-0104 keeps these misses in the record, makes the ratios
+characterization and regression evidence for the Bootstrap/TCG profile, and holds
+the measured baseline against regression (`qemu_stage4_reference_performance`).
+
+Future work, recorded rather than scheduled (ADR-0104):
+
+- **the strategic remedy is a faster execution tier** — possibly a compiled and
+  verified derived tier, with canonical text remaining the source of truth
+  (the first mitigation above);
+- **bulk region operations and multi-sector block requests** may be worth having
+  independently, but must come from the requirements of later stages, not as a
+  benchmark-specific bypass;
+- **if Stage 5 or a later performance gate needs engine work**, that is its own
+  architectural decision, made against the real workload that needs it;
+- the −56 defence is not traded for throughput.
+
+None of this is a claim that the present performance suffices for production
+storage or high-throughput workloads.
+
 ## R3 — Git repository scale
 
 Using Git semantics for an entire system may create object-count, checkout, merge, and garbage-collection challenges.
@@ -154,10 +176,6 @@ Mitigation:
 - first professional patent/FTO review scope, and the recorded decision on the three
   items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
   §Stage 4 engineering review);
-- what closes the Stage 4 reference-platform gap: R1–R3 are measured under ADR-0103
-  and missed by two orders of magnitude, the cost being the block service's
-  interpreted per-byte loops (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3
-  lists the five candidate decisions);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes

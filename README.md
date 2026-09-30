@@ -468,15 +468,19 @@ IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 **Stage 4C and Stage 4D are formally closed** by the Project Architect on
 2026-09-26; their approval is archived in
 `source/legal/publication-records/stage4cd-closure-approval-2026-09-26.md`.
-The closure-readiness audit of the whole of Stage 4 is
-`docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
-**ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
-the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
-is archived separately. The corrected logical-request trace meets H3 at four
-handoffs, and R1–R3 are now measured under ADR-0103 and missed by two orders of
-magnitude (R1 0.00375, R2 246, R3 224); Stage 4 remains **open** pending the
-Project Architect's decision on what closes that gap
-(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3).
+The closure audit of the whole of Stage 4 is
+`docs/evidence/STAGE4_CLOSURE_AUDIT.md`, reconciled on 2026-09-30: 72 obligations,
+67 PASS and 5 NONCLAIM by accepted decision, and **Stage 4 ready to close on the
+evidence**. ADR-0103 reconciled H1 and defined the H3 scheduling rule and the R1–R3
+method. The corrected logical-request trace meets H3 at four handoffs. R1–R3 were
+measured at P1 and **missed** as the original research targets (R1 0.00375, R2 246,
+R3 224); ADR-0104 makes them characterization and regression evidence for the
+Bootstrap/TCG profile, with the measured result held as a baseline — not a
+production-performance claim (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3).
+The patent engineering review's step-8 decision is archived in
+`source/legal/publication-records/stage4-patent-engineering-review-2026-09-26.md`.
+ADR-0096 is accepted (no two interfaces share an object kind); ADR-0044 stays open by
+decision and blocks nothing.
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -586,12 +590,12 @@ fail a real request and the block service answers `BLK_DEVICE`.
   boundary it is and an incomplete `READ` (`block-fault.sh`); a device that fails
   a request, lies about its ring or never goes quiet (`block-fault.sh`,
   `dma-quarantine.sh`);
-- **the performance contract report exists**: ADR-0103 funds one ordinary
-  payload Region per READ and defines the reference method; the corrected
-  logical-request trace meets H3 at four handoffs; R1–R3 are measured against an
-  isolated Rust oracle and missed (0.00375, 246 and 224 against 0.35, 5 and 8),
-  with the cost decomposed to the service's interpreted per-byte loops;
-- the **closure decision** is the Project Architect's.
+- **the performance contract report exists**: H1–H5 are met; R1–R3 are measured
+  against an isolated Rust oracle and missed as research targets (0.00375, 246 and
+  224 against 0.35, 5 and 8), the cost decomposed to the service's interpreted
+  per-byte loops, and under ADR-0104 the measured result is the regression-held
+  Bootstrap/TCG baseline;
+- the **closure decision** is the Project Architect's, recorded separately.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a

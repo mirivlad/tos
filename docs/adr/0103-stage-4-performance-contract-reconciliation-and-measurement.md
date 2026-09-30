@@ -6,6 +6,10 @@
 - Date and Project Architect approval: **2026-09-26**
 - Decision level: **2** — performance and scheduling contract clarification
 - Related: ADR-0040, ADR-0049, ADR-0066, ADR-0097, ADR-0098; `docs/35` §Stage 4
+- Amended by: **ADR-0104** (2026-09-30) — the R1–R3 measurement this decision
+  defines was made and missed; for the Bootstrap/TCG profile the three ratios are
+  characterization and regression evidence rather than closure thresholds, and the
+  P1 result at `3708ea7` is the retained baseline. The method below is unchanged.
 
 ## Decision
 

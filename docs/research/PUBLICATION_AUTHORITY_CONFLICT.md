@@ -14,7 +14,8 @@ the contract rather than an implementation of Q1-A…Q1-D, and it makes the opti
 set below the record of what was weighed rather than a live menu. ADR-0093-Q1 is
 closed (ADR-0093 §11a).
 
-**One finding here outlived the question and is now ADR-0096** (Proposed): whether
+**One finding here outlived the question and is now ADR-0096** (Proposed when this
+was written; accepted 2026-09-30 as option N1, the injectivity invariant): whether
 a nominal interface must survive delegation and endowment when two interfaces
 share one runtime object kind. §21–§24 are the research behind it. Stage 4 creates
 no such pair.

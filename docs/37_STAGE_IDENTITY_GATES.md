@@ -109,7 +109,10 @@ Evidence:
 - driver loaded from identified commit/blob or Stage-compatible source set;
 - device capabilities only;
 - DMA and interrupt threat tests;
-- performance contract report;
+- performance contract report — under ADR-0104, H1–H5 met and R1–R3 measured at P1
+  or higher against an isolated reference, with workload equivalence, a retained
+  decomposition and a regression-held baseline; for the Bootstrap/TCG profile the
+  reference ratios are characterization, not a numeric closure threshold;
 - crash/restart and device-reset behavior;
 - no binary shadow driver performs the real I/O.
 

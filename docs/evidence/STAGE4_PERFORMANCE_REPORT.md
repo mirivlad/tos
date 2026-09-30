@@ -116,7 +116,18 @@ Architect's to decide (ADR-0103 §Reference measurement):
 5. **The thresholds themselves** for the declared Bootstrap/TCG profile, which
    ADR-0103 allows to be revisited only after measurement — which now exists.
 
-**Stage 4 remains open.** H1–H5 are met; R1–R3 are measured and missed.
+**Closure interpretation (ADR-0104, accepted 2026-09-30).** The original R1–R3
+figures stay in this report as pre-measurement research targets and the misses
+measured above. For the Bootstrap/TCG profile they are characterization and
+regression evidence, not numeric closure thresholds; the P1 result at `3708ea7` is
+the retained baseline, and `qemu_stage4_reference_performance` re-measures it on
+every full run and applies `docs/35` §Regression policy (more than 15 % worse:
+explanation required; more than 30 %: blocks). A later exploratory rerun on the
+same host gave R1 0.00384, R2 186.3 and R3 221.6: the R2 ratio moves by about a
+quarter between runs because the oracle's p99 does (0.527–0.690 ms across three
+runs), and the baseline sits at the low end of the oracle's range. **This is not a
+claim that the present performance suffices for production storage.** None of the
+five remedies above is undertaken for Stage 4, and the −56 defence stays.
 
 ## Current H3 attribution (2026-09-28)
 

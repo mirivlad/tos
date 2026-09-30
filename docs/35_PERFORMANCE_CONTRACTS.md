@@ -256,12 +256,26 @@ Reference baseline:
 
 A minimal, separately isolated Rust VirtIO-block benchmark implementation may be built only as a host/reference oracle. It is not an accepted nucleus driver and cannot satisfy the TOS stage gate.
 
-Stage 4 reference-platform budgets:
+Stage 4 reference-platform budgets, **as written before they could be measured**:
 
 - sequential throughput is at least 35% of the reference baseline for the same queue depth and image;
 - random 4 KiB p99 latency is no more than 5 times the reference baseline;
 - CPU time per MiB is no more than 8 times the reference baseline;
 - performance results include textual-runtime engine identity and cache state.
+
+**Under ADR-0104 the first three are characterization and regression evidence for
+the Bootstrap/TCG profile, not numeric closure thresholds.** They were measured
+under ADR-0103 and missed — R1 0.00375, R2 246.1, R3 223.6 (P1, `3708ea7`) — and
+stay in the record as research targets and measured misses. Stage-4 performance
+closure instead requires H1–H5; a valid ADR-0103 measurement at P1 or higher;
+checked workload equivalence; the production textual-driver path with no binary
+or host bypass; no hidden subtraction or correction; the ordinary Level-1 defects
+it exposed fixed; a retained decomposition of the dominant cost; and every engine,
+cache and measurement identity. The P1 result at `3708ea7`
+(`docs/evidence/stage4-reference-r1-r3.json`) is the retained baseline, held to
+§Regression policy by `qemu_stage4_reference_performance`. None of this states that
+the present performance suffices for production storage or future
+high-throughput workloads. The fourth item is unchanged and met.
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
 
@@ -282,10 +296,11 @@ idle, so H3 is met.
 missed: R1 = 0.00375 (≥ 0.35), R2 = 246 (≤ 5), R3 = 224 (≤ 8). The decomposition
 puts ~92 % of process time in the block service's interpreted steps — per-byte
 loops over the 512-byte sentinel and the one forced copy — not in the audit trail,
-IPC or scheduling. Two Level-1 changes to the service raised every ratio ~2.3×; what
-remains requires a decision this document does not make (execution-engine work, a
-bulk region primitive, multi-sector requests, the −56 defence's shape, or the
-thresholds). Stage 4 remains open.
+IPC or scheduling. Two Level-1 changes to the service raised every ratio ~2.3×.
+ADR-0104 (accepted 2026-09-30) decides what remains: the measured misses stay in
+the record, the ratios become characterization and regression evidence against the
+retained baseline, and none of execution-engine work, a bulk region primitive,
+multi-sector requests or a weaker −56 defence is undertaken for Stage 4.
 
 ## Stage 5 — Repository and activation
 

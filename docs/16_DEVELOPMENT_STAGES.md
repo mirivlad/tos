@@ -105,7 +105,9 @@ Deliverables:
 - persistent object/state storage;
 - capsule-to-repository handoff;
 - crash/reset and adversarial-device tests;
-- Stage 4 performance contract report.
+- Stage 4 performance contract report (what it must show for closure is ADR-0104's:
+  H1–H5 met, R1–R3 measured and decomposed, the measured baseline held against
+  regression).
 
 Engineering exit: persistent storage works through a textual user-space driver.
 
