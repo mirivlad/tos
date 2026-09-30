@@ -30,6 +30,9 @@
 ))]
 compile_error!("the IPC numerator has one exact measurement workload");
 
+#[cfg(all(feature = "test-block-reference", feature = "test-measurement-port"))]
+compile_error!("the Stage 4 reference marks and the Stage 3 channel are different instruments");
+
 extern crate alloc;
 
 use core::panic::PanicInfo;
@@ -797,6 +800,8 @@ unsafe fn bundle_entry(launch: &tos_launch::BundleLaunch) -> ! {
             base: launch.report_base,
             capacity: launch.report_length,
         },
+        #[cfg(feature = "test-block-reference")]
+        marks: ReferenceMarks::new(),
     };
     let run = match prepared {
         Preparation::Ready(mut prepared) => {
@@ -969,6 +974,8 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         held,
         arguments: launch.arguments_base,
         report,
+        #[cfg(feature = "test-block-reference")]
+        marks: ReferenceMarks::new(),
     };
     let run = match prepare_from_source(&request, &mut trace, RESIDENCY) {
         Ok(Preparation::Ready(mut prepared)) => {
@@ -2123,6 +2130,9 @@ struct Endowment<'a> {
     /// one contract, and — being a library — a thing that can be tested rather
     /// than only booted.
     mappings: tos_launch::DeviceMappings,
+    /// ADR-0103's marks, in the measurement build only.
+    #[cfg(feature = "test-block-reference")]
+    marks: ReferenceMarks,
 }
 
 impl Endowment<'_> {
@@ -2134,6 +2144,94 @@ impl Endowment<'_> {
     /// The mapping a capability names, if this process holds it.
     fn mapping(&self, handle: Handle) -> Option<tos_launch::DeviceMapping> {
         self.mappings.mapping(handle.get())
+    }
+}
+
+/// ADR-0103's marks on the ADR-0066 wire, around the reference client's measured
+/// calls and nothing else.
+///
+/// **The engine reports every local call; this chooses.** A call to
+/// `measured_window` is one R1 window and a call to `measured_operation` one R2
+/// operation; every other call only moves the depth, so a nested call is never
+/// mistaken for the end of a measured one. The first measured call first
+/// completes the handshake — READY, then the observer's GO once its trace is
+/// armed — and emits the 21 empty floor pairs, so the floor is measured in the
+/// same process, over the same wire, as the windows. Tags follow the plan
+/// `measure-stage4-reference.py` checks: floor `i mod 16`, R1 `0x10 | w`, R2
+/// `0x10 | (k mod 16)`.
+///
+/// **What it costs inside a window** is a length-first string comparison and a
+/// counter per local call — bounded, measurement-only, and on the TOS side of
+/// the ratio only. It is stated rather than subtracted.
+#[cfg(feature = "test-block-reference")]
+struct ReferenceMarks {
+    depth: u32,
+    open_at: Option<(u32, u8)>,
+    started: bool,
+    windows: u8,
+    operations: u8,
+}
+
+#[cfg(feature = "test-block-reference")]
+impl ReferenceMarks {
+    const FLOOR_PAIRS: u8 = 21;
+    const WINDOW: &'static str = "measured_window";
+    const OPERATION: &'static str = "measured_operation";
+
+    const fn new() -> Self {
+        Self {
+            depth: 0,
+            open_at: None,
+            started: false,
+            windows: 0,
+            operations: 0,
+        }
+    }
+
+    fn before(&mut self, callee: &str) {
+        self.depth += 1;
+        if self.open_at.is_some() {
+            return;
+        }
+        let tag = if callee == Self::WINDOW {
+            let tag = protocol::WORK | (self.windows & protocol::SEQUENCE);
+            self.windows = self.windows.wrapping_add(1);
+            tag
+        } else if callee == Self::OPERATION {
+            let tag = protocol::WORK | (self.operations & protocol::SEQUENCE);
+            self.operations = self.operations.wrapping_add(1);
+            tag
+        } else {
+            return;
+        };
+        if !self.started {
+            self.started = true;
+            // SAFETY: the measurement nucleus permits CPL 3 COM1's ports and no
+            // other; these are the only port accesses this build makes.
+            unsafe {
+                wire_drain();
+                wire_write(protocol::READY);
+                while !protocol::is_go(wire_read()) {}
+                for pair in 0..Self::FLOOR_PAIRS {
+                    wire_write(protocol::OPEN | (pair & protocol::SEQUENCE));
+                    wire_write(protocol::CLOSE | (pair & protocol::SEQUENCE));
+                }
+            }
+        }
+        // SAFETY: as above.
+        unsafe { wire_write(protocol::OPEN | tag) };
+        self.open_at = Some((self.depth, tag));
+    }
+
+    fn after(&mut self) {
+        if let Some((depth, tag)) = self.open_at {
+            if depth == self.depth {
+                // SAFETY: as in `before`.
+                unsafe { wire_write(protocol::CLOSE | tag) };
+                self.open_at = None;
+            }
+        }
+        self.depth = self.depth.saturating_sub(1);
     }
 }
 
@@ -2190,6 +2288,16 @@ unsafe fn write_element(at: usize, kind: IntKind, number: i128) {
 }
 
 impl System for Endowment<'_> {
+    #[cfg(feature = "test-block-reference")]
+    fn mark_before_call(&mut self, callee: &str) {
+        self.marks.before(callee);
+    }
+
+    #[cfg(feature = "test-block-reference")]
+    fn mark_after_call(&mut self) {
+        self.marks.after();
+    }
+
     /// One **ordinary** indexed access to a region this process holds
     /// (ADR-0081 §2).
     ///
@@ -4764,7 +4872,7 @@ fn authority(launch: &Launch, report: &mut Report) {
 fn measure_channel(_launch: &Launch, _report: &mut Report) {}
 
 /// COM1, and the four registers this protocol touches.
-#[cfg(feature = "test-measurement-port")]
+#[cfg(any(feature = "test-measurement-port", feature = "test-block-reference"))]
 mod wire {
     pub const DATA: u16 = 0x3f8;
     pub const LINE_STATUS: u16 = 0x3fd;
@@ -4791,7 +4899,7 @@ mod wire {
 /// line-status register from the vCPU thread. A byte travelling *out* leaves
 /// synchronously with the instruction that wrote it. An interval built from two
 /// outward markers therefore carries neither the inward path nor its jitter.
-#[cfg(feature = "test-measurement-port")]
+#[cfg(any(feature = "test-measurement-port", feature = "test-block-reference"))]
 mod protocol {
     /// Host to guest: begin sample `n`.
     pub const GO: u8 = 0xc0;
@@ -4804,8 +4912,11 @@ mod protocol {
     /// Sequence identity within either request class.
     pub const SEQUENCE: u8 = 0x0f;
     /// The complete request identity echoed by both markers.
+    #[cfg(feature = "test-measurement-port")]
     pub const TAG: u8 = WORK | SEQUENCE;
-    /// Host to guest: no more samples.
+    /// Host to guest: no more samples. The Stage 4 plan has a fixed length and
+    /// needs neither this nor `TAG`.
+    #[cfg(feature = "test-measurement-port")]
     pub const STOP: u8 = 0xe0;
     /// Guest to host, once, before the first request may be sent.
     ///
@@ -4825,7 +4936,7 @@ mod protocol {
 ///
 /// The TSS I/O bitmap of the measurement nucleus permits CPL 3 exactly these
 /// ports; every other port still faults.
-#[cfg(feature = "test-measurement-port")]
+#[cfg(any(feature = "test-measurement-port", feature = "test-block-reference"))]
 // SAFETY: the caller runs only under the measurement feature whose nucleus
 // permits exactly COM1 through the TSS I/O bitmap.
 unsafe fn wire_read() -> u8 {
@@ -4854,7 +4965,7 @@ unsafe fn wire_read() -> u8 {
 /// # Safety
 ///
 /// As `wire_read`.
-#[cfg(feature = "test-measurement-port")]
+#[cfg(any(feature = "test-measurement-port", feature = "test-block-reference"))]
 // SAFETY: as `wire_read`; every access is confined to COM1.
 unsafe fn wire_drain() {
     loop {
@@ -4885,7 +4996,7 @@ unsafe fn wire_drain() {
 /// # Safety
 ///
 /// As `wire_read`.
-#[cfg(feature = "test-measurement-port")]
+#[cfg(any(feature = "test-measurement-port", feature = "test-block-reference"))]
 // SAFETY: as `wire_read`; every access is confined to COM1.
 unsafe fn wire_write(byte: u8) {
     loop {
@@ -5077,7 +5188,7 @@ impl tos_pipeline::System for Marked {
         ))
     }
 
-    fn mark_before_call(&mut self) {
+    fn mark_before_call(&mut self, _callee: &str) {
         // SAFETY: the measurement nucleus permits CPL 3 these ports.
         unsafe { wire_write(protocol::OPEN | (self.sequence & protocol::TAG)) };
     }
@@ -5179,8 +5290,9 @@ impl Work {
         if !measure_call {
             // The adjacent floor uses the exact same prepared process, UART,
             // observer and trace window. Only the immutable work selector
-            // differs, and no work lies between these marks.
-            self.system.mark_before_call();
+            // differs, and no work lies between these marks. There is no callee,
+            // and this system does not ask which one it was.
+            self.system.mark_before_call("");
             self.system.mark_after_call();
             return;
         }

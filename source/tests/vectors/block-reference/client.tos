@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The ADR-0103 reference workload, as a `block.device.v1` client in canonical text.
+//
+// **The plan is ADR-0103's, and the Rust oracle performs the same one** against the
+// same device (`tests/virtio-block-oracle`). Both fold every measured sector into
+// the same digest, in order, and the gate refuses a comparison whose two digests
+// differ: a ratio between two different workloads is not a ratio.
+//
+//   warm-up  128 sequential READs of sectors 0..127, each checked against the
+//            image pattern, none measured
+//   R1       3 windows of 2048 sequential 512-byte READs, window w starting at
+//            sector 128 + 2048 w                         `measured_window`
+//   R2       303 random aligned 4 KiB operations, each eight consecutive
+//            512-byte READs; 3 warm-up and 300 retained  `measured_operation`
+//
+// **What is measured is a call, and the text does not know it.** The measurement
+// runtime marks the start and end of every call to a function named
+// `measured_window` or `measured_operation`, over the ADR-0066 marker wire, and does
+// nothing else; the production runtime has no marks at all. So this module is an
+// ordinary client: it holds no hardware, makes no measurement call, and every READ
+// is the production exchange — a call carrying the answer channel, the owed Region
+// received, the Region released.
+//
+// **Nothing inside a window checks the bytes**, on either side: the oracle does not
+// read its buffer either, and the payload's one copy is the service's, which is in
+// both. The warm-up is where the data are proved to be the device's.
+//
+// **R2's sequence is Park–Miller**, `x' = 48271 x mod (2^31 - 1)` from seed
+// 20260926, and block `x' mod 4096` of the 16 MiB image. Every product is below
+// 2^47, so `u64` arithmetic, which traps on overflow, computes it exactly.
+//
+// The value is the digest on success and a negative code naming the failed step
+// otherwise; the digest is below 2^30, so the two cannot be confused.
+
+module system.client.block version 1.5 profile full;
+
+import capability system.memory.Authority as budget;
+import capability system.ipc.Endpoint as service;
+import capability system.ipc.Endpoint as inbox;
+import capability system.ipc.Endpoint as reply_to;
+
+resource [
+    fuel: 16777216,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+const OP_READ: u64 = 0u64;
+const OPCODE_SPAN: u64 = 4u64;
+const REQUEST_BYTES: u64 = 8u64;
+const OK: i64 = 0i64;
+
+const WARMUP_SECTORS: u64 = 128u64;
+const R1_WINDOWS: u64 = 3u64;
+const R1_WINDOW_READS: u64 = 2048u64;
+const R1_FIRST_SECTOR: u64 = 128u64;
+const R2_OPERATIONS: u64 = 303u64;
+const R2_READS_PER_OPERATION: u64 = 8u64;
+const R2_BLOCKS: u64 = 4096u64;
+const R2_SEED: u64 = 20260926u64;
+const R2_MULTIPLIER: u64 = 48271u64;
+const R2_MODULUS: u64 = 2147483647u64;
+const DIGEST_MULTIPLIER: u64 = 31u64;
+const DIGEST_MODULUS: u64 = 1000000007u64;
+const WORD_BYTES: size = 8B;
+
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> Result<system.ipc.Answer, i64> uses [reply_to, service];
+
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+extern fn capability_release(
+    cap: system.memory.Region
+) -> i64 uses [system.memory.Region];
+
+// The first eight bytes as a little-endian number, most significant first so that
+// no intermediate value can overflow.
+fn first_word(borrow payload: Region<u8>) -> u64 {
+    let mut at: size = WORD_BYTES;
+    let mut value: u64 = 0u64;
+    while (at > 0B) {
+        at = at - 1B;
+        value = value * 256u64 + (payload[at] as u64);
+    }
+    return value;
+}
+
+// One READ of one sector: the call, the owed Region, its release. `checked` compares
+// the first word with the sector number — the image pattern — and only the warm-up
+// asks for it.
+fn read_sector(sector: u64, checked: bool) -> i64
+    uses [service, reply_to, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    match (endpoint_call_word_carrying(reply_to, service, sector * OPCODE_SPAN + OP_READ)) {
+        Ok(answer) => {
+            if (answer.length != REQUEST_BYTES) { return -30i64; }
+            if (answer.word != 0u64) { return -31i64; }
+        }
+        Err(status) => { return status - 40i64; }
+    }
+    match (endpoint_receive_region(inbox)) {
+        Ok(arrived) => {
+            let mut agreed: bool = true;
+            if (checked) {
+                agreed = first_word(borrow arrived) == sector;
+            }
+            if (capability_release(arrived) != OK) { return -32i64; }
+            if (!agreed) { return -33i64; }
+            return OK;
+        }
+        Err(status) => { return status - 50i64; }
+    }
+}
+
+fn folded(digest: u64, sector: u64) -> u64 {
+    return (digest * DIGEST_MULTIPLIER + sector) % DIGEST_MODULUS;
+}
+
+// One R1 window: 2048 sequential READs from `first`. Returns the digest with this
+// window's sectors folded in, or a negative code.
+fn measured_window(first: u64, digest: u64) -> i64
+    uses [service, reply_to, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut sector: u64 = first;
+    let mut running: u64 = digest;
+    while (sector < first + R1_WINDOW_READS) {
+        let status: i64 = read_sector(sector, false);
+        if (status != OK) { return status; }
+        running = folded(running, sector);
+        sector = sector + 1u64;
+    }
+    match (to_i64(running)) {
+        Ok(value) => { return value; }
+        Err(impossible) => { return -60i64; }
+    }
+}
+
+// One R2 operation: eight consecutive READs from `first`, one aligned 4 KiB block.
+fn measured_operation(first: u64, digest: u64) -> i64
+    uses [service, reply_to, inbox, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut sector: u64 = first;
+    let mut running: u64 = digest;
+    while (sector < first + R2_READS_PER_OPERATION) {
+        let status: i64 = read_sector(sector, false);
+        if (status != OK) { return status; }
+        running = folded(running, sector);
+        sector = sector + 1u64;
+    }
+    match (to_i64(running)) {
+        Ok(value) => { return value; }
+        Err(impossible) => { return -61i64; }
+    }
+}
+
+pub fn main() -> i64
+    uses [budget, service, inbox, reply_to, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut sector: u64 = 0u64;
+    while (sector < WARMUP_SECTORS) {
+        let status: i64 = read_sector(sector, true);
+        if (status != OK) { return status - 100i64; }
+        sector = sector + 1u64;
+    }
+
+    let mut digest: u64 = 0u64;
+    let mut window: u64 = 0u64;
+    while (window < R1_WINDOWS) {
+        let folded_in: i64 = measured_window(R1_FIRST_SECTOR + window * R1_WINDOW_READS, digest);
+        if (folded_in < 0i64) { return folded_in - 200i64; }
+        match (to_u64(folded_in)) {
+            Ok(value) => { digest = value; }
+            Err(impossible) => { return -290i64; }
+        }
+        window = window + 1u64;
+    }
+
+    let mut state: u64 = R2_SEED;
+    let mut operation: u64 = 0u64;
+    while (operation < R2_OPERATIONS) {
+        state = state * R2_MULTIPLIER % R2_MODULUS;
+        let first: u64 = (state % R2_BLOCKS) * R2_READS_PER_OPERATION;
+        let folded_in: i64 = measured_operation(first, digest);
+        if (folded_in < 0i64) { return folded_in - 300i64; }
+        match (to_u64(folded_in)) {
+            Ok(value) => { digest = value; }
+            Err(impossible) => { return -390i64; }
+        }
+        operation = operation + 1u64;
+    }
+
+    match (to_i64(digest)) {
+        Ok(value) => { return value; }
+        Err(impossible) => { return -400i64; }
+    }
+}

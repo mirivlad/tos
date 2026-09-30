@@ -1346,10 +1346,17 @@ fn perform(
     // — a client cannot be handed device-visible memory and this driver cannot be
     // handed the client's. A read puts a sentinel there, because what comes back
     // has to differ from what was there or nothing was proved.
+    //
+    // **One sentinel byte, computed once.** It is the same byte for every
+    // position, so it is converted once per request rather than once per byte:
+    // the conversion was a function call inside a 512-iteration loop, and the
+    // ADR-0103 decomposition measured the two sentinel loops at most of this
+    // service's work per READ.
+    let sentinel: u8 = to_le_low(DATA_SENTINEL);
     let mut at: size = 0B;
     if (!writing) {
         while (at < SECTOR_BYTES) {
-            region[data_offset + at] = to_le_low(DATA_SENTINEL);
+            region[data_offset + at] = sentinel;
             at = at + 1B;
         }
     }
@@ -1512,13 +1519,20 @@ fn perform(
     // A write: there is nothing returned to inspect. Its evidence is the status
     // byte and a `used.len` of one, both already proved above.
     if (!writing) {
+        // **The first changed byte decides it**, so the scan stops there: the
+        // question is whether any byte differs, and counting the rest answers
+        // nothing more. A device that wrote nothing still leaves all 512
+        // sentinels and is still refused below.
         let mut checked: size = 0B;
         let mut changed: u64 = 0u64;
         while (checked < SECTOR_BYTES) {
-            if (region[data_offset + checked] != to_le_low(DATA_SENTINEL)) {
-                changed = changed + 1u64;
+            if (region[data_offset + checked] != sentinel) {
+                changed = 1u64;
+                checked = SECTOR_BYTES;
             }
-            checked = checked + 1B;
+            if (checked < SECTOR_BYTES) {
+                checked = checked + 1B;
+            }
         }
         if (changed == 0u64) {
             give_up(borrow mut window);

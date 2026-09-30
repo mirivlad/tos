@@ -22,3 +22,14 @@ role = "host-side-test-instrument"
 modified = true
 notice_files = []
 review = "ADR-0066; local bundle only, not vendored or distributed; exact hash-bound changes to MIT-licensed hw/char/serial.c plus the hw/char/trace-events registry add a symmetric measurement event without changing UART behavior; upstream archive retains component and ROM notices"
+
+[[component]]
+name = "QEMU Stage 4 reference measurement observer"
+version = "10.0.11"
+upstream = "https://download.qemu.org/qemu-10.0.11.tar.xz"
+source_revision = "release archive sha256:22e410fe784021c535756350a811ee78ae71356546ff90f5418493448a34b871"
+license_expression = "GPL-2.0-only"
+role = "host-side-test-instrument"
+modified = true
+notice_files = []
+review = "ADR-0103; local bundle only, not vendored or distributed; a separate build from the ADR-0066 observer, whose instrument is untouched; exact hash-bound changes (source/host-tools/qemu-test/stage4-observer-patch.py, MIT) to MIT-licensed hw/char/serial.c plus the hw/char/trace-events registry add one window event carrying CLOCK_MONOTONIC_RAW and whole-process CLOCK_PROCESS_CPUTIME_ID pairs without changing UART behavior; upstream archive retains component and ROM notices"

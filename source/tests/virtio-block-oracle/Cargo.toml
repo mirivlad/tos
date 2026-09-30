@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-virtio-block-oracle"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "ADR-0103 reference oracle: a minimal isolated Rust VirtIO-block benchmark. Not a TOS driver, never linked into TOS, cannot satisfy the Stage 4 identity gate."
+publish = false
+
+[[bin]]
+name = "tos-virtio-block-oracle"
+path = "src/main.rs"
+test = false
+bench = false
+
+# No dependencies, deliberately: ADR-0103 admits Rust as a reference-oracle build
+# dependency only, and an oracle that pulled in a driver crate would be measuring
+# somebody else's driver.
+[dependencies]
