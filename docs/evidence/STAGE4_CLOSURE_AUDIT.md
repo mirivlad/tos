@@ -217,8 +217,11 @@ durability, 7.8 availability against a device that stops completing). The
 performance contract report shows H1–H5 met and R1–R3 measured at P1, missed as
 research targets and closed under ADR-0104 with a regression-held baseline; this is
 not a production-performance claim. The patent engineering review is closed without
-an FTO conclusion. ADR-0044 stays open by decision and blocks nothing. Closure
-itself is the Project Architect's act and is recorded separately.
+an FTO conclusion. ADR-0044 stays open by decision and blocks nothing.
+
+**Stage 4 was closed by the Project Architect on 2026-09-30** for evidence commit
+`86c0f82`, on this audit
+(`source/legal/publication-records/86c0f820e723477ff4f94865042174ab9d8141e6-stage4-closure-approval.md`).
 
 ## 13. Superseded verdicts of the 2026-09-26 readiness audit
 

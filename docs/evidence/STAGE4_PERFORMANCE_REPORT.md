@@ -206,7 +206,7 @@ restoring `context_yield` after interface audit lines (a one-line mutation of
 zero per-request DMA Regions); H2 remains one payload copy; **H3 meets four**
 under the corrected logical-request attribution; H4 and H5 are unchanged.
 R1–R3 were unmeasured when this section was written; they are measured and missed
-in §R1–R3 above, so Stage 4 stays open.
+in §R1–R3 above and closed under ADR-0104; Stage 4 was closed on 2026-09-30.
 
 Reproduce the H1/H3 evidence with:
 
