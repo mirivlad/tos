@@ -2,6 +2,122 @@
 
 # Stage 4 — performance contract report
 
+## R1–R3 under ADR-0103 (2026-09-30)
+
+**All three reference-platform budgets are measured, and all three are missed by
+two orders of magnitude.** P1 evidence, clean commit
+`3708ea7ee1aa0d67f4d2203a15ee93648e1178a6`, raw record
+`docs/evidence/stage4-reference-r1-r3.json`:
+
+| Metric | TOS | Rust oracle | Ratio | ADR-0103 threshold | Verdict |
+|---|---|---|---|---|---|
+| R1 sequential 512-byte READ throughput, 3 × 1 MiB windows | 37.0 KiB/s | 9 868.7 KiB/s | 0.00375 | ≥ 0.35 | **missed** |
+| R2 random 4 KiB operation, nearest-rank p99 of 300 | 129.705 ms | 0.527 ms | 246.1 | ≤ 5 | **missed** |
+| R3 whole-QEMU-process CPU per MiB over R1's windows | 28.448 s | 0.127 s | 223.6 | ≤ 8 | **missed** |
+
+No threshold was changed, and nothing was subtracted: the observer's empty-pair
+floor (median 564 ns on the TOS side, 351 ns on the oracle side) is reported beside
+the result and corrects nothing. R2's medians are 107.0 ms and 0.383 ms.
+
+### How it was measured
+
+- **Machine.** QEMU q35, qemu64, one vCPU, 256 MiB, TCG; Stage 4 VirtIO-block
+  profile revision 2; one boot at a time. Host Intel Xeon E5-2680 v4, Debian.
+  Scheduler quantum 100 000.
+- **Observer.** `build-stage4-observer.sh`: QEMU 10.0.11 from the pinned archive with
+  one hash-bound window event (`stage4-observer-patch.py`) carrying
+  `CLOCK_MONOTONIC_RAW` and whole-process `CLOCK_PROCESS_CPUTIME_ID` pairs, taken in
+  the vCPU thread after OPEN and before CLOSE. Engine
+  `153c35365d146bc716f25700dcbea2cb32fdc77f5b4a53b38fc5784fb8dd64ac`. The ADR-0066
+  observer of Stage 3 is a separate, untouched build.
+- **Oracle.** `tests/virtio-block-oracle`, a dependency-free UEFI application
+  (`e2931b8c4631263c722a9bbc46a55cf0dd1b6954b6bb665308ff5b85b9f34b21`). ADR-0103
+  leaves its completion mechanism open; it is fixed here to match the service —
+  one MSI-X vector and `hlt`, a three-descriptor chain, a queue of at most 128,
+  `VIRTIO_F_VERSION_1` only — so that the ratios are about the software above the
+  device rather than about polling against interrupts.
+- **TOS.** The production service and runtime path. Measurement-only builds, with the
+  production nucleus (`574d54d4…`) and runtime image (`8574e30b…`) hashed unchanged
+  around them: the nucleus with COM1 in the TSS bitmap (`2a5adc44…`), and a runtime
+  that marks calls to `measured_window` and `measured_operation` and nothing else
+  (`f420a898…`, the engine identity the boot reports). **Every audit line is
+  produced and relayed**; measuring a quieter system would measure a different one.
+  Cache state cold: every module is checked, lowered and verified in the boot that
+  runs it. Module digests: service `1a5990ad…`, client `5d8387e7…`, init `a20709d8…`.
+- **Workload.** ADR-0103's, performed by both sides and checked: 128 warm-up READs
+  each verified against the image pattern, 3 × 2048 sequential READs, 303 random
+  4 KiB operations of eight READs from a Park–Miller sequence. Both sides report the
+  same sector digest (1059771); the TOS audit record carries exactly 8 696 successful
+  READ calls; the oracle's interrupt account is 8 696 deliveries and no unexpected
+  vector; both disk images equal the 16 MiB pattern
+  (`5cb86762501d155ff8c512e66e39180b6077deed3880772d3f7b3c11be7ebfdc`).
+
+Reproduce with `bash source/host-tools/qemu-test/stage4-reference-performance.sh`
+after `build-stage4-observer.sh`; exit status 4 means a valid measurement with a
+budget missed.
+
+### Where the time goes
+
+`docs/evidence/stage4-reference-decomposition.json` holds one complete boot per
+row. Only the last row is evidence; the others are diagnostic variants that exist to
+separate causes and were never candidates for the result.
+
+| Variant | Service steps / READ | ms / READ | R1 | R2 | R3 |
+|---|---|---|---|---|---|
+| accepted service before the Level-1 changes | 22 497 | 31.41 | 0.00157 | 426.1 | 529.4 |
+| B: sentinel byte converted once per request | 16 360 | 18.31 | 0.00269 | 257.9 | 310.1 |
+| A: no sentinel fill or check (−56 defence removed) | 6 625 | 10.87 | 0.00453 | 156.3 | 184.6 |
+| C: accepted service, audit lines suppressed | 22 497 | 30.04 | 0.00164 | 403.1 | 506.4 |
+| D: A and C together | 6 625 | 8.80 | 0.00559 | 142.9 | 149.3 |
+| **accepted service after both Level-1 changes (P1)** | **10 233** | **13.52** | **0.00375** | **246.1** | **223.6** |
+
+- **The service's interpreted steps are the cost.** It is charged about 92 % of all
+  process timer ticks (65 331 of ~70 600 in the P1 boot); the client executes 47
+  steps per READ. Under TCG one engine step costs roughly 1.2–1.4 µs.
+- **The audit trail is not.** Suppressing every interface audit line saves 1.4 ms
+  of 31.4 ms per READ; most of the client's own ticks are its audit output, which is
+  small beside the service.
+- **What remains is per-byte work in interpreted text.** Each READ fills a 512-byte
+  sentinel, scans it (now to the first changed byte) and copies 512 bytes out of
+  device-visible memory — the one copy H2 permits and ADR-0037 forces. Each is a
+  512-iteration loop of engine steps.
+
+**Level-1 changes made** (commit `3708ea7`, the accepted service and every copy that
+claims its text): the sentinel byte is converted once per request rather than once
+per byte, and the sentinel check stops at the first changed byte. Semantics are
+unchanged — the −56 refusal of a device that wrote nothing is exercised by
+`block-fault.sh` as before — and together they cut service steps per READ from
+22 497 to 10 233 and raised every ratio about 2.3×.
+
+### Why the remainder is not a Level-1 defect
+
+At the oracle's ~48 µs per READ, R1 ≥ 0.35 requires a TOS READ of about 137 µs, which
+at the measured step cost is on the order of a hundred engine steps for the whole
+service. Any per-byte loop over 512 bytes alone is five times that, and the forced
+copy is one. Even the diagnostic variant D, without the sentinel, the defence or the
+audit, reaches R1 = 0.0056. The gap is the product of interpreting the driver's data
+path byte by byte on the Bootstrap engine under TCG, not of an ordinary defect.
+
+What would close it lies outside ADR-0103's Level-1 remedy, and each is the Project
+Architect's to decide (ADR-0103 §Reference measurement):
+
+1. **Execution-engine work** (`docs/35` §Stage 4 names it): a faster or compiled
+   execution tier for TOS Core, so that a step costs a small fraction of what it costs
+   now. Nothing else on this list alone reaches R1.
+2. **A bulk region primitive**: a copy or fill between a `Region` and a `DmaRegion`
+   performed by the runtime as one operation instead of 512 interpreted steps — a
+   language primitive or system-interface operation.
+3. **`BLOCK_DEVICE_V1` requests of more than one sector**, so that R2's 4 KiB operation
+   is one request and the per-request cost is amortised — a protocol change (and the
+   route to H4 batching).
+4. **The −56 defence's shape**: a full 512-byte sentinel per READ is most of what
+   remains after the copy; a cheaper proof that the device wrote the buffer is a
+   threat-model decision (`docs/34` X4 series), not an optimisation.
+5. **The thresholds themselves** for the declared Bootstrap/TCG profile, which
+   ADR-0103 allows to be revisited only after measurement — which now exists.
+
+**Stage 4 remains open.** H1–H5 are met; R1–R3 are measured and missed.
+
 ## Current H3 attribution (2026-09-28)
 
 ADR-0103 keeps H3 at four handoffs. The earlier claim of eight unavoidable
@@ -78,7 +194,8 @@ restoring `context_yield` after interface audit lines (a one-line mutation of
 **Current hard-budget verdict:** H1 meets ADR-0103 (one funded ordinary Region,
 zero per-request DMA Regions); H2 remains one payload copy; **H3 meets four**
 under the corrected logical-request attribution; H4 and H5 are unchanged.
-R1–R3 remain unmeasured under ADR-0103's accepted method, so Stage 4 stays open.
+R1–R3 were unmeasured when this section was written; they are measured and missed
+in §R1–R3 above, so Stage 4 stays open.
 
 Reproduce the H1/H3 evidence with:
 

@@ -154,6 +154,10 @@ Mitigation:
 - first professional patent/FTO review scope, and the recorded decision on the three
   items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
   §Stage 4 engineering review);
+- what closes the Stage 4 reference-platform gap: R1–R3 are measured under ADR-0103
+  and missed by two orders of magnitude, the cost being the block service's
+  interpreted per-byte loops (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3
+  lists the five candidate decisions);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes

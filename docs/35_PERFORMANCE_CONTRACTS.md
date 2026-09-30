@@ -275,8 +275,17 @@ were misattributed. A causal trace found an explicit runtime yield after every
 interface audit line; the corrected runtime flushes those lines without a
 scheduling handoff. A logical READ now
 measures four structural transitions, including both entry into and return from
-idle, so H3 is met. R1–R3 remain unmeasured under the accepted method; Stage 4
-remains open.
+idle, so H3 is met.
+
+**Status, 2026-09-30.** R1–R3 are measured under ADR-0103's method (P1, commit
+`3708ea7`, `docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3) and all three are
+missed: R1 = 0.00375 (≥ 0.35), R2 = 246 (≤ 5), R3 = 224 (≤ 8). The decomposition
+puts ~92 % of process time in the block service's interpreted steps — per-byte
+loops over the 512-byte sentinel and the one forced copy — not in the audit trail,
+IPC or scheduling. Two Level-1 changes to the service raised every ratio ~2.3×; what
+remains requires a decision this document does not make (execution-engine work, a
+bulk region primitive, multi-sector requests, the −56 defence's shape, or the
+thresholds). Stage 4 remains open.
 
 ## Stage 5 — Repository and activation
 
