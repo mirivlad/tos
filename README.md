@@ -472,9 +472,11 @@ The closure-readiness audit of the whole of Stage 4 is
 `docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
 **ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
 the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
-is archived separately. The corrected logical-request trace now meets H3 at
-four handoffs; Stage 4 remains **open** pending R1–R3 reference measurements
-(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
+is archived separately. The corrected logical-request trace meets H3 at four
+handoffs, and R1–R3 are now measured under ADR-0103 and missed by two orders of
+magnitude (R1 0.00375, R2 246, R3 224); Stage 4 remains **open** pending the
+Project Architect's decision on what closes that gap
+(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3).
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -574,7 +576,7 @@ endpoint answers every well-formed in-range request successfully; the device fai
 below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
 fail a real request and the block service answers `BLK_DEVICE`.
 
-**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-28):
+**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-30):
 
 - **built and gated**: PCI discovery, the interrupt/MMIO/DMA contracts, the VirtIO
   block textual driver, persistent object/state storage, and the first half of the
@@ -586,7 +588,9 @@ fail a real request and the block service answers `BLK_DEVICE`.
   `dma-quarantine.sh`);
 - **the performance contract report exists**: ADR-0103 funds one ordinary
   payload Region per READ and defines the reference method; the corrected
-  logical-request trace meets H3 at four handoffs; R1–R3 remain unmeasured;
+  logical-request trace meets H3 at four handoffs; R1–R3 are measured against an
+  isolated Rust oracle and missed (0.00375, 246 and 224 against 0.35, 5 and 8),
+  with the cost decomposed to the service's interpreted per-byte loops;
 - the **closure decision** is the Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the

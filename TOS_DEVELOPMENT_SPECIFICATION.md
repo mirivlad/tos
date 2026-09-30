@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `704b73ab9d0d8adcd79e7c109a65ec30e1a1e9be445f43c9800360d81f58c30f`\
+Source-manifest SHA-256: `502c63708fb41329ee17413b4e6f57ea2343de05de7d39b034a5a72a92f920fa`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -487,9 +487,11 @@ The closure-readiness audit of the whole of Stage 4 is
 `docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
 **ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
 the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
-is archived separately. The corrected logical-request trace now meets H3 at
-four handoffs; Stage 4 remains **open** pending R1–R3 reference measurements
-(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md`).
+is archived separately. The corrected logical-request trace meets H3 at four
+handoffs, and R1–R3 are now measured under ADR-0103 and missed by two orders of
+magnitude (R1 0.00375, R2 246, R3 224); Stage 4 remains **open** pending the
+Project Architect's decision on what closes that gap
+(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3).
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -589,7 +591,7 @@ endpoint answers every well-formed in-range request successfully; the device fai
 below it is exercised by `block-fault.sh`, where QEMU's `blkdebug` makes the endpoint
 fail a real request and the block service answers `BLK_DEVICE`.
 
-**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-28):
+**Where Stage 4 stands, from `docs/16`'s own deliverable list** (2026-09-30):
 
 - **built and gated**: PCI discovery, the interrupt/MMIO/DMA contracts, the VirtIO
   block textual driver, persistent object/state storage, and the first half of the
@@ -601,7 +603,9 @@ fail a real request and the block service answers `BLK_DEVICE`.
   `dma-quarantine.sh`);
 - **the performance contract report exists**: ADR-0103 funds one ordinary
   payload Region per READ and defines the reference method; the corrected
-  logical-request trace meets H3 at four handoffs; R1–R3 remain unmeasured;
+  logical-request trace meets H3 at four handoffs; R1–R3 are measured against an
+  isolated Rust oracle and missed (0.00375, 246 and 224 against 0.35, 5 and 8),
+  with the cost decomposed to the service's interpreted per-byte loops;
 - the **closure decision** is the Project Architect's.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
@@ -12787,8 +12791,17 @@ were misattributed. A causal trace found an explicit runtime yield after every
 interface audit line; the corrected runtime flushes those lines without a
 scheduling handoff. A logical READ now
 measures four structural transitions, including both entry into and return from
-idle, so H3 is met. R1–R3 remain unmeasured under the accepted method; Stage 4
-remains open.
+idle, so H3 is met.
+
+**Status, 2026-09-30.** R1–R3 are measured under ADR-0103's method (P1, commit
+`3708ea7`, `docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3) and all three are
+missed: R1 = 0.00375 (≥ 0.35), R2 = 246 (≤ 5), R3 = 224 (≤ 8). The decomposition
+puts ~92 % of process time in the block service's interpreted steps — per-byte
+loops over the 512-byte sentinel and the one forced copy — not in the audit trail,
+IPC or scheduling. Two Level-1 changes to the service raised every ratio ~2.3×; what
+remains requires a decision this document does not make (execution-engine work, a
+bulk region primitive, multi-sector requests, the −56 defence's shape, or the
+thresholds). Stage 4 remains open.
 
 ## Stage 5 — Repository and activation
 
@@ -13651,6 +13664,10 @@ Mitigation:
 - first professional patent/FTO review scope, and the recorded decision on the three
   items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
   §Stage 4 engineering review);
+- what closes the Stage 4 reference-platform gap: R1–R3 are measured under ADR-0103
+  and missed by two orders of magnitude, the cost being the block service's
+  interpreted per-byte loops (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3
+  lists the five candidate decisions);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes

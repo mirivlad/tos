@@ -16,6 +16,9 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# Importing the driver must not leave bytecode in the source tree, where the
+# SPDX gate would find an unlicensed file.
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("measure", HERE / "measure-stage4-reference.py")
 measure = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(measure)

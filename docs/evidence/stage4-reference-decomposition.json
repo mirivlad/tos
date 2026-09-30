@@ -1,0 +1,98 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "decision": "ADR-0103 profile decomposition",
+  "status": "diagnostic; only the last row is R1-R3 evidence (stage4-reference-r1-r3.json)",
+  "method": "each row is one complete TOS reference boot under the Stage 4 observer, compared with the oracle boot of its own series; steps are the engine's fuel, ticks the nucleus's per-process timer charge",
+  "rows": [
+    {
+      "variant": "accepted service before the Level-1 changes (tree dirty, exploratory)",
+      "audit_lines": true,
+      "service_steps_per_read": 22497,
+      "client_steps_per_read": 47,
+      "ticks": {
+        "init": 337,
+        "service": 162911,
+        "client": 4782
+      },
+      "ms_per_read": 31.41114639892578,
+      "r1_ratio": 0.0015671818600937572,
+      "r2_ratio": 426.0644107550459,
+      "r3_ratio": 529.3536923835346
+    },
+    {
+      "variant": "B: sentinel byte converted once per request (the first Level-1 change alone)",
+      "audit_lines": true,
+      "service_steps_per_read": 16360,
+      "client_steps_per_read": 47,
+      "ticks": {
+        "init": 325,
+        "service": 91334,
+        "client": 4715
+      },
+      "ms_per_read": 18.312416243326822,
+      "r1_ratio": 0.0026881749621153624,
+      "r2_ratio": 257.94074899500947,
+      "r3_ratio": 310.1031234854095
+    },
+    {
+      "variant": "A: no sentinel fill or check (diagnostic only: the -56 defence removed)",
+      "audit_lines": true,
+      "service_steps_per_read": 6625,
+      "client_steps_per_read": 47,
+      "ticks": {
+        "init": 328,
+        "service": 51085,
+        "client": 4851
+      },
+      "ms_per_read": 10.86639742578125,
+      "r1_ratio": 0.004530202321180666,
+      "r2_ratio": 156.2862830029296,
+      "r3_ratio": 184.63593919038817
+    },
+    {
+      "variant": "C: accepted service, interface audit lines suppressed (diagnostic only)",
+      "audit_lines": false,
+      "service_steps_per_read": 22497,
+      "client_steps_per_read": 47,
+      "ticks": {
+        "init": 338,
+        "service": 157839,
+        "client": 1759
+      },
+      "ms_per_read": 30.037448784016927,
+      "r1_ratio": 0.0016388535256476157,
+      "r2_ratio": 403.12695231761893,
+      "r3_ratio": 506.37892498256514
+    },
+    {
+      "variant": "D: A and C together (diagnostic only)",
+      "audit_lines": false,
+      "service_steps_per_read": 6625,
+      "client_steps_per_read": 47,
+      "ticks": {
+        "init": 321,
+        "service": 43402,
+        "client": 1819
+      },
+      "ms_per_read": 8.800031712239583,
+      "r1_ratio": 0.00559395470958112,
+      "r2_ratio": 142.8655664192383,
+      "r3_ratio": 149.32400346754588
+    },
+    {
+      "variant": "accepted service after both Level-1 changes: the P1 evidence run at 3708ea7",
+      "audit_lines": true,
+      "service_steps_per_read": 10233,
+      "client_steps_per_read": 47,
+      "ticks": {
+        "init": 318,
+        "service": 65331,
+        "client": 4919
+      },
+      "ms_per_read": 13.515263267415365,
+      "r1_ratio": 0.003748728618655155,
+      "r2_ratio": 246.12270205240307,
+      "r3_ratio": 223.62382282379423
+    }
+  ]
+}
