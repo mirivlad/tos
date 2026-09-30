@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Check both ADR-0103 reference boots, then compute R1-R3 and judge them.
+"""Check both ADR-0103 reference boots, compute R1-R3, and hold them to the baseline.
 
 Everything that makes the two boots comparable is checked before any ratio is
 formed: the same measured sector sequence (equal digests), the same disk bytes,
 the TOS client completing with that digest and every one of its READs on the
-audit record, and the oracle's interrupt account balancing. The thresholds are
-ADR-0103's and are constants here, not options.
+audit record, and the oracle's interrupt account balancing.
 
-Exit status: 0 every budget met, 4 a valid measurement with a budget missed,
-1 the pair is not evidence.
+**What is judged is ADR-0104's.** The original R1-R3 figures are reported beside
+each ratio as the pre-measurement research targets they are, and do not decide
+the exit status: for the Bootstrap/TCG profile they are characterization, not
+closure thresholds. What decides it is the `docs/35` regression policy against the
+retained baseline (`docs/evidence/stage4-reference-r1-r3.json`, P1 at `3708ea7`):
+a ratio more than 15 % worse than the baseline is reported as requiring an
+explanation, and more than 30 % worse blocks.
+
+Exit status: 0 a valid measurement with no blocking regression, 5 a blocking
+regression, 1 the pair is not evidence.
 """
 
 from __future__ import annotations
@@ -23,9 +30,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# ADR-0103's original figures: research targets under ADR-0104, reported and not
+# judged.
 R1_MINIMUM = 0.35
 R2_MAXIMUM = 5.0
 R3_MAXIMUM = 8.0
+# `docs/35` §Regression policy.
+EXPLAIN_ABOVE = 0.15
+BLOCK_ABOVE = 0.30
 TOTAL_READS = 128 + 3 * 2048 + 303 * 8
 MEASURED_READS = 3 * 2048 + 303 * 8
 
@@ -104,6 +116,7 @@ def main() -> int:
     for name in ("repository", "out", "tos", "oracle", "capsule-meta", "pattern", "nucleus",
                  "runtime-image", "oracle-efi", "quantum-source"):
         parser.add_argument(f"--{name}", required=True, type=Path)
+    parser.add_argument("--baseline", required=True, type=Path)
     parser.add_argument("--production-nucleus-sha256", required=True)
     parser.add_argument("--production-runtime-image-sha256", required=True)
     args = parser.parse_args()
@@ -122,11 +135,27 @@ def main() -> int:
     r1 = tos["r1"]["throughput_bytes_per_s"] / oracle["r1"]["throughput_bytes_per_s"]
     r2 = tos["r2"]["p99_elapsed_ns"] / oracle["r2"]["p99_elapsed_ns"]
     r3 = tos["r3"]["cpu_ns_per_mib"] / oracle["r3"]["cpu_ns_per_mib"]
-    verdict = {"R1": {"ratio": r1, "threshold": f">= {R1_MINIMUM}", "met": r1 >= R1_MINIMUM},
-               "R2": {"ratio": r2, "threshold": f"<= {R2_MAXIMUM}", "met": r2 <= R2_MAXIMUM},
-               "R3": {"ratio": r3, "threshold": f"<= {R3_MAXIMUM}", "met": r3 <= R3_MAXIMUM}}
+    baseline = json.loads(args.baseline.read_text())
+    if baseline.get("evidence_status") not in ("P1", "P2"):
+        fail("the retained baseline is not P1 or higher evidence")
+    base = {name: baseline["verdict"][name]["ratio"] for name in ("R1", "R2", "R3")}
+    # Positive is worse. R1 is a throughput ratio, higher is better; R2 and R3 are
+    # cost ratios, lower is better.
+    regression = {"R1": base["R1"] / r1 - 1, "R2": r2 / base["R2"] - 1, "R3": r3 / base["R3"] - 1}
+    verdict = {}
+    for name, ratio, target, met in (
+            ("R1", r1, f">= {R1_MINIMUM}", r1 >= R1_MINIMUM),
+            ("R2", r2, f"<= {R2_MAXIMUM}", r2 <= R2_MAXIMUM),
+            ("R3", r3, f"<= {R3_MAXIMUM}", r3 <= R3_MAXIMUM)):
+        worse = regression[name]
+        policy = ("blocks" if worse > BLOCK_ABOVE else
+                  "requires explanation" if worse > EXPLAIN_ABOVE else "within policy")
+        verdict[name] = {"ratio": ratio, "research_target": target, "research_target_met": met,
+                         "baseline_ratio": base[name], "regression": worse,
+                         "regression_policy": policy}
 
     status = run(["git", "status", "--porcelain"], cwd=args.repository)
+    github = run(["sh", "-c", "printf %s \"${GITHUB_ACTIONS:-}\""]) == "true"
     quantum = re.findall(r"^\s*const\s+QUANTUM\s*:\s*u32\s*=\s*([0-9_]+)\s*;",
                          args.quantum_source.read_text(), re.M)
     cpu = [line.split(":", 1)[1].strip() for line in
@@ -134,7 +163,11 @@ def main() -> int:
     report = {
         "record_spdx_license": "CC-BY-SA-4.0",
         "decision": "ADR-0103",
-        "evidence_status": "P1" if not status else "exploratory",
+        "evidence_status": ("exploratory" if status else "P2" if github else "P1"),
+        "closure_interpretation": "ADR-0104: characterization and regression evidence "
+                                  "against the retained Bootstrap/TCG baseline",
+        "baseline": {"path": str(args.baseline.relative_to(args.repository)),
+                     "commit": baseline.get("commit"), "ratios": base},
         "commit": run(["git", "rev-parse", "HEAD"], cwd=args.repository),
         "dirty": bool(status),
         "host": {"platform": platform.platform(), "cpu": cpu[0] if cpu else None,
@@ -171,9 +204,11 @@ def main() -> int:
     print(side("tos", tos))
     print(side("oracle", oracle))
     for name, entry in verdict.items():
-        print(f"  {name}: {entry['ratio']:.6g} (ADR-0103 {entry['threshold']}) "
-              f"{'met' if entry['met'] else 'MISSED'}")
-    return 0 if all(entry["met"] for entry in verdict.values()) else 4
+        print(f"  {name}: {entry['ratio']:.6g}; baseline {entry['baseline_ratio']:.6g}, "
+              f"{entry['regression'] * 100:+.1f} % worse, {entry['regression_policy']}; "
+              f"original research target {entry['research_target']} "
+              f"{'met' if entry['research_target_met'] else 'missed'}")
+    return 5 if any(entry["regression_policy"] == "blocks" for entry in verdict.values()) else 0
 
 
 if __name__ == "__main__":

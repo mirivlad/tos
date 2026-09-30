@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `502c63708fb41329ee17413b4e6f57ea2343de05de7d39b034a5a72a92f920fa`\
+Source-manifest SHA-256: `ddfa38cf16950253dbcc89e0b00fb1b01c222038f5fbbfe6878babe24893d36b`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -483,15 +483,19 @@ IRQ, DMA, Virtqueue, block-I/O or reset semantics.
 **Stage 4C and Stage 4D are formally closed** by the Project Architect on
 2026-09-26; their approval is archived in
 `source/legal/publication-records/stage4cd-closure-approval-2026-09-26.md`.
-The closure-readiness audit of the whole of Stage 4 is
-`docs/evidence/STAGE4_CLOSURE_AUDIT.md` (2026-09-26): it finds Stage 4C and Stage 4D
-**ready to close** on the evidence. ADR-0103 now reconciles H1 and defines
-the H3 scheduling rule and R1–R3 measurement method. The patent-review decision
-is archived separately. The corrected logical-request trace meets H3 at four
-handoffs, and R1–R3 are now measured under ADR-0103 and missed by two orders of
-magnitude (R1 0.00375, R2 246, R3 224); Stage 4 remains **open** pending the
-Project Architect's decision on what closes that gap
-(`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3).
+The closure audit of the whole of Stage 4 is
+`docs/evidence/STAGE4_CLOSURE_AUDIT.md`, reconciled on 2026-09-30: 72 obligations,
+67 PASS and 5 NONCLAIM by accepted decision, and **Stage 4 ready to close on the
+evidence**. ADR-0103 reconciled H1 and defined the H3 scheduling rule and the R1–R3
+method. The corrected logical-request trace meets H3 at four handoffs. R1–R3 were
+measured at P1 and **missed** as the original research targets (R1 0.00375, R2 246,
+R3 224); ADR-0104 makes them characterization and regression evidence for the
+Bootstrap/TCG profile, with the measured result held as a baseline — not a
+production-performance claim (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3).
+The patent engineering review's step-8 decision is archived in
+`source/legal/publication-records/stage4-patent-engineering-review-2026-09-26.md`.
+ADR-0096 is accepted (no two interfaces share an object kind); ADR-0044 stays open by
+decision and blocks nothing.
 Their evidence is
 `docs/evidence/STAGE4C_LIVENESS.md`, `STAGE4C2_CAPABILITY_REPRESENTATION.md`,
 `STAGE4C3_DMA_ORDERING.md`, `STAGE4D1_FIRST_VIRTQUEUE.md`,
@@ -601,12 +605,12 @@ fail a real request and the block service answers `BLK_DEVICE`.
   boundary it is and an incomplete `READ` (`block-fault.sh`); a device that fails
   a request, lies about its ring or never goes quiet (`block-fault.sh`,
   `dma-quarantine.sh`);
-- **the performance contract report exists**: ADR-0103 funds one ordinary
-  payload Region per READ and defines the reference method; the corrected
-  logical-request trace meets H3 at four handoffs; R1–R3 are measured against an
-  isolated Rust oracle and missed (0.00375, 246 and 224 against 0.35, 5 and 8),
-  with the cost decomposed to the service's interpreted per-byte loops;
-- the **closure decision** is the Project Architect's.
+- **the performance contract report exists**: H1–H5 are met; R1–R3 are measured
+  against an isolated Rust oracle and missed as research targets (0.00375, 246 and
+  224 against 0.35, 5 and 8), the cost decomposed to the service's interpreted
+  per-byte loops, and under ADR-0104 the measured result is the regression-held
+  Bootstrap/TCG baseline;
+- the **closure decision** is the Project Architect's, recorded separately.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
@@ -3470,7 +3474,10 @@ Accepted by ADR-0060 (Project Architect-approved, 2026-08-19), which admits the
 interface schema as a class of document and fixes the three things a schema
 cannot decide for itself, and amended to version 2 by ADR-0085
 (Project Architect-approved, 2026-09-08), which separates an interface's
-identity from the class of values that represents it.
+identity from the class of values that represents it. ADR-0096 (Project
+Architect-approved, 2026-09-30) adds one invariant on the schema as a whole — no
+two accepted interfaces declare the same object kind (§4) — which the accepted
+set already satisfied, so no interface, operation or version changes.
 
 **What version 2 adds, and nothing else.** One field on the schema type —
 `capability_representation`, §4.3 — drawn from a closed enumeration this
@@ -3584,6 +3591,17 @@ discover it at its first call.
 **The kind is a check, not the mechanism that chooses a grant.** Which grant
 answers which request is decided by the binding the module declared (ADR-0061),
 because two imports of one interface are legal and a kind cannot tell them apart.
+
+**No two accepted interfaces declare the same object kind** (ADR-0096, option N1).
+This holds across every accepted schema — this one and `PLATFORM_INTERFACE_V1` —
+because the startup check compares an endowed object's kind with the kind the
+requested interface declares and nothing else: if two interfaces shared a kind, a
+launcher could answer a request for one with authority that reached it as the
+other, turning one accepted operation set into another. Two semantically different
+interfaces therefore get two kinds, as `system.process.LaunchPlanBuilder` and
+`system.process.LaunchPlan` do. Launch policy chooses who holds authority; it does
+not choose which interface an object is. Interface identity is not recorded in
+capabilities, launch-plan entries or launch records.
 
 | Interface | Object kind | Capability representation |
 |---|---|---|
@@ -7043,7 +7061,10 @@ Evidence:
 - driver loaded from identified commit/blob or Stage-compatible source set;
 - device capabilities only;
 - DMA and interrupt threat tests;
-- performance contract report;
+- performance contract report — under ADR-0104, H1–H5 met and R1–R3 measured at P1
+  or higher against an isolated reference, with workload equivalence, a retained
+  decomposition and a regression-held baseline; for the Bootstrap/TCG profile the
+  reference ratios are characterization, not a numeric closure threshold;
 - crash/restart and device-reset behavior;
 - no binary shadow driver performs the real I/O.
 
@@ -12772,12 +12793,26 @@ Reference baseline:
 
 A minimal, separately isolated Rust VirtIO-block benchmark implementation may be built only as a host/reference oracle. It is not an accepted nucleus driver and cannot satisfy the TOS stage gate.
 
-Stage 4 reference-platform budgets:
+Stage 4 reference-platform budgets, **as written before they could be measured**:
 
 - sequential throughput is at least 35% of the reference baseline for the same queue depth and image;
 - random 4 KiB p99 latency is no more than 5 times the reference baseline;
 - CPU time per MiB is no more than 8 times the reference baseline;
 - performance results include textual-runtime engine identity and cache state.
+
+**Under ADR-0104 the first three are characterization and regression evidence for
+the Bootstrap/TCG profile, not numeric closure thresholds.** They were measured
+under ADR-0103 and missed — R1 0.00375, R2 246.1, R3 223.6 (P1, `3708ea7`) — and
+stay in the record as research targets and measured misses. Stage-4 performance
+closure instead requires H1–H5; a valid ADR-0103 measurement at P1 or higher;
+checked workload equivalence; the production textual-driver path with no binary
+or host bypass; no hidden subtraction or correction; the ordinary Level-1 defects
+it exposed fixed; a retained decomposition of the dominant cost; and every engine,
+cache and measurement identity. The P1 result at `3708ea7`
+(`docs/evidence/stage4-reference-r1-r3.json`) is the retained baseline, held to
+§Regression policy by `qemu_stage4_reference_performance`. None of this states that
+the present performance suffices for production storage or future
+high-throughput workloads. The fourth item is unchanged and met.
 
 Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
 
@@ -12798,10 +12833,11 @@ idle, so H3 is met.
 missed: R1 = 0.00375 (≥ 0.35), R2 = 246 (≤ 5), R3 = 224 (≤ 8). The decomposition
 puts ~92 % of process time in the block service's interpreted steps — per-byte
 loops over the 512-byte sentinel and the one forced copy — not in the audit trail,
-IPC or scheduling. Two Level-1 changes to the service raised every ratio ~2.3×; what
-remains requires a decision this document does not make (execution-engine work, a
-bulk region primitive, multi-sector requests, the −56 defence's shape, or the
-thresholds). Stage 4 remains open.
+IPC or scheduling. Two Level-1 changes to the service raised every ratio ~2.3×.
+ADR-0104 (accepted 2026-09-30) decides what remains: the measured misses stay in
+the record, the ratios become characterization and regression evidence against the
+retained baseline, and none of execution-engine work, a bulk region primitive,
+multi-sector requests or a weaker −56 defence is undertaken for Stage 4.
 
 ## Stage 5 — Repository and activation
 
@@ -13054,7 +13090,9 @@ Deliverables:
 - persistent object/state storage;
 - capsule-to-repository handoff;
 - crash/reset and adversarial-device tests;
-- Stage 4 performance contract report.
+- Stage 4 performance contract report (what it must show for closure is ADR-0104's:
+  H1–H5 met, R1–R3 measured and decomposed, the measured baseline held against
+  regression).
 
 Engineering exit: persistent storage works through a textual user-space driver.
 
@@ -13544,6 +13582,28 @@ about 40 ms per 512-byte READ through `block.device.v1` under TCG, dominated by
 byte-at-a-time loops in interpreted canonical text. The risk is realized at Stage 4,
 not hypothetical.
 
+**Measured under ADR-0103 on 2026-09-30 (P1, `3708ea7`):** R1 0.00375, R2 246.1,
+R3 223.6 against an isolated Rust oracle, after two Level-1 fixes; ~92 % of process
+time is the block service's interpreted per-byte loops (the −56 sentinel and the
+one forced copy). ADR-0104 keeps these misses in the record, makes the ratios
+characterization and regression evidence for the Bootstrap/TCG profile, and holds
+the measured baseline against regression (`qemu_stage4_reference_performance`).
+
+Future work, recorded rather than scheduled (ADR-0104):
+
+- **the strategic remedy is a faster execution tier** — possibly a compiled and
+  verified derived tier, with canonical text remaining the source of truth
+  (the first mitigation above);
+- **bulk region operations and multi-sector block requests** may be worth having
+  independently, but must come from the requirements of later stages, not as a
+  benchmark-specific bypass;
+- **if Stage 5 or a later performance gate needs engine work**, that is its own
+  architectural decision, made against the real workload that needs it;
+- the −56 defence is not traded for throughput.
+
+None of this is a claim that the present performance suffices for production
+storage or high-throughput workloads.
+
 ## R3 — Git repository scale
 
 Using Git semantics for an entire system may create object-count, checkout, merge, and garbage-collection challenges.
@@ -13664,10 +13724,6 @@ Mitigation:
 - first professional patent/FTO review scope, and the recorded decision on the three
   items the Stage 4 engineering review flagged (`docs/research/PATENT_LANDSCAPE.md`
   §Stage 4 engineering review);
-- what closes the Stage 4 reference-platform gap: R1–R3 are measured under ADR-0103
-  and missed by two orders of magnitude, the cost being the block service's
-  interpreted per-byte loops (`docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3
-  lists the five candidate decisions);
 - future architecture-council succession model.
 
 ## R11 — Architectural erosion by mature substitutes
@@ -14915,6 +14971,13 @@ overlap is not a finding of practice — every independent claim is a combinatio
 and none was charted element by element against TOS at claim-construction depth —
 but `docs/24` step 7 (counsel) and step 8 (the recorded decision) are the Project
 Architect's to take or to decline, and this review does not take them.
+
+*Step 8 was taken on 2026-09-26*
+(`source/legal/publication-records/stage4-patent-engineering-review-2026-09-26.md`):
+the engineering review is accepted as complete for the Stage-4 cross-stage gate,
+with no freedom-to-operate or non-infringement conclusion; step 7, qualified
+counsel, is deferred to the first applicable `docs/24` trigger; and the flagged
+families above remain in the risk register.
 
 ## Required follow-up searches
 
@@ -36483,6 +36546,188 @@ held by two generations of one service and by a withdrawal channel.
 
 ---
 
+<!-- BEGIN docs/adr/0096-nominal-interface-identity-under-delegation.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0096: Must a nominal interface survive delegation and endowment?
+
+- Status: **Accepted — option N1, the injectivity invariant** (Project Architect
+  approval 2026-09-30; raised 2026-09-23)
+- Date: 2026-09-23; decided 2026-09-30
+- Decision level: **2 or 3, depending on the answer.** Preserving interface
+  identity through the generic launch machinery touches `SYSTEM_ABI_V1`
+  operation 22, the launch-plan entry and the launch record; putting it in the
+  object kind touches the nucleus's object set. Either is a decision about
+  Stage 3's capability model
+- Related: **ADR-0061** (a binding answers a request; the object-kind check is a
+  compatibility check and "is not a matching rule"); **ADR-0077** §2–§5 (launch
+  plans, operation 22); **ADR-0085** (an interface is not its own value type);
+  **ADR-0095** (Stage 4's publication authority, which deliberately does not
+  depend on the answer); `CAPABILITY_V1` §2, §3; `docs/42` §2;
+  `SYSTEM_INTERFACE_V1` §4, §4.1, §4.3;
+  `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §21–§24, which is the
+  research this is raised from and is authority for nothing
+
+## Decision (2026-09-30)
+
+**N1 is accepted.** `SYSTEM_INTERFACE_V1` §4 gains the invariant:
+
+> **Two accepted system interfaces MUST NOT declare the same capability object
+> kind.**
+
+If two interfaces are semantically different, they get different object kinds, as
+`system.process.LaunchPlanBuilder` and `system.process.LaunchPlan` already did.
+Launch policy decides **who** receives authority; it cannot turn one accepted
+nominal operation set into another merely because the underlying object kind is
+the same, because under this invariant no two accepted operation sets share one.
+
+**N2 and N4 are not adopted, and nothing else changes.** No interface identity is
+added to capability handles, launch-plan entries, launch records or the nucleus;
+`CAPABILITY_V1` §3's five-part capability stands, and operation 22 is unchanged.
+N3 is rejected: retyping by launch policy is not a permitted power, it is made
+unreachable.
+
+**Enforcement.** The invariant is a property of the accepted schema, so it is
+checked where the schema is: `interface_schema` (`scripts/tests/check-interface-schema.sh`)
+refuses any object kind declared by two interfaces across `SYSTEM_INTERFACE_V1` and
+`PLATFORM_INTERFACE_V1`, after proving the frontend's table says the same; and
+`accepted_interfaces_declare_distinct_object_kinds` in
+`source/tests/integration/tests/interface_schema.rs` holds the frontend's `ACCEPTED`
+table to it directly. A future interface that wants another's object kind must add
+a kind — a decision about the nucleus's object set, not about the schema.
+
+**Impact.** Level 2: a schema invariant. The tree already satisfied it (§2), so no
+artifact, identity, grant or boot changes. No invariant of `docs/02` changes, the
+trusted base is untouched, and there is no new dependency, patent mechanism or
+compatibility change.
+
+The sections below are the question as it was raised, kept as the record of why.
+
+## 0. Why this exists as its own decision
+
+It was found while implementing Stage 4 publication, and Stage 4 publication no
+longer depends on it (ADR-0095). Recording it here is what keeps a real generic
+finding from either being lost or being allowed to hold up a storage slice. **It
+is not to be solved from Stage 4D.**
+
+## 1. The question
+
+**When two accepted interfaces declare the same object kind, may launch policy
+answer a request for one with a capability that reached the launcher as the
+other?** Equivalently: is a capability's nominal interface a property that must
+survive delegation and endowment, or is it a property of the receiving artifact
+alone?
+
+## 2. What is true of the tree today, as facts rather than as a position
+
+- **The question is unreachable.** interface → object kind is **injective** over
+  all ten accepted interfaces: `system.ipc.Endpoint`, `system.ipc.Reply`,
+  `system.memory.Authority`, `system.process.LaunchPlanBuilder`,
+  `system.process.LaunchPlan`, `system.process.Control`, `platform.pci.Bus`,
+  `platform.pci.FunctionConfig`, `platform.irq.Source` and
+  `platform.dma.Region` each have a kind of their own. So "a grant of the
+  matching kind" determines the interface uniquely, and no pair exists to retype
+  between. **That is why nobody has had to answer this.**
+- **If such a pair existed, both directions would succeed.**
+  `launch_plan_endow` (operation 22) resolves the delegated capability at no
+  particular right and records `{binding, object, rights, scope}`; the launch
+  record carries `{handle, object, rights, scope, binding}`; and the launcher's
+  startup check compares the endowed object's kind against the kind the requested
+  interface declares, and makes no other comparison. No interface identity exists
+  anywhere along that chain to compare.
+- **Stage 4 creates no such pair.** ADR-0095 represents publication authority as
+  a dedicated endpoint object rather than as a second interface over
+  `OBJECT_ENDPOINT`, so the injectivity above is intact after it.
+- **Resolving this is not required to close Stage 4.** Nothing in the concrete
+  Stage 4 path — correctness, isolation, authority or recoverability — depends on
+  the answer, which is the test `docs/21` and the Stage 4 process rule apply.
+
+## 3. What the accepted corpus says, both ways
+
+**Neither reading is unsupported, which is why this is a decision.**
+
+**That it is permitted.** `docs/42` §2: an import "is a request, not a grant.
+The process launcher/supervisor, not source text, maps the request to a concrete
+grant after policy/trust evaluation." `CAPABILITY_V1` §3: a capability is
+`object + rights + scope + lifetime + generation` — the interface is not one of
+the five. `SYSTEM_INTERFACE_V1` §4: "the kind is a check, not the mechanism that
+chooses a grant." ADR-0061, most explicitly: "even 'match a request to a grant of
+the matching kind' is not derivable; **it is a decision**", and of the check it
+adopted, "the kind check … **is not a matching rule**".
+
+**That it was meant to be refused.** The model met this case once and removed the
+possibility rather than granting the power: `system.process.LaunchPlanBuilder`
+and `system.process.LaunchPlan` are one object in two states and were given
+**two object kinds**, because "a launcher answering
+`import capability system.process.LaunchPlan` with a builder would be answering a
+request for something that has been decided with something that has not."
+`SYSTEM_INTERFACE_V1` §4 gives the check's purpose as refusing "a grant of the
+wrong kind at startup", which is vacuous for a shared kind. And the prohibitions
+on widening, on conversion between capability interfaces and on recreating a
+linear capability are all stated of **source** operations (`docs/42` §2), so they
+do not reach a launcher's mapping — which leaves it unguarded rather than
+permitted by anyone's decision.
+
+**So the position this ADR takes is only that the two are different claims.**
+*The launcher decides who holds authority* is accepted many times over. *The
+launcher decides which accepted operation set a child may exercise over one
+object at one right* has never been decided, because it has never been
+reachable.
+
+## 4. What an answer would have to settle
+
+1. Whether two accepted interfaces may declare the same object kind at all. If
+   not, the rule belongs in `SYSTEM_INTERFACE_V1` §4 as an invariant on the
+   schema, and it is cheap: today's set already satisfies it.
+2. If they may, whether interface identity must travel with a delegation and an
+   endowment — and if so, where it is recorded, where it is compared, and what an
+   entry carrying none means. An absent identity treated as a wildcard is the
+   retyping with extra steps.
+3. Where the identity may come from. It cannot be a string a module supplies:
+   that is `docs/37`'s "textual manifest grants itself authority". The candidate
+   source is the verified operation row, since `endow_for_launch` is declared per
+   interface and the verifier already proves a call site's exact interface.
+4. Whether the nucleus must be able to tell such capabilities apart, which is a
+   different and larger question — a nominal type that only the runtime image
+   compares is an artifact-level gate, not a check on a handle.
+
+## 5. Options, sketched and not weighed
+
+Kept short deliberately; a real weighing belongs to whoever schedules this.
+
+- **N1 — an injectivity invariant.** Forbid two accepted interfaces from sharing
+  an object kind. Nothing changes today; a future interface pair that wants to
+  share one must add a kind instead, as the launch plan pair did.
+- **N2 — type-preserving endowment.** Interface identity in the plan entry and
+  the launch record, taken from the verified operation row and compared at
+  startup. Generic, and it extends operation 22.
+- **N3 — status quo, stated.** Record that launch policy may retype, so that
+  nobody designs an authority that depends on the nominal type surviving.
+- **N4 — identity in the capability itself.** The nucleus holds an interface per
+  handle. The largest, and it changes what a capability is (`CAPABILITY_V1` §3).
+
+`docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §24 has the fuller analysis of
+the middle two, written when this was still a publication question.
+
+## 6. What this ADR did not do when it was raised
+
+*Superseded in part by the decision above: it now answers its question (N1) and
+amends `SYSTEM_INTERFACE_V1` §4 with the invariant. The rest stands.*
+
+- It does not answer its own question, and nothing in the tree waits on it.
+- It does not amend `CAPABILITY_V1`, `SYSTEM_INTERFACE_V1`, ADR-0061, ADR-0077 or
+  ADR-0085.
+- It does not reopen ADR-0095. Stage 4 publication does not depend on the answer,
+  by construction rather than by luck.
+- It does not block Stage 4C, Stage 4D or Stage 4 closure. If a future slice
+  creates an interface pair sharing an object kind, that slice inherits this
+  decision as a prerequisite — and saying so now is the whole point of raising it.
+
+<!-- END docs/adr/0096-nominal-interface-identity-under-delegation.md -->
+
+---
+
 <!-- BEGIN docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md -->
 
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
@@ -39702,6 +39947,10 @@ On acceptance, and not before:
 - Date and Project Architect approval: **2026-09-26**
 - Decision level: **2** — performance and scheduling contract clarification
 - Related: ADR-0040, ADR-0049, ADR-0066, ADR-0097, ADR-0098; `docs/35` §Stage 4
+- Amended by: **ADR-0104** (2026-09-30) — the R1–R3 measurement this decision
+  defines was made and missed; for the Bootstrap/TCG profile the three ratios are
+  characterization and regression evidence rather than closure thresholds, and the
+  P1 result at `3708ea7` is the retained baseline. The method below is unchanged.
 
 ## Decision
 
@@ -39771,6 +40020,134 @@ paired-reference evidence. The Stage-4 threat model and negative device tests
 remain applicable and unchanged.
 
 <!-- END docs/adr/0103-stage-4-performance-contract-reconciliation-and-measurement.md -->
+
+---
+
+<!-- BEGIN docs/adr/0104-stage-4-bootstrap-tcg-reference-ratios-are-characterization.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0104: Stage-4 Bootstrap/TCG reference ratios are characterization and regression evidence, not closure thresholds
+
+- Status: **Accepted**
+- Date and Project Architect approval: **2026-09-30**
+- Decision level: **2** — the closure interpretation of an existing performance
+  contract; no invariant, ABI, format or trust boundary changes
+- Amends: ADR-0103 §Reference measurement (what a miss means for closure);
+  `docs/35` §Stage 4 reference-platform budgets
+- Related: ADR-0040, ADR-0066, ADR-0103; `docs/16` §Stage 4; `docs/37` §Stage 4;
+  `docs/evidence/STAGE4_PERFORMANCE_REPORT.md` §R1–R3;
+  `docs/evidence/stage4-reference-r1-r3.json`;
+  `docs/evidence/stage4-reference-decomposition.json`
+
+## Context
+
+`docs/35` stated three Stage-4 reference-platform budgets before anything could
+measure them: sequential throughput at least 35 % of a reference implementation
+(R1), random 4 KiB p99 latency at most five times the reference (R2), and CPU time
+per MiB at most eight times the reference (R3). ADR-0103 fixed how they are
+measured and said that no threshold may change before they are.
+
+They have been measured. P1 evidence on clean commit `3708ea7`, against the
+isolated Rust oracle and read by the Stage-4 external observer:
+
+| Metric | Measured ratio | Original target |
+|---|---|---|
+| R1 | 0.00375 | ≥ 0.35 |
+| R2 | 246.1 | ≤ 5 |
+| R3 | 223.6 | ≤ 8 |
+
+The measurement is valid: the workloads are equivalent (one sector digest on both
+sides, every one of the 8 696 READs on the TOS audit record, byte-identical disk
+images), the TOS side is the production textual-driver path with its audit trail
+intact, and nothing was subtracted. The decomposition, kept as one complete boot per
+variant, places about 92 % of process time in the block service's interpreted
+engine steps — per-byte loops over the 512-byte sentinel of the −56 defence and over
+the one payload copy that H2 permits and ADR-0037 forces. It is not IPC,
+scheduling, the audit trail or a defect of the service: the ordinary Level-1
+defects found were fixed in `3708ea7` and raised every ratio about 2.3×.
+
+## Decision
+
+1. **The original R1–R3 figures stay in the record as what they were:**
+   pre-measurement research targets, and the misses that were actually measured.
+   Nothing rewrites them as met, and no threshold is lowered to the numbers the
+   current implementation happens to reach.
+
+2. **For the declared Bootstrap/TCG profile they are no longer numeric Stage-4
+   closure thresholds.** They are characterization and regression evidence.
+
+3. **Stage-4 performance closure requires, instead:**
+   - H1–H5 of `docs/35` §Stage 4 met (H1 as ADR-0103 amended it);
+   - a valid ADR-0103 measurement of R1–R3 at evidence status P1 or higher;
+   - workload equivalence between TOS and the reference, checked rather than assumed;
+   - the production textual-driver path, with no binary or host bypass;
+   - no hidden subtraction, correction, filtering or retry;
+   - the ordinary Level-1 defects the measurement exposed, fixed;
+   - a retained decomposition that explains the dominant cost;
+   - the engine identity, cache state and every measurement identity (observer
+     build, QEMU command, oracle, artifacts, disk image, scheduler quantum, host).
+
+4. **The P1 result at `3708ea7` is the retained Bootstrap/TCG performance
+   baseline** (`docs/evidence/stage4-reference-r1-r3.json`). Later changes must not
+   degrade it silently: `docs/35` §Regression policy applies to its three ratios. A
+   ratio worse than the baseline by more than 15 % requires an explanation; by more
+   than 30 % it blocks a stage or release unless an ADR changes the contract. The
+   gate `qemu_stage4_reference_performance` re-measures and applies that policy on
+   every full run, so a regression cannot pass unnoticed.
+
+5. **This is not a statement that the present performance is sufficient** for
+   production storage or for any future high-throughput workload. It is a measured
+   baseline of the reference profile, and nothing more.
+
+## Why
+
+The requirement R1 ≥ 35 % for the present fully interpreted textual-driver path
+proved empirically incompatible with the Bootstrap engine. At the oracle's ~48 µs
+per READ, R1 would need a TOS READ of about 137 µs — on the order of a hundred
+engine steps for the whole service — while a single per-byte loop over 512 bytes is
+five times that, and the forced copy is such a loop. Even the diagnostic variant
+without the sentinel defence and without the audit trail reaches R1 = 0.0056.
+Meeting the original numbers would not be a repair of the Stage-4 driver path; it
+would be a new execution tier or a semantic optimization of the engine, which is a
+separate architectural project.
+
+That project must not be allowed to block the proof Stage 4 exists to give: that a
+canonical textual user-space driver really moves persistent data through
+final-style MMIO, interrupt, DMA and IPC boundaries (`docs/37` §Stage 4). Nor may
+the numbers be quietly relaxed until they pass. Measuring, keeping the misses in the
+record, and holding the measured baseline against regression is the position that
+does neither.
+
+## What is deliberately not done for Stage 4
+
+- No compiled or JIT execution tier.
+- No bulk `Region`/`DmaRegion` primitive.
+- No multi-sector `BLOCK_DEVICE_V1`.
+- **No weakening or removal of the −56 defence.** Security is not changed for a
+  benchmark.
+
+The strategic remedy for the gap is a faster execution tier, possibly a compiled
+and verified derived one, with canonical text remaining the source of truth. Bulk
+operations and multi-sector requests may be worth having for their own sake, but
+they must come from the requirements of later stages, not as a benchmark-specific
+bypass. If Stage 5 or a later performance gate needs engine work, that is its own
+architectural decision, made against the real workload that needs it.
+
+## Architecture impact
+
+No invariant, canonical representation, persistent format, source identity, trust
+boundary, owner recovery or rollback path changes. Nothing enters the trusted base.
+The compatibility profile remains QEMU q35, qemu64, one vCPU, TCG. The measurement
+tooling is test-side: the Stage-4 observer build (MIT-licensed patch tooling over the
+GPL-2.0-only QEMU instrument, recorded in `THIRD_PARTY.toml`) and the
+dependency-free Rust oracle (GPL-3.0-or-later), neither linked into TOS. No patent
+mechanism is added. Enforcement: `qemu_stage4_reference_performance` (valid
+measurement, workload equivalence and the regression policy against the retained
+baseline) and `selftest_stage4_reference_decoder`; H1–H3 remain
+`qemu_stage4_request_cost`.
+
+<!-- END docs/adr/0104-stage-4-bootstrap-tcg-reference-ratios-are-characterization.md -->
 
 ---
 

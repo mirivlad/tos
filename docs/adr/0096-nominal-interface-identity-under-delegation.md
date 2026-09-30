@@ -2,9 +2,9 @@
 
 # ADR-0096: Must a nominal interface survive delegation and endowment?
 
-- Status: **Proposed** (raised 2026-09-23 on Project Architect direction; **not
-  scheduled, and it does not block Stage 4**)
-- Date: 2026-09-23
+- Status: **Accepted — option N1, the injectivity invariant** (Project Architect
+  approval 2026-09-30; raised 2026-09-23)
+- Date: 2026-09-23; decided 2026-09-30
 - Decision level: **2 or 3, depending on the answer.** Preserving interface
   identity through the generic launch machinery touches `SYSTEM_ABI_V1`
   operation 22, the launch-plan entry and the launch record; putting it in the
@@ -18,6 +18,41 @@
   `SYSTEM_INTERFACE_V1` §4, §4.1, §4.3;
   `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §21–§24, which is the
   research this is raised from and is authority for nothing
+
+## Decision (2026-09-30)
+
+**N1 is accepted.** `SYSTEM_INTERFACE_V1` §4 gains the invariant:
+
+> **Two accepted system interfaces MUST NOT declare the same capability object
+> kind.**
+
+If two interfaces are semantically different, they get different object kinds, as
+`system.process.LaunchPlanBuilder` and `system.process.LaunchPlan` already did.
+Launch policy decides **who** receives authority; it cannot turn one accepted
+nominal operation set into another merely because the underlying object kind is
+the same, because under this invariant no two accepted operation sets share one.
+
+**N2 and N4 are not adopted, and nothing else changes.** No interface identity is
+added to capability handles, launch-plan entries, launch records or the nucleus;
+`CAPABILITY_V1` §3's five-part capability stands, and operation 22 is unchanged.
+N3 is rejected: retyping by launch policy is not a permitted power, it is made
+unreachable.
+
+**Enforcement.** The invariant is a property of the accepted schema, so it is
+checked where the schema is: `interface_schema` (`scripts/tests/check-interface-schema.sh`)
+refuses any object kind declared by two interfaces across `SYSTEM_INTERFACE_V1` and
+`PLATFORM_INTERFACE_V1`, after proving the frontend's table says the same; and
+`accepted_interfaces_declare_distinct_object_kinds` in
+`source/tests/integration/tests/interface_schema.rs` holds the frontend's `ACCEPTED`
+table to it directly. A future interface that wants another's object kind must add
+a kind — a decision about the nucleus's object set, not about the schema.
+
+**Impact.** Level 2: a schema invariant. The tree already satisfied it (§2), so no
+artifact, identity, grant or boot changes. No invariant of `docs/02` changes, the
+trusted base is untouched, and there is no new dependency, patent mechanism or
+compatibility change.
+
+The sections below are the question as it was raised, kept as the record of why.
 
 ## 0. Why this exists as its own decision
 
@@ -125,7 +160,10 @@ Kept short deliberately; a real weighing belongs to whoever schedules this.
 `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §24 has the fuller analysis of
 the middle two, written when this was still a publication question.
 
-## 6. What this ADR does not do
+## 6. What this ADR did not do when it was raised
+
+*Superseded in part by the decision above: it now answers its question (N1) and
+amends `SYSTEM_INTERFACE_V1` §4 with the invariant. The rest stands.*
 
 - It does not answer its own question, and nothing in the tree waits on it.
 - It does not amend `CAPABILITY_V1`, `SYSTEM_INTERFACE_V1`, ADR-0061, ADR-0077 or

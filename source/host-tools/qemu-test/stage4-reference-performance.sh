@@ -30,12 +30,14 @@
 # both digests of the measured sector sequence are equal, the TOS client completed
 # with that digest, the oracle's interrupt account balances, the disk images are
 # identical, and every window the observer recorded matches the predeclared plan.
-# Then R1 = TOS/oracle throughput (>= 0.35), R2 = TOS/oracle p99 (<= 5), R3 =
-# TOS/oracle CPU per MiB (<= 8). Thresholds are ADR-0103's and are not parameters.
+# Then R1 = TOS/oracle throughput, R2 = TOS/oracle p99, R3 = TOS/oracle CPU per
+# MiB, each held to the retained Bootstrap/TCG baseline under `docs/35`'s
+# regression policy (ADR-0104). ADR-0103's original figures (>= 0.35, <= 5, <= 8)
+# are printed beside them as the research targets they were; they were measured
+# and missed, and under ADR-0104 they are characterization, not a threshold.
 #
-# **Exit status.** 0: a valid measurement and every budget met. 4: a valid
-# measurement with at least one budget missed — a result, recorded, not an
-# instrument failure (ADR-0066 §6). Anything else: the measurement is not
+# **Exit status.** 0: a valid measurement with no ratio more than 30 % worse than
+# the baseline. 5: a blocking regression. Anything else: the measurement is not
 # evidence.
 #
 #   bash host-tools/qemu-test/stage4-reference-performance.sh [OUT_DIR]
@@ -138,6 +140,7 @@ python3 "$HERE/stage4-reference-report.py" \
     --tos "$OUT/tos" --oracle "$OUT/oracle" \
     --capsule-meta "$OUT/capsule.meta.json" --pattern "$OUT/pattern.img" \
     --nucleus "$NUCLEUS" --runtime-image "$IMAGE" --oracle-efi "$ORACLE" \
+    --baseline "$GITROOT/docs/evidence/stage4-reference-r1-r3.json" \
     --production-nucleus-sha256 "$nucleus_before" \
     --production-runtime-image-sha256 "$image_before" \
     --quantum-source "$ROOT/nucleus/src/apic.rs"

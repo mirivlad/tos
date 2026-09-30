@@ -8,7 +8,10 @@ Accepted by ADR-0060 (Project Architect-approved, 2026-08-19), which admits the
 interface schema as a class of document and fixes the three things a schema
 cannot decide for itself, and amended to version 2 by ADR-0085
 (Project Architect-approved, 2026-09-08), which separates an interface's
-identity from the class of values that represents it.
+identity from the class of values that represents it. ADR-0096 (Project
+Architect-approved, 2026-09-30) adds one invariant on the schema as a whole — no
+two accepted interfaces declare the same object kind (§4) — which the accepted
+set already satisfied, so no interface, operation or version changes.
 
 **What version 2 adds, and nothing else.** One field on the schema type —
 `capability_representation`, §4.3 — drawn from a closed enumeration this
@@ -122,6 +125,17 @@ discover it at its first call.
 **The kind is a check, not the mechanism that chooses a grant.** Which grant
 answers which request is decided by the binding the module declared (ADR-0061),
 because two imports of one interface are legal and a kind cannot tell them apart.
+
+**No two accepted interfaces declare the same object kind** (ADR-0096, option N1).
+This holds across every accepted schema — this one and `PLATFORM_INTERFACE_V1` —
+because the startup check compares an endowed object's kind with the kind the
+requested interface declares and nothing else: if two interfaces shared a kind, a
+launcher could answer a request for one with authority that reached it as the
+other, turning one accepted operation set into another. Two semantically different
+interfaces therefore get two kinds, as `system.process.LaunchPlanBuilder` and
+`system.process.LaunchPlan` do. Launch policy chooses who holds authority; it does
+not choose which interface an object is. Interface identity is not recorded in
+capabilities, launch-plan entries or launch records.
 
 | Interface | Object kind | Capability representation |
 |---|---|---|

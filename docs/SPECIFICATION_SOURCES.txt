@@ -164,6 +164,7 @@ docs/adr/0091-the-transitive-import-envelope.md
 docs/adr/0092-reset-authority.md
 docs/adr/0093-block-device-publication-and-lifetime.md
 docs/adr/0095-publication-authority-is-a-dedicated-channel.md
+docs/adr/0096-nominal-interface-identity-under-delegation.md
 docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md
 docs/adr/0098-the-block-device-v1-wire-protocol.md
 docs/adr/0099-stage-4-persistent-object-state-storage.md
@@ -171,3 +172,4 @@ docs/adr/0100-attenuating-an-endpoint-from-canonical-text.md
 docs/adr/0101-a-carried-call-must-expose-its-reply.md
 docs/adr/0102-stage-4-capsule-to-repository-linkage.md
 docs/adr/0103-stage-4-performance-contract-reconciliation-and-measurement.md
+docs/adr/0104-stage-4-bootstrap-tcg-reference-ratios-are-characterization.md

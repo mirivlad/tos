@@ -500,6 +500,27 @@ fn device_memory_is_a_distinct_ir_kind() {
 /// ADR-0085 §16.12 asks for the closure to be checked **structurally**, so that
 /// the amendment cannot be read as a general relation between an interface and
 /// arbitrary value families. Structurally is what an enumeration is.
+/// ADR-0096, option N1: interface → object kind is injective over the accepted
+/// set. The startup check compares an endowed object's kind with the requested
+/// interface's and nothing else, so a shared kind would let launch policy answer
+/// a request for one operation set with authority that reached it as another.
+#[test]
+fn accepted_interfaces_declare_distinct_object_kinds() {
+    use tos_core::interfaces::ACCEPTED;
+
+    for (at, first) in ACCEPTED.iter().enumerate() {
+        for second in &ACCEPTED[at + 1..] {
+            assert!(
+                first.object != second.object,
+                "{} and {} both declare object kind {:?}",
+                first.path,
+                second.path,
+                first.object
+            );
+        }
+    }
+}
+
 #[test]
 fn the_capability_representation_relation_is_closed_and_one_to_one() {
     use std::collections::BTreeMap;

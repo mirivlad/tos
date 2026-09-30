@@ -95,6 +95,16 @@ jobs:
           echo "$GITHUB_WORKSPACE/source/target/qemu-simple-observer/bin" \
             >> "$GITHUB_PATH"
 
+      # ADR-0103/0104: a second, separate observer from the same archive. It is
+      # found by path rather than put on PATH, so the Stage 3 gates keep theirs.
+      - name: Reproducible ADR-0103 observer
+        env:
+          GATE_PARITY: environment
+        timeout-minutes: 10
+        run: |
+          bash source/host-tools/qemu-test/build-stage4-observer.sh \
+            "$RUNNER_TEMP/qemu-10.0.11.tar.xz" source/target/qemu-stage4-observer
+
       - name: Toolchain and targets
         env:
           GATE_PARITY: environment
@@ -123,5 +133,6 @@ jobs:
             source/target/preflight-qemu/performance-adr-0026/**
             source/target/preflight-qemu/performance-stage3-observer/**
             source/target/preflight-qemu/performance-stage3-ipc/**
+            source/target/preflight-qemu/stage4-reference/stage4-reference-report.json
           if-no-files-found: warn
           retention-days: 90
