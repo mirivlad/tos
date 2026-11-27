@@ -635,3 +635,9 @@ ADR-0032 (parser diagnostics and recovery) are accepted; their implementation is
 deferred to the stage that first needs each subsystem. No implementation
 decision may silently contradict an accepted ADR or invariant. Legal documents
 are project policy, not jurisdiction-specific legal advice.
+
+## Поддержать разработчика / Support development
+
+Если проект оказался полезен, вы можете добровольно поддержать его развитие. / If this project is useful to you, you can voluntarily support its development.
+
+[![Угостить разработчика кофе / Buy me a coffee](https://img.shields.io/badge/Support-Buy%20me%20a%20coffee-7055a5?style=flat-square&logo=buymeacoffee&logoColor=white)](https://mirv.top/support/)
